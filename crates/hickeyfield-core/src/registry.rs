@@ -2290,7 +2290,16 @@ mod tests {
         unroutable.sort_unstable();
         assert_eq!(
             unroutable,
-            ["image_background_remover", "nano_banana", "outpaint"],
+            [
+                "image_background_remover",
+                "nano_banana",
+                "outpaint",
+                // z_image's only route is `local:z-image`, and Local has no
+                // client yet (S2-honest-free-tier): its keyless "free tier" was
+                // a lie, so it joins the unroutable set until a local adapter
+                // ships. Dropping back out of this list is the re-enable signal.
+                "z_image",
+            ],
             "the set of unroutable models changed"
         );
     }

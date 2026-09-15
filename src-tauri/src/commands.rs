@@ -1195,10 +1195,45 @@ mod tests {
     }
 
     #[test]
-    fn local_is_available_with_no_key_at_all() {
-        // The free tier. Local needs no credential and has a client, so it must
-        // never be greyed out for want of a key.
-        let (ok, why) = route_state(ProviderId::Local, "comfy/x", &[]);
-        assert!(ok, "local should be usable with no keys: {why:?}");
+    fn local_route_is_unavailable_with_an_honest_reason() {
+        // AC1. Local is keyless, but no local client exists yet, so a Local-only
+        // route (`z_image`'s `local:z-image`) must report UNAVAILABLE with an
+        // honest reason — NOT available-at-$0.00, and NOT "add a key". Being
+        // told to add a key for a keyless provider is exactly the lie this
+        // slice removes.
+        let (ok, why) = route_state(ProviderId::Local, "z-image", &[]);
+        assert!(
+            !ok,
+            "a Local route has no client yet and must not be usable"
+        );
+        let reason = why.expect("an unavailable route must explain itself");
+        assert!(
+            reason.contains("no client"),
+            "reason must say a client is missing, got: {reason}"
+        );
+        assert!(
+            !reason.contains("Needs a"),
+            "must not tell the user to add a key for a keyless provider: {reason}"
+        );
+    }
+
+    #[test]
+    fn real_routes_stay_available_after_the_local_fix() {
+        // AC3. Making Local honest must not grey out routes we can actually run:
+        // a keyed fal route is still available with no reason, side by side with
+        // the now-unavailable Local route.
+        let (fal_ok, fal_why) = route_state(
+            ProviderId::Fal,
+            "fal-ai/nano-banana-2",
+            &["fal".to_string()],
+        );
+        assert!(fal_ok, "a keyed fal route must stay available: {fal_why:?}");
+        assert!(fal_why.is_none());
+
+        let (local_ok, _) = route_state(ProviderId::Local, "z-image", &[]);
+        assert!(
+            !local_ok,
+            "the Local-only route is the one that must be unavailable"
+        );
     }
 }

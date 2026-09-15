@@ -229,10 +229,10 @@ where
 mod tests {
     use super::*;
 
-    /// Deliberately mixes providers we can execute (fal, Higgsfield, Local)
-    /// with one we cannot (Vaig), because the interesting bug lives exactly
-    /// there: Vaig is the *cheapest* and the *unreachable* one, which is also
-    /// true in the real registry.
+    /// Deliberately mixes providers we can execute (fal, Higgsfield) with two we
+    /// cannot (Vaig, Local), because the interesting bug lives exactly there:
+    /// Vaig is the *cheapest* and *unreachable* one and Local is the *free* and
+    /// *unreachable* one, both of which are also true in the real registry.
     fn routes() -> Vec<Route> {
         vec![
             Route::new(ProviderId::Fal, "fal-ai/kling-video/v3/pro"),
@@ -284,6 +284,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got.provider, ProviderId::Fal);
+    }
+
+    #[test]
+    fn a_local_only_route_cannot_be_resolved_until_a_client_exists() {
+        // S2-honest-free-tier. `z_image`'s only route is `local:z-image`, and
+        // Local is "available" (it is keyless, so `configured_providers()`
+        // always includes it). Before the fix the resolver picked that Local
+        // route and the submit path then failed with "no credentials for Local
+        // — add a key". With no local client, resolve must instead refuse
+        // honestly with NoAdapter, so submit never runs and no key prompt fires.
+        let rs = vec![Route::noted(
+            ProviderId::Local,
+            "z-image",
+            "free on a local endpoint",
+        )];
+        let err = resolve(
+            &rs,
+            &[ProviderId::Local],
+            RoutePolicy::Cheapest,
+            None,
+            priced,
+        )
+        .unwrap_err();
+        match err {
+            RouteError::NoAdapter { held } => {
+                assert_eq!(held, vec![ProviderId::Local], "got {held:?}");
+            }
+            other => panic!("expected NoAdapter for a Local-only route, got {other:?}"),
+        }
     }
 
     #[test]

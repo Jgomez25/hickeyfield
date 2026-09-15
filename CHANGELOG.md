@@ -32,3 +32,11 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   output), the job is marked as stalled and stops being auto-retried on every
   launch, so stuck jobs no longer pile up in the background. The job's record is
   kept so it can be tried again with Rerun.
+- **A model that could never actually run is no longer shown as a free option.**
+  The one model served solely by the built-in "Local" provider (`z_image`) used to
+  appear priced at $0.00 with a Generate button, then fail the moment you pressed
+  it, because the app has no local (ComfyUI or Ollama) client to run it yet. Local
+  is now treated as having no runnable client, so that model is hidden alongside the
+  other routes the app cannot execute and is reported as unavailable with a plain
+  reason instead of a price it cannot honour. It returns on its own once a real
+  local client ships.

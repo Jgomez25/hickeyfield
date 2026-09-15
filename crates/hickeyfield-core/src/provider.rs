@@ -87,11 +87,14 @@ impl ProviderId {
     /// Keep this list in step with `src-tauri/src/app.rs::client_for`. The test
     /// `app::tests::has_adapter_matches_the_clients_actually_implemented` fails
     /// loudly if they drift.
+    ///
+    /// `Local` is keyless (see [`Self::needs_key`]) but has **no** client yet —
+    /// `clients.rs` ships no local adapter and `client_for` returns `None` for
+    /// it — so it does not qualify. Its one free-tier model (`z_image`) is
+    /// therefore unreachable until a local adapter lands, at which point adding
+    /// `ProviderId::Local` back here re-enables it everywhere at once.
     pub fn has_adapter(self) -> bool {
-        matches!(
-            self,
-            ProviderId::Fal | ProviderId::Higgsfield | ProviderId::Local
-        )
+        matches!(self, ProviderId::Fal | ProviderId::Higgsfield)
     }
 
     /// `Local` is the only provider that never needs a credential.

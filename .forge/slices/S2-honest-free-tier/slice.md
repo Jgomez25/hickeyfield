@@ -5,7 +5,7 @@ The dead `z_image`/`Local` "free tier" no longer masquerades as usable: instead 
 
 ## Acceptance criteria (testable)
 - [ ] AC1 — The route/availability path reports `Local`-only routes (e.g. `z_image`) as UNAVAILABLE with an honest reason, using the existing `RouteDto`/unavailable-reason pattern — NOT available-at-$0.00. Root cause: `provider.rs` `has_adapter()` returns `true` for `Local` but `app.rs:34` `client_for` returns `None` and `clients.rs:413` has no `Local` client. A Rust test on the availability/DTO path asserts the unavailable state + reason.
-- [ ] AC2 — `vitest` UI test: the tile for such a route shows the unavailable state (disabled/greyed with the reason), not a Generate affordance.
+- [ ] AC2 — (DECISION: hide, consistent with the 3 other unroutable models). `vitest` UI test: the `z_image`/Local-only model is NOT presented as a runnable/Generate tile in the use-case model picker (it is filtered out like other unroutable models). The honest unavailable+reason is asserted at the data layer in AC1 (route_state DTO), not as an in-tab disabled tile.
 - [ ] AC3 (no false negatives) — Routes that ARE reachable (fal, Higgsfield with a key) still report available; the fix must not mark real routes unavailable. Test covers at least one reachable route staying available.
 - [ ] AC4 (regression) — Global gate green: `cargo test --workspace` (0 failed, >=727 now), `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `./scripts/lint-provenance.py`, `pnpm build`, `pnpm test`. App still builds+launches.
 

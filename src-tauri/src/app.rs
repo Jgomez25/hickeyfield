@@ -596,10 +596,7 @@ mod tests {
             // None here is ambiguous. Match on the same arms instead — this is
             // a spelling check against the match above, deliberately manual so
             // that adding an arm there fails here until it is mirrored.
-            let implemented = matches!(
-                p,
-                ProviderId::Fal | ProviderId::Higgsfield | ProviderId::Local
-            );
+            let implemented = matches!(p, ProviderId::Fal | ProviderId::Higgsfield);
             assert_eq!(
                 p.has_adapter(),
                 implemented,
@@ -610,12 +607,17 @@ mod tests {
     }
 
     #[test]
-    fn local_is_reachable_without_a_credential() {
-        // Local claims an adapter and needs no key, which is the combination
-        // that makes the free tier real. If it ever needs one, the README's
-        // free-tier promise is broken.
-        assert!(ProviderId::Local.has_adapter());
+    fn local_needs_no_key_but_has_no_client_yet() {
+        // Local is keyless — the free-tier-keyless fact survives, and the day a
+        // local adapter ships this is what keeps it from being greyed out for
+        // want of a credential. But there is no local client today, so it must
+        // not claim an adapter: doing so is the lie that made `z_image` show as
+        // "$0.00 / Generate" and then fail at submit with "add a key for Local".
         assert!(!ProviderId::Local.needs_key());
+        assert!(
+            !ProviderId::Local.has_adapter(),
+            "Local has no client yet; claiming an adapter reinstates the free-tier lie"
+        );
     }
 
     #[test]

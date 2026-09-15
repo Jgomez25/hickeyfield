@@ -24,8 +24,14 @@
     {
       "id": "S2-honest-free-tier",
       "title": "honest-free-tier",
-      "status": "pending (next)",
-      "started": "2026-09-14"
+      "status": "released",
+      "started": "2026-09-14",
+      "branch": "forge/s2-honest-free-tier"
+    },
+    {
+      "id": "S3-reachable-logs",
+      "title": "reachable-logs",
+      "status": "pending (next)"
     }
   ]
 }

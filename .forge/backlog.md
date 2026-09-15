@@ -16,7 +16,7 @@ generator being trustworthy).
 | # | Slice id | Delivers (one sentence) | Status |
 |---|----------|-------------------------|--------|
 | 1 | job-engine-reliability | A generation run no longer silently loses paid output: the runner honors each provider's `TimeoutPolicy` and concurrency cap, keeps a timed-out job resumable, and never flips a completed-but-undownloaded job to Failed on relaunch. | released |
-| 2 | honest-free-tier | The dead `z_image`/`Local` free tier shows an explicit unavailable state instead of a "$0.00 / available / Generate" tile that fails at submit. | pending |
+| 2 | honest-free-tier | The dead `z_image`/`Local` free tier shows an explicit unavailable state instead of a "$0.00 / available / Generate" tile that fails at submit. | released |
 | 3 | reachable-logs | A packaged `.app` writes rolling file logs plus a panic-hook crash report to the app log dir, and the user can reveal that path from inside the app. | pending |
 | 4 | live-fal-e2e | One real generation completes green against fal.ai (submit -> poll -> download -> reattach with estimated-vs-actual cost) because family-root video routes now resolve to the correct input-mode suffix instead of 404-ing. | pending |
 | 5 | library-browser | The user can see and open their generated media in an in-app Library view backed by the existing `library.rs`. | pending |
