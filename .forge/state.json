@@ -36,8 +36,9 @@
     {
       "id": "S4-prompt-enhancer-wired",
       "title": "prompt-enhancer-wired",
-      "status": "in-progress",
-      "started": "2026-09-14"
+      "status": "released",
+      "started": "2026-09-14",
+      "branch": "forge/s3-prompt-enhancer"
     }
   ]
 }
