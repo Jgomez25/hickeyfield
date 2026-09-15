@@ -6,6 +6,7 @@ import type {
   Model,
   ModelCapabilities,
   PresetFamily,
+  RewriterChoice,
   Route,
   UseCase,
   WorkspaceTab,
@@ -14,6 +15,7 @@ import { WorkspaceTabs } from "./WorkspaceTabs";
 import { PresetTile } from "./PresetTile";
 import { Dropzone, FrameSlots, type FrameSlot } from "./MediaInputs";
 import { PromptCard } from "./PromptCard";
+import { EnhancerPicker } from "./EnhancerPicker";
 import { ModelRow } from "./ModelRow";
 import { ChipRow } from "./ChipRow";
 import { GenerateButton } from "./GenerateButton";
@@ -68,6 +70,11 @@ export function SettingsRail({
   onMediaAdd,
   onMediaRemoveRole,
   onMediaRemoveKey,
+  ollamaUp,
+  ollamaModels,
+  openaiAvailable,
+  enhancer,
+  onEnhancerChange,
   estimate,
   pending,
   needsSetup,
@@ -91,6 +98,14 @@ export function SettingsRail({
   onMediaAdd: (role: MediaRole, files: FileList | null) => void | Promise<void>;
   onMediaRemoveRole: (role: MediaRole) => void;
   onMediaRemoveKey: (key: string) => void;
+  /** Whether the local Ollama daemon is up, its installed chat models, and
+   * whether an OpenAI key is stored — the enhancer picker's availability. */
+  ollamaUp: boolean;
+  ollamaModels: string[];
+  openaiAvailable: boolean;
+  /** The explicit enhancer choice (null = auto). */
+  enhancer: RewriterChoice | null;
+  onEnhancerChange: (next: RewriterChoice | null) => void;
   estimate: CostEstimate | null;
   pending: boolean;
   /** No usable provider — the submit control becomes the way to fix that. */
@@ -152,6 +167,15 @@ export function SettingsRail({
             onEnhanceChange={(enhance) => onSettingsChange({ enhance })}
             disabled={chained}
             disabledReason="This preset writes its own prompt. Supply one image instead."
+          />
+
+          <EnhancerPicker
+            enhance={settings.enhance}
+            ollamaUp={ollamaUp}
+            ollamaModels={ollamaModels}
+            openaiAvailable={openaiAvailable}
+            value={enhancer}
+            onChange={onEnhancerChange}
           />
 
           <ModelRow model={model} route={route} onOpen={onOpenModels} />

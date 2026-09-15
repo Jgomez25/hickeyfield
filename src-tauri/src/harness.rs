@@ -25,8 +25,8 @@
 
 use hickeyfield_core::enhance::{self, EnhanceInputs, PresetSelection, PromptParts};
 use hickeyfield_core::enhancer::{
-    enhance_or_original, mode_for, recipe_pin, EnhanceRequest, LocalEnhancer, RewriteStatus,
-    Rewritten,
+    enhance_or_original, mode_for, recipe_pin, EnhanceRequest, Enhancer, HostedBackend,
+    HostedEnhancer, LocalEnhancer, Mode, RewriteStatus, Rewritten,
 };
 use hickeyfield_core::{corpus, MediaRef, Model};
 
@@ -46,12 +46,70 @@ pub struct Compiled {
     pub note: Option<String>,
 }
 
-/// Which rewriter to use, chosen by the user.
+/// Which rewriter to use, chosen by the user (or auto-selected in the shell).
 pub enum Rewriter<'a> {
     /// No rewrite. The compiled prompt still gets its camera clause.
     None,
     /// Local Ollama. Free, private, no key.
     Ollama { model: &'a str },
+    /// The user's own hosted key. `backend` selects the wire dialect; the key is
+    /// read from the vault by the shell and borrowed in, never stored here.
+    Hosted {
+        backend: HostedBackend,
+        api_key: &'a str,
+        model: &'a str,
+    },
+    /// Enhance was wanted but no backend is available. Carries the honest note
+    /// authored in `commands.rs`. `compile` surfaces it only when the three
+    /// enhance rules leave enhancement on, so it never masks the end-frame
+    /// reason.
+    Unavailable { note: String },
+}
+
+/// The shared tail every real rewrite runs: call the enhancer, and on success
+/// put the rewritten scene back through `PromptParts::compile` so the camera
+/// clause is re-appended verbatim.
+///
+/// Local and Hosted differ only in the concrete [`Enhancer`] and the
+/// `(provider, model)` pair recorded in the version pin — everything after that
+/// is identical, so it lives here in exactly one place.
+fn finish_rewrite(
+    enhancer: &dyn Enhancer,
+    req: &EnhanceRequest,
+    parts: &PromptParts,
+    mode: Mode,
+    pin: (&str, &str),
+    original: String,
+    compiled_now: String,
+) -> Compiled {
+    let out: Rewritten = enhance_or_original(enhancer, req);
+    match out.status {
+        RewriteStatus::Rewritten => {
+            // Put the rewritten scene back and recompile, so the camera clause
+            // is appended verbatim to the improved prose.
+            let final_prompt = PromptParts {
+                scene: out.prompt.clone(),
+                ..parts.clone()
+            }
+            .compile();
+            Compiled {
+                prompt: final_prompt,
+                original,
+                enhanced: Some(out.prompt),
+                version: Some(recipe_pin(corpus::CORPUS_ID, mode, Some(pin))),
+                note: None,
+            }
+        }
+        // A failed rewrite must never block a generation the user asked for, and
+        // must never look like it succeeded.
+        _ => Compiled {
+            prompt: compiled_now,
+            original,
+            enhanced: None,
+            version: None,
+            note: out.note,
+        },
+    }
 }
 
 /// Compile the prompt for one submission.
@@ -106,14 +164,40 @@ pub fn compile(
         });
     }
 
-    let Rewriter::Ollama { model: tag } = rewriter else {
-        return Ok(Compiled {
-            prompt: compiled_now,
-            original,
-            enhanced: None,
-            version: None,
-            note: Some("no rewriter selected — sent as written".to_string()),
-        });
+    // Dispatch on the chosen rewriter. `None` and `Unavailable` return the
+    // sendable prompt with an honest note *before* any network work; the two
+    // real backends fall through to the shared rewrite tail below. The
+    // `Unavailable` note is authored in commands.rs (AC2) and only reaches the
+    // user here, when the three enhance rules have left enhancement on.
+    enum Backend<'a> {
+        Ollama(&'a str),
+        Hosted(HostedBackend, &'a str, &'a str),
+    }
+    let backend = match rewriter {
+        Rewriter::None => {
+            return Ok(Compiled {
+                prompt: compiled_now,
+                original,
+                enhanced: None,
+                version: None,
+                note: Some("no rewriter selected — sent as written".to_string()),
+            });
+        }
+        Rewriter::Unavailable { note } => {
+            return Ok(Compiled {
+                prompt: compiled_now,
+                original,
+                enhanced: None,
+                version: None,
+                note: Some(note),
+            });
+        }
+        Rewriter::Ollama { model: tag } => Backend::Ollama(tag),
+        Rewriter::Hosted {
+            backend,
+            api_key,
+            model,
+        } => Backend::Hosted(backend, api_key, model),
     };
 
     // 4. The rewrite. Note it receives `raw_prompt`, NOT the compiled string:
@@ -145,35 +229,26 @@ pub fn compile(
     };
 
     let system = corpus::system_prompt_for(mode)?;
-    let out: Rewritten = enhance_or_original(&LocalEnhancer::new(tag, system), &req);
 
-    match out.status {
-        RewriteStatus::Rewritten => {
-            // 5. Put the rewritten scene back and recompile, so the camera
-            //    clause is appended verbatim to the improved prose.
-            let final_prompt = PromptParts {
-                scene: out.prompt.clone(),
-                ..parts
-            }
-            .compile();
-            Ok(Compiled {
-                prompt: final_prompt,
-                original,
-                enhanced: Some(out.prompt),
-                version: Some(recipe_pin(corpus::CORPUS_ID, mode, Some(("ollama", tag)))),
-                note: None,
-            })
-        }
-        // A failed rewrite must never block a generation the user asked for,
-        // and must never look like it succeeded.
-        _ => Ok(Compiled {
-            prompt: compiled_now,
-            original,
-            enhanced: None,
-            version: None,
-            note: out.note,
-        }),
-    }
+    // 5. Build the concrete enhancer and its version pin, then hand off to the
+    //    shared tail. Only one branch runs, so `system` is moved exactly once.
+    let (enhancer, pin): (Box<dyn Enhancer>, (&str, &str)) = match backend {
+        Backend::Ollama(tag) => (Box::new(LocalEnhancer::new(tag, system)), ("ollama", tag)),
+        Backend::Hosted(b, key, model) => (
+            Box::new(HostedEnhancer::new(b, key, model, system)),
+            (b.slug(), model),
+        ),
+    };
+
+    Ok(finish_rewrite(
+        enhancer.as_ref(),
+        &req,
+        &parts,
+        mode,
+        pin,
+        original,
+        compiled_now,
+    ))
 }
 
 #[cfg(test)]
@@ -305,6 +380,176 @@ mod tests {
             "a real preset must not leave the default-off reason in place: {:?}",
             off.note
         );
+    }
+
+    /// Answer exactly one HTTP request with a canned JSON body, returning the
+    /// bound base URL. A std `TcpListener` keeps the hosted test real with no new
+    /// dependency — the same shape the core enhancer tests use.
+    fn stub_once(body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes());
+                let _ = sock.flush();
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn a_hosted_rewrite_enhances_and_keeps_the_camera_clause() {
+        // AC1: compile()'s shared tail, driven with a HostedEnhancer pointed at a
+        // local stub, produces an enhanced prompt whose camera clause survived
+        // the recompile and whose version pins the OpenAI backend + model.
+        let m = model("kling3_0");
+        let addr = stub_once(
+            r#"{"choices":[{"finish_reason":"stop","message":{"content":"A single banana with a wide grin, cinematic key light, shallow depth of field","refusal":null}}]}"#,
+        );
+
+        let req = EnhanceRequest::new(
+            "a banana with a smile",
+            m.job_type,
+            &m.display_name,
+            m.modality,
+        );
+        let mode = mode_for(&req).expect("a video job has an overlay");
+        let system = corpus::system_prompt_for(mode).unwrap();
+        let parts = PromptParts::scene("a banana with a smile").with_camera("push-in");
+
+        let enhancer = HostedEnhancer::openai("sk-test", "gpt-test", system).with_base_url(&addr);
+        let out = finish_rewrite(
+            &enhancer,
+            &req,
+            &parts,
+            mode,
+            ("openai", "gpt-test"),
+            "a banana with a smile".to_string(),
+            parts.compile(),
+        );
+
+        assert_eq!(
+            out.enhanced.as_deref(),
+            Some("A single banana with a wide grin, cinematic key light, shallow depth of field"),
+            "the hosted reply should become the enhanced scene"
+        );
+        assert!(
+            out.note.is_none(),
+            "a success carries no note: {:?}",
+            out.note
+        );
+        // The camera clause survived the recompile verbatim.
+        let tmpl = hickeyfield_core::camera::get("push-in").unwrap().render();
+        assert!(
+            out.prompt.contains(&tmpl),
+            "the camera template was lost:\n  got: {}",
+            out.prompt
+        );
+        assert!(out.prompt.contains("wide grin"), "{}", out.prompt);
+        assert_eq!(
+            out.version,
+            Some(recipe_pin(
+                corpus::CORPUS_ID,
+                mode,
+                Some(("openai", "gpt-test"))
+            )),
+            "the version pin must name the hosted backend and model"
+        );
+    }
+
+    /// AC4 live check, run by a human against the machine's own Ollama:
+    ///
+    /// ```sh
+    /// OLLAMA_ENHANCE_MODEL=gemma3:1b \
+    ///   cargo test -p hickeyfield-tauri --lib harness -- --ignored --nocapture
+    /// ```
+    ///
+    /// "a banana with a smile" on an image model with enhance on and a real
+    /// Ollama backend must come back as an expanded cinematic prompt, distinct
+    /// from the raw text, with a version pin naming the model. Use a
+    /// non-reasoning model: `clean_reply` does not strip `<think>` blocks, so a
+    /// reasoning model would leak its chain of thought into the prompt.
+    #[test]
+    #[ignore = "needs a running Ollama daemon; run with --ignored"]
+    fn a_banana_gets_a_cinematic_rewrite_against_a_real_daemon() {
+        let tag = std::env::var("OLLAMA_ENHANCE_MODEL")
+            .expect("set OLLAMA_ENHANCE_MODEL to an installed tag");
+        let m = model("nano_banana_2");
+        let out = compile(
+            &m,
+            "a banana with a smile",
+            None,
+            &[],
+            true,
+            Rewriter::Ollama { model: &tag },
+        )
+        .unwrap();
+        println!("enhanced: {:?}\nversion: {:?}", out.enhanced, out.version);
+        let enhanced = out.enhanced.expect("the daemon must produce a rewrite");
+        assert_ne!(
+            enhanced, "a banana with a smile",
+            "the prompt was not expanded"
+        );
+        assert!(enhanced.len() > "a banana with a smile".len());
+        let version = out.version.expect("a successful rewrite pins its version");
+        assert!(version.contains("ollama"), "version: {version}");
+        assert!(version.contains(&tag), "version: {version}");
+    }
+
+    #[test]
+    fn a_hosted_rewriter_with_no_key_falls_back_to_the_original_prompt() {
+        // AC1/AC2: an empty hosted key must never block the generation. compile()
+        // returns the sendable original with a note and no enhancement — the same
+        // contract the Ollama fallback keeps.
+        let m = model("kling3_0");
+        let out = compile(
+            &m,
+            "a banana with a smile",
+            None,
+            &[],
+            true,
+            Rewriter::Hosted {
+                backend: HostedBackend::OpenAi,
+                api_key: "",
+                model: "gpt-x",
+            },
+        )
+        .unwrap();
+        assert!(!out.prompt.is_empty());
+        assert!(out.enhanced.is_none(), "no key means no enhancement");
+        assert!(out.version.is_none());
+        assert!(out.note.is_some(), "the failure must explain itself");
+    }
+
+    #[test]
+    fn an_unavailable_rewriter_surfaces_its_honest_note() {
+        // AC2: the honest "nothing available" note authored in commands.rs is
+        // carried through compile() unchanged when enhancement stays on.
+        let m = model("kling3_0");
+        let note = "Enhance is on, but there is no rewriter to run it. \
+                    Your prompt was sent exactly as you wrote it.";
+        let out = compile(
+            &m,
+            "a banana with a smile",
+            None,
+            &[],
+            true,
+            Rewriter::Unavailable {
+                note: note.to_string(),
+            },
+        )
+        .unwrap();
+        assert!(out.enhanced.is_none());
+        assert!(out.version.is_none());
+        assert_eq!(out.note.as_deref(), Some(note));
     }
 
     #[test]

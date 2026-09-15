@@ -240,6 +240,19 @@ export async function localEndpoints(): Promise<LocalEndpoints> {
   }
 }
 
+/**
+ * Chat-capable models the local Ollama has installed, for the enhancer picker.
+ * An empty list on any failure — a down daemon is an empty dropdown, never a
+ * thrown error the picker would have to handle.
+ */
+export async function ollamaModels(): Promise<string[]> {
+  try {
+    return await invoke<string[]>("list_ollama_models");
+  } catch {
+    return [];
+  }
+}
+
 /** Absolute path of the generated-asset library. Null outside the shell. */
 export async function libraryRoot(): Promise<string | null> {
   try {

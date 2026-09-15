@@ -66,6 +66,7 @@ pub fn run() {
             commands::set_key,
             commands::configured_providers,
             commands::local_endpoints,
+            commands::list_ollama_models,
             commands::is_ready,
             commands::provider_info,
             commands::validate_key,

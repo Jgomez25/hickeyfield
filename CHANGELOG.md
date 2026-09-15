@@ -6,6 +6,16 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The prompt enhancer now actually rewrites your prompt.** Previously the Enhance
+  switch was on by default but nothing behind it ran, so a short prompt went to the
+  model word-for-word. It now expands your scene through the filmmaking corpus using
+  a local model you pick (any model you have installed in Ollama, auto-detected) or a
+  hosted OpenAI key, and shows which model rewrote each job. When Enhance is on but no
+  model backend is set up, it tells you plainly instead of silently sending the prompt
+  as written.
+
 ### Fixed
 
 - **Long and high-resolution jobs are no longer given up on while they are still

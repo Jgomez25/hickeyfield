@@ -402,6 +402,44 @@
   gap: var(--space-200);
 }
 
+/* ── Enhancer picker ────────────────────────────────────────────────────── */
+
+.enhancer-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-200);
+  align-items: flex-end;
+}
+
+.enhancer-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-100);
+  flex: 1 1 8rem;
+}
+
+.enhancer-label {
+  color: var(--text-tertiary);
+  font-size: var(--text-xxs);
+}
+
+.enhancer-backend,
+.enhancer-picker input.enhancer-model,
+.enhancer-picker select.enhancer-model {
+  padding: var(--space-200);
+  border-radius: var(--radius-300);
+  border: 0;
+  background: var(--light-05);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.enhancer-unavailable {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-xxs);
+}
+
 /* ── Model row ──────────────────────────────────────────────────────────── */
 
 .model-row {

@@ -107,6 +107,12 @@ const OLLAMA_TAGS_PATH: &str = "/api/tags";
 
 const OPENAI_CHAT_URL: &str = "https://api.openai.com/v1/chat/completions";
 const ANTHROPIC_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
+/// The paths appended to a test/override base. The production consts above are
+/// the same host + path spelled out; keeping the paths here lets
+/// [`HostedEnhancer::with_base_url`] point either backend at a local stub
+/// without duplicating the wire routes.
+const OPENAI_CHAT_PATH: &str = "/v1/chat/completions";
+const ANTHROPIC_MESSAGES_PATH: &str = "/v1/messages";
 /// Anthropic's API version header. Required on every request.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -1082,6 +1088,10 @@ pub struct HostedEnhancer {
     api_key: String,
     model: String,
     system_prompt: String,
+    /// Overridable so a test can point either backend at a local stub, mirroring
+    /// [`LocalEnhancer::with_base_url`]. `None` means the production host for the
+    /// backend, so every existing hosted call and test is unchanged.
+    base_url: Option<String>,
 }
 
 impl HostedEnhancer {
@@ -1096,7 +1106,16 @@ impl HostedEnhancer {
             api_key: api_key.into(),
             model: model.into(),
             system_prompt: system_prompt.into(),
+            base_url: None,
         }
+    }
+
+    /// Point this enhancer at a base URL other than the provider's own host.
+    /// The per-backend path (`/v1/chat/completions` or `/v1/messages`) is
+    /// appended, so a stub only has to answer that path.
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = Some(url.into());
+        self
     }
 
     pub fn openai(
@@ -1119,16 +1138,24 @@ impl HostedEnhancer {
         let c = client(HOSTED_TIMEOUT)?;
         match self.backend {
             HostedBackend::OpenAi => {
+                let url = match &self.base_url {
+                    Some(b) => format!("{b}{OPENAI_CHAT_PATH}"),
+                    None => OPENAI_CHAT_URL.to_string(),
+                };
                 let v = send_json(
-                    c.post(OPENAI_CHAT_URL)
+                    c.post(url)
                         .header("Authorization", format!("Bearer {}", self.api_key))
                         .json(&openai_body(&self.model, &self.system_prompt, user)),
                 )?;
                 openai_text(&v)
             }
             HostedBackend::Anthropic => {
+                let url = match &self.base_url {
+                    Some(b) => format!("{b}{ANTHROPIC_MESSAGES_PATH}"),
+                    None => ANTHROPIC_MESSAGES_URL.to_string(),
+                };
                 let v = send_json(
-                    c.post(ANTHROPIC_MESSAGES_URL)
+                    c.post(url)
                         .header("x-api-key", &self.api_key)
                         .header("anthropic-version", ANTHROPIC_VERSION)
                         .json(&anthropic_body(&self.model, &self.system_prompt, user)),
@@ -2185,5 +2212,74 @@ mod tests {
         fn assert_send_sync<T: Send + Sync + ?Sized>() {}
         assert_send_sync::<dyn Enhancer>();
         assert!(!boxed.version().is_empty());
+    }
+
+    // ---- Hosted base-url override ------------------------------------------
+
+    /// Answer exactly one HTTP request on `127.0.0.1:0` with the given body,
+    /// returning the bound address and the captured request line/path.
+    ///
+    /// A std `TcpListener` is deliberate: it proves the wire path with no new
+    /// test dependency and no HTTP-mock crate. It speaks just enough HTTP/1.1 to
+    /// let `reqwest` read one JSON response.
+    fn stub_once(body: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let n = sock.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = tx.send(req);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes());
+                let _ = sock.flush();
+            }
+        });
+        (addr, rx)
+    }
+
+    #[test]
+    fn a_hosted_openai_call_posts_to_the_overridden_base_and_reads_the_reply() {
+        let (addr, rx) = stub_once(
+            r#"{"choices":[{"finish_reason":"stop","message":{"content":"A rewritten teapot.","refusal":null}}]}"#,
+        );
+        let out = HostedEnhancer::openai("sk-test", "gpt-test", SYS)
+            .with_base_url(&addr)
+            .rewrite(&req())
+            .unwrap();
+        assert_eq!(out.status, RewriteStatus::Rewritten, "note: {:?}", out.note);
+        assert_eq!(out.prompt, "A rewritten teapot.");
+        let seen = rx.recv().unwrap();
+        assert!(
+            seen.starts_with("POST /v1/chat/completions "),
+            "expected the OpenAI path on the override base, got: {}",
+            seen.lines().next().unwrap_or("")
+        );
+    }
+
+    #[test]
+    fn a_hosted_anthropic_call_posts_to_the_overridden_base_and_reads_the_reply() {
+        let (addr, rx) = stub_once(
+            r#"{"stop_reason":"end_turn","content":[{"type":"text","text":"A rewritten teapot."}]}"#,
+        );
+        let out = HostedEnhancer::anthropic("sk-test", "claude-test", SYS)
+            .with_base_url(&addr)
+            .rewrite(&req())
+            .unwrap();
+        assert_eq!(out.status, RewriteStatus::Rewritten, "note: {:?}", out.note);
+        assert_eq!(out.prompt, "A rewritten teapot.");
+        let seen = rx.recv().unwrap();
+        assert!(
+            seen.starts_with("POST /v1/messages "),
+            "expected the Anthropic path on the override base, got: {}",
+            seen.lines().next().unwrap_or("")
+        );
     }
 }

@@ -12,6 +12,7 @@ import {
   listUseCases,
   modelsForUseCase,
   localEndpoints,
+  ollamaModels,
   providerInfo,
   submitJob,
   modelCapabilities,
@@ -28,6 +29,7 @@ import type {
   Model,
   ModelCapabilities,
   PresetFamily,
+  RewriterChoice,
   UseCase,
   WorkspaceTab,
 } from "./types";
@@ -123,6 +125,10 @@ export default function App() {
   // for one frame on every launch.
   const [configured, setConfigured] = useState<string[] | null>(null);
   const [local, setLocal] = useState<LocalEndpoints | null>(null);
+  // Chat models the local Ollama has installed, for the enhancer picker, and
+  // the user's explicit enhancer choice (null = auto: the shell decides).
+  const [ollamaModelList, setOllamaModelList] = useState<string[]>([]);
+  const [enhancer, setEnhancer] = useState<RewriterChoice | null>(null);
   const [libraryPath, setLibraryPath] = useState<string | null>(null);
 
   // Object URLs for locally attached files. Held so they can be revoked;
@@ -166,23 +172,27 @@ export default function App() {
   }, []);
 
   const recheckLocal = useCallback(async () => {
-    setLocal(await localEndpoints());
+    const [l, m] = await Promise.all([localEndpoints(), ollamaModels()]);
+    setLocal(l);
+    setOllamaModelList(m);
   }, []);
 
   useEffect(() => {
     void (async () => {
-      const [info, s, c, l, root] = await Promise.all([
+      const [info, s, c, l, root, models] = await Promise.all([
         providerInfo(),
         keyStates(),
         configuredProviders(),
         localEndpoints(),
         libraryRoot(),
+        ollamaModels(),
       ]);
       setCatalog(info);
       setStates(s);
       setConfigured(c);
       setLocal(l);
       setLibraryPath(root);
+      setOllamaModelList(models);
       // First run: nothing can generate, so say so up front rather than letting
       // the user build a prompt that has nowhere to go.
       if (!isAppConfigured(c, l) && !readSkipped()) setOverlay("onboarding");
@@ -404,6 +414,7 @@ export default function App() {
           presetId,
           settings,
           media,
+          rewriter: enhancer,
         });
         setJobs(await listJobs());
       } catch (e) {
@@ -417,7 +428,7 @@ export default function App() {
         setPending(false);
       }
     },
-    [modelId, route, prompt, presetId, settings, media],
+    [modelId, route, prompt, presetId, settings, media, enhancer],
   );
 
   const onSubmit = useCallback(async () => {
@@ -544,6 +555,13 @@ export default function App() {
           onMediaAdd={addMedia}
           onMediaRemoveRole={removeByRole}
           onMediaRemoveKey={removeByKey}
+          ollamaUp={local?.ollama ?? false}
+          ollamaModels={ollamaModelList}
+          openaiAvailable={states.some(
+            (s) => s.provider === "openai" && s.hasKey,
+          )}
+          enhancer={enhancer}
+          onEnhancerChange={setEnhancer}
           estimate={estimate}
           pending={pending}
           needsSetup={needsSetup}

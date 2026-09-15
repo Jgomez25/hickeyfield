@@ -692,9 +692,114 @@ pub struct SubmitInput {
     /// product than the one being cloned.
     #[serde(default)]
     pub media: Vec<hickeyfield_core::MediaRef>,
-    /// Ollama tag to rewrite with. `None` sends the prompt as written.
+    /// Which enhancer to rewrite with. `None` means "decide for me" (auto): the
+    /// shell picks from what is actually available. Enhancement only ever runs
+    /// when `settings.enhance` is on and the three enhance rules allow it.
     #[serde(default)]
-    pub rewriter: Option<String>,
+    pub rewriter: Option<RewriterChoice>,
+}
+
+/// The UI's explicit enhancer choice. Structured rather than a bare tag so a
+/// hosted backend (which has no Ollama-style tag) can be named without
+/// overloading one string field.
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriterChoice {
+    /// `"ollama"` or `"openai"`. An unrecognised value falls back to auto.
+    pub backend: String,
+    /// Required for Ollama (the installed tag) and for OpenAI (the hosted model
+    /// id). No default is invented for OpenAI: hosted rosters churn and a
+    /// hardcoded id turns into a 404 nobody can fix without a new binary.
+    pub model: Option<String>,
+}
+
+// Honest notes for the "enhance is on but we cannot run it" cases. Original
+// prose about this app — no borrowed marketing copy — each ending on the same
+// provenance-safe promise the rest of the fallback family makes: the prompt was
+// sent unchanged, never silently rewritten and never silently dropped.
+const NOTE_NOTHING_AVAILABLE: &str = "Enhance is on, but there is no rewriter to run it: no OpenAI key is stored and Ollama isn't running on this machine. Add an OpenAI key in Settings, or start Ollama and pick a model. Your prompt was sent exactly as you wrote it.";
+const NOTE_OLLAMA_NO_MODELS: &str = "Enhance is on and Ollama is running, but no chat model is installed yet — run `ollama pull gemma3:1b` (or any chat model), then choose it here. Your prompt was sent exactly as you wrote it.";
+const NOTE_OPENAI_NO_KEY: &str = "Enhance is on and OpenAI is selected, but no OpenAI key is stored — add one in Settings, or switch the enhancer to Local. Your prompt was sent exactly as you wrote it.";
+const NOTE_NO_MODEL_CHOSEN: &str = "Enhance is on, but no model was chosen for the enhancer — pick one next to the Enhance switch. Your prompt was sent exactly as you wrote it.";
+
+/// Turn the UI's (optional) choice plus what is actually reachable into a
+/// concrete [`crate::harness::Rewriter`].
+///
+/// Pure in its inputs so it is unit-testable without a Tauri `State`. Priority:
+/// an explicit UI choice wins; otherwise auto-detect; otherwise an honest note
+/// explaining why nothing ran. It never invents a hosted model id — see the
+/// `RewriterChoice::model` doc.
+fn select_rewriter<'a>(
+    choice: Option<&'a RewriterChoice>,
+    openai_key: Option<&'a str>,
+    ollama_up: bool,
+    ollama_models: &'a [String],
+) -> crate::harness::Rewriter<'a> {
+    use crate::harness::Rewriter;
+    use hickeyfield_core::enhancer::HostedBackend;
+
+    let unavailable = |note: &str| Rewriter::Unavailable {
+        note: note.to_string(),
+    };
+
+    match choice {
+        // Explicit OpenAI: needs both a stored key and an explicit model.
+        Some(c) if c.backend == "openai" => {
+            let model = c.model.as_deref().filter(|m| !m.trim().is_empty());
+            match (openai_key, model) {
+                (Some(key), Some(model)) => Rewriter::Hosted {
+                    backend: HostedBackend::OpenAi,
+                    api_key: key,
+                    model,
+                },
+                (None, _) => unavailable(NOTE_OPENAI_NO_KEY),
+                (Some(_), None) => unavailable(NOTE_NO_MODEL_CHOSEN),
+            }
+        }
+        // Explicit Ollama: needs the daemon up and the chosen model installed.
+        Some(c) if c.backend == "ollama" => {
+            if !ollama_up {
+                return unavailable(NOTE_NOTHING_AVAILABLE);
+            }
+            match c.model.as_deref().filter(|m| !m.trim().is_empty()) {
+                Some(model) if ollama_models.iter().any(|m| m == model) => {
+                    Rewriter::Ollama { model }
+                }
+                Some(_) if ollama_models.is_empty() => unavailable(NOTE_OLLAMA_NO_MODELS),
+                // A model was named but is not installed — treat like "pick one".
+                Some(_) => unavailable(NOTE_NO_MODEL_CHOSEN),
+                None if ollama_models.is_empty() => unavailable(NOTE_OLLAMA_NO_MODELS),
+                None => unavailable(NOTE_NO_MODEL_CHOSEN),
+            }
+        }
+        // Auto ("decide for me"), and any unrecognised backend string. OpenAI is
+        // never run *silently* — a hosted model id must be chosen explicitly — so
+        // when a runnable Ollama exists it is always preferred over declining.
+        // Only when nothing can run at all do we surface an honest note.
+        _ => match ollama_models.first() {
+            // A running Ollama with at least one installed model always wins:
+            // it needs no key and no explicit model id, so auto can run it.
+            Some(first) if ollama_up => Rewriter::Ollama { model: first },
+            // No Ollama model to run. If an OpenAI key is stored the user only
+            // has to name a hosted model — decline with the pick-a-model note
+            // rather than invent one.
+            _ if openai_key.is_some() => unavailable(NOTE_NO_MODEL_CHOSEN),
+            // Ollama is up but empty — tell them to install a model.
+            _ if ollama_up => unavailable(NOTE_OLLAMA_NO_MODELS),
+            // Nothing is available at all.
+            _ => unavailable(NOTE_NOTHING_AVAILABLE),
+        },
+    }
+}
+
+/// The chat-capable models the local Ollama has installed, for the enhancer
+/// picker. A daemon that is down or answers nothing is an empty list, not an
+/// error: the UI already tells "not running" apart from "running but empty"
+/// using [`local_endpoints`], so this command only has to supply the names.
+#[tauri::command]
+pub fn list_ollama_models() -> Vec<String> {
+    hickeyfield_core::enhancer::local_models(hickeyfield_core::clients::OLLAMA_URL)
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -709,6 +814,39 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
         .filter_map(|s| ProviderId::from_slug(s))
         .collect();
 
+    // Pick a rewriter from what is actually reachable. Bound in locals so the
+    // borrowed key/model outlive the `compile` call. When enhancement is off we
+    // pass `Rewriter::None` and skip the vault read and daemon probe entirely —
+    // there is nothing to rewrite, so there is nothing to detect.
+    let enhance = input.settings.enhance;
+    let openai_key = if enhance {
+        vault::get(ProviderId::OpenAi, false)
+    } else {
+        None
+    };
+    // One probe of `/api/tags`, not two: `local_models` distinguishes a down
+    // daemon (`Err`) from a running-but-empty one (`Ok([])`), which is exactly
+    // the `ollama_up` vs. no-models split `select_rewriter` needs — so it stands
+    // in for the earlier `detect_local()` probe as well.
+    let (ollama_up, ollama_models) = if enhance {
+        match hickeyfield_core::enhancer::local_models(hickeyfield_core::clients::OLLAMA_URL) {
+            Ok(models) => (true, models),
+            Err(_) => (false, Vec::new()),
+        }
+    } else {
+        (false, Vec::new())
+    };
+    let rewriter = if enhance {
+        select_rewriter(
+            input.rewriter.as_ref(),
+            openai_key.as_deref(),
+            ollama_up,
+            &ollama_models,
+        )
+    } else {
+        crate::harness::Rewriter::None
+    };
+
     // The harness. Resolves the preset, appends its camera clause, applies the
     // three enhance rules, and — when asked and able — rewrites the scene
     // through the filmmaking corpus. Runs *before* pricing and routing because
@@ -719,10 +857,7 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
         input.preset_id.as_deref(),
         &input.media,
         input.settings.enhance,
-        match input.rewriter.as_deref() {
-            Some(tag) if !tag.trim().is_empty() => crate::harness::Rewriter::Ollama { model: tag },
-            _ => crate::harness::Rewriter::None,
-        },
+        rewriter,
     )?;
 
     let billable = Billable::from(&input.settings);
@@ -1215,6 +1350,122 @@ mod tests {
             !reason.contains("Needs a"),
             "must not tell the user to add a key for a keyless provider: {reason}"
         );
+    }
+
+    // ---- Enhancer backend selection (AC2) ----------------------------------
+
+    use crate::harness::Rewriter;
+    use hickeyfield_core::enhancer::HostedBackend;
+
+    fn choice(backend: &str, model: Option<&str>) -> RewriterChoice {
+        RewriterChoice {
+            backend: backend.to_string(),
+            model: model.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn an_explicit_openai_choice_with_a_key_and_model_reaches_the_hosted_backend() {
+        let c = choice("openai", Some("gpt-5"));
+        match select_rewriter(Some(&c), Some("sk-live"), false, &[]) {
+            Rewriter::Hosted {
+                backend,
+                api_key,
+                model,
+            } => {
+                assert_eq!(backend, HostedBackend::OpenAi);
+                assert_eq!(api_key, "sk-live");
+                assert_eq!(model, "gpt-5");
+            }
+            other => panic!("expected Hosted, got {}", name(&other)),
+        }
+    }
+
+    #[test]
+    fn an_explicit_openai_choice_without_a_key_is_an_honest_note() {
+        let c = choice("openai", Some("gpt-5"));
+        let note = note_of(select_rewriter(Some(&c), None, false, &[]));
+        assert!(note.contains("no OpenAI key is stored"), "got: {note}");
+    }
+
+    #[test]
+    fn an_explicit_ollama_choice_with_an_installed_model_runs_local() {
+        let models = vec!["gemma3:1b".to_string(), "qwen3-vl:4b".to_string()];
+        let c = choice("ollama", Some("qwen3-vl:4b"));
+        match select_rewriter(Some(&c), None, true, &models) {
+            Rewriter::Ollama { model } => assert_eq!(model, "qwen3-vl:4b"),
+            other => panic!("expected Ollama, got {}", name(&other)),
+        }
+    }
+
+    #[test]
+    fn auto_with_only_ollama_available_picks_the_first_installed_model() {
+        let models = vec!["gemma3:1b".to_string(), "qwen3-vl:4b".to_string()];
+        match select_rewriter(None, None, true, &models) {
+            Rewriter::Ollama { model } => assert_eq!(model, "gemma3:1b"),
+            other => panic!("expected Ollama, got {}", name(&other)),
+        }
+    }
+
+    #[test]
+    fn auto_with_a_key_and_ollama_still_runs_ollama_not_the_no_model_note() {
+        // The MAJOR review bug: an OpenAI key present must NOT block auto from
+        // running a perfectly good local Ollama. With both available and no
+        // explicit choice, auto runs Ollama's first model — it never silently
+        // declines to enhance while a runnable backend sits right there.
+        let models = vec!["gemma3:1b".to_string(), "qwen3-vl:4b".to_string()];
+        match select_rewriter(None, Some("sk-live"), true, &models) {
+            Rewriter::Ollama { model } => assert_eq!(model, "gemma3:1b"),
+            other => panic!("expected Ollama, got {}", name(&other)),
+        }
+    }
+
+    #[test]
+    fn auto_with_nothing_available_is_the_honest_nothing_note() {
+        let note = note_of(select_rewriter(None, None, false, &[]));
+        assert!(note.contains("no OpenAI key is stored"), "got: {note}");
+        assert!(note.contains("Ollama isn't running"), "got: {note}");
+        assert!(
+            note.ends_with("sent exactly as you wrote it."),
+            "the note must promise the prompt was sent unchanged: {note}"
+        );
+    }
+
+    #[test]
+    fn ollama_up_with_no_models_says_none_are_installed() {
+        let note = note_of(select_rewriter(None, None, true, &[]));
+        assert!(note.contains("no chat model is installed"), "got: {note}");
+    }
+
+    #[test]
+    fn auto_never_silently_runs_openai_without_a_chosen_model() {
+        // Q-AUTO-MODEL: an OpenAI key present but no explicit model must decline
+        // with a pick-a-model note rather than invent a hosted model id.
+        let note = note_of(select_rewriter(None, Some("sk-live"), false, &[]));
+        assert!(note.contains("no model was chosen"), "got: {note}");
+    }
+
+    #[test]
+    fn a_list_of_installed_models_never_errors() {
+        // Whether or not Ollama is running here, the command returns a list, not
+        // an Err — a down daemon is an empty picker, not a broken submit.
+        let _models: Vec<String> = list_ollama_models();
+    }
+
+    fn name(r: &Rewriter<'_>) -> &'static str {
+        match r {
+            Rewriter::None => "None",
+            Rewriter::Ollama { .. } => "Ollama",
+            Rewriter::Hosted { .. } => "Hosted",
+            Rewriter::Unavailable { .. } => "Unavailable",
+        }
+    }
+
+    fn note_of(r: Rewriter<'_>) -> String {
+        match r {
+            Rewriter::Unavailable { note } => note,
+            other => panic!("expected Unavailable, got {}", name(&other)),
+        }
     }
 
     #[test]

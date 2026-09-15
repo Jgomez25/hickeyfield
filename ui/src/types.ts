@@ -208,6 +208,16 @@ export interface JobSet {
   failReason?: string | null;
 }
 
+/**
+ * The user's explicit enhancer choice. `null`/omitted means "decide for me":
+ * the shell auto-detects. `backend` is `"ollama"` or `"openai"`; `model` is the
+ * installed Ollama tag or the hosted model id (required for both).
+ */
+export interface RewriterChoice {
+  backend: string;
+  model?: string;
+}
+
 export interface SubmitInput {
   modelId: string;
   routeId: string;
@@ -215,6 +225,8 @@ export interface SubmitInput {
   presetId: string | null;
   settings: GenSettings;
   media: MediaRef[];
+  /** null means auto — the shell picks from what is actually reachable. */
+  rewriter?: RewriterChoice | null;
 }
 
 /**
