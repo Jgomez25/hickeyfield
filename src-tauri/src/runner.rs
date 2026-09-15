@@ -1,8 +1,18 @@
 //! The job runner: owns the poll loops and streams updates to the UI.
 //!
-//! One task per running job, on tokio's blocking pool. That sounds profligate
-//! until you notice providers cap concurrency hard — a new fal account allows
-//! *two* simultaneous requests — so the ceiling is theirs, not ours.
+//! One task per running job, on tokio's blocking pool — but the provider poll
+//! itself is gated by a per-provider concurrency limiter sized from
+//! `ProviderId::features().max_concurrent`. A new fal account allows *two*
+//! simultaneous requests, so at most two of its poll loops touch the wire at
+//! once and the rest park on a slot until one frees; extra jobs queue and none
+//! are dropped. The ceiling is the provider's and we now honour it rather than
+//! amplifying it.
+//!
+//! Patience is per-job too: each poll session runs for the provider's
+//! `TimeoutPolicy` applied to the requested work (a 4K clip earns more than a
+//! still), and a session that runs out is *paused*, not failed — the row stays
+//! in `unfinished()` so the next launch re-attaches it and a late result is
+//! still collected.
 //!
 //! The runner is why a generation survives the window closing: it lives in the
 //! Rust process, writes every transition to SQLite, and is restarted from the
@@ -10,11 +20,12 @@
 
 use crate::library::Library;
 use hickeyfield_core::engine::{
-    apply_poll, Backoff, JobError, JobSet, JobStore, ProviderClient, DEFAULT_TIMEOUT,
+    apply_poll, Backoff, JobError, JobSet, JobStore, ProviderClient, TimeoutPolicy,
 };
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use hickeyfield_core::{Billable, ProviderId};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub fn now_secs() -> i64 {
     SystemTime::now()
@@ -47,6 +58,9 @@ pub struct Runner {
     /// wrote it straight back — a destructive action that appeared to succeed
     /// and silently reverted, which is worse than one that visibly fails.
     abandoned: Arc<Mutex<HashSet<String>>>,
+    /// Caps simultaneous provider polls per provider at the provider's own
+    /// in-flight limit, so six queued fal jobs no longer 429 each other.
+    limiter: Arc<ConcurrencyLimiter>,
 }
 
 impl Runner {
@@ -63,6 +77,7 @@ impl Runner {
             library,
             watching: Arc::new(Mutex::new(HashSet::new())),
             abandoned: Arc::new(Mutex::new(HashSet::new())),
+            limiter: Arc::new(ConcurrencyLimiter::new()),
         }
     }
 
@@ -78,6 +93,10 @@ impl Runner {
     }
 
     /// Begin polling a job. Idempotent — calling twice starts one loop.
+    ///
+    /// The `watching` insert happens synchronously here, before the task is
+    /// spawned, so a queued job is remembered and de-duplicated even while it is
+    /// parked waiting for a concurrency slot: it is queued, never dropped.
     pub fn watch(&self, job: JobSet) {
         {
             let mut watching = self.watching.lock().unwrap();
@@ -92,21 +111,22 @@ impl Runner {
         let watching = Arc::clone(&self.watching);
         let abandoned = Arc::clone(&self.abandoned);
         let library = Arc::clone(&self.library);
+        let limiter = Arc::clone(&self.limiter);
+        // Sized once, off the loop, from the job's own settings (AC1).
+        let budget = timeout_budget(&job.route_id, &job.settings);
 
         tauri::async_runtime::spawn_blocking(move || {
             let id = job.id.clone();
-            let finished = poll_until_terminal(
+            run_watched(
                 job,
-                Arc::clone(&store),
+                budget,
+                store,
                 clients,
-                Arc::clone(&on_update),
+                on_update,
                 Arc::clone(&abandoned),
+                library,
+                limiter,
             );
-            // Check once more before writing the outputs: a job deleted during
-            // its final poll would otherwise reappear complete.
-            if !abandoned.lock().unwrap().contains(&id) {
-                download_outputs(finished, store, on_update, library);
-            }
             watching.lock().unwrap().remove(&id);
             abandoned.lock().unwrap().remove(&id);
         });
@@ -184,10 +204,189 @@ fn download_outputs(
     }
 }
 
+/// Patience budget for one poll session: the provider's `TimeoutPolicy` applied
+/// to the job's requested work. Pure — no `Instant`, no store — so a test can
+/// assert the budget value directly (AC1).
+///
+/// `route_id` is `provider:slug` (see `app::client_for`). An unroutable prefix
+/// falls back to the known-good hosted budget; a settings blob that will not
+/// deserialize into a `SettingsDto` (e.g. the `Value::Null` `submit_job` writes
+/// when serialization fails, or a pre-policy legacy row) sizes to `None`, which
+/// `TimeoutPolicy::timeout` maps to `policy.base` — never zero, since a zero
+/// budget would fail every job on its first poll tick.
+fn timeout_budget(route_id: &str, settings: &serde_json::Value) -> Duration {
+    let policy = route_id
+        .split(':')
+        .next()
+        .and_then(ProviderId::from_slug)
+        .map(|p| p.features().timeout)
+        .unwrap_or(TimeoutPolicy::HOSTED);
+    // Same conversion submit and pricing use (commands.rs), so patience and
+    // price are derived from one view of the job.
+    let work = serde_json::from_value::<crate::commands::SettingsDto>(settings.clone())
+        .ok()
+        .map(|s| Billable::from(&s));
+    policy.timeout(work.as_ref())
+}
+
+/// A timeout is a pause, not a death. Leaves `job.status` non-terminal so
+/// `is_settled()` stays false and `unfinished()` still returns the row, so the
+/// next `resume_all` re-attaches it and a late provider result can still be
+/// downloaded. Records an advisory (never a `fail_reason`, which would mark the
+/// job failed). Returns whether it changed anything, to gate the upsert, and
+/// de-duplicates the note so repeated timeout/relaunch cycles do not stack
+/// identical advisories.
+fn mark_timed_out(job: &mut JobSet, budget: Duration) -> bool {
+    const NOTE: &str = "no result yet after";
+    if job.advisories.iter().any(|a| a.starts_with(NOTE)) {
+        return false;
+    }
+    job.advisories.push(format!(
+        "{NOTE} {} min of polling; still running at the provider — will keep \
+         trying when the app next launches",
+        budget.as_secs() / 60
+    ));
+    job.updated_at = now_secs();
+    true
+}
+
+/// Whether the provider still has something to tell us. A terminal job is one
+/// the provider has finished with; re-polling it can only overwrite what it
+/// already reported — and if its status URL has since 404'd, overwrite a paid,
+/// recoverable success with `Failed`. Only Completed-but-undownloaded rows reach
+/// the runner still terminal (via `unfinished()`); those skip the poll and go
+/// straight to the download retry (AC4).
+fn provider_poll_needed(job: &JobSet) -> bool {
+    !job.is_terminal()
+}
+
+/// A blocking counting semaphore, one slot per provider, sized from each
+/// provider's `Features::max_concurrent`. It gates the provider poll only — not
+/// the CDN download — because a provider's in-flight cap is on generation
+/// requests, not result fetches.
+struct Slot {
+    /// Permits currently available. Guarded by its own mutex; `acquire` waits on
+    /// `free` while this is zero, so it can never underflow.
+    avail: Mutex<u32>,
+    free: Condvar,
+}
+
+/// RAII permit. Releases its slot on `Drop`, which runs on *every* exit path out
+/// of the guarded block — normal return, timeout, missing client, or a panic
+/// unwinding through the poll loop — so a slot cannot leak and stall the queue.
+struct Permit {
+    slot: Arc<Slot>,
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        // Recover from a poisoned lock rather than double-panic: a slot that is
+        // never returned would stop the queue forever, the one outcome worse
+        // than the panic already unwinding.
+        let mut avail = self.slot.avail.lock().unwrap_or_else(|e| e.into_inner());
+        *avail += 1;
+        // Wake exactly one parked acquirer; the increment above is what it will
+        // observe, so no wakeup is missed and none is wasted on a full slot.
+        self.slot.free.notify_one();
+    }
+}
+
+struct ConcurrencyLimiter {
+    slots: HashMap<ProviderId, Arc<Slot>>,
+}
+
+impl ConcurrencyLimiter {
+    fn new() -> Self {
+        let mut slots = HashMap::new();
+        for p in ProviderId::ALL {
+            slots.insert(
+                p,
+                Arc::new(Slot {
+                    // `permits()` is guaranteed >= 1 (provider.rs), so no slot
+                    // starts empty and the queue can never deadlock on one.
+                    avail: Mutex::new(p.features().max_concurrent.permits()),
+                    free: Condvar::new(),
+                }),
+            );
+        }
+        ConcurrencyLimiter { slots }
+    }
+
+    /// Block until a permit for `provider` is free, then take it. Waits on the
+    /// condvar (re-checking under the lock, so a spurious wakeup or a missed
+    /// notify cannot let it through with `avail == 0`) and only decrements when
+    /// a permit is actually available.
+    fn acquire(&self, provider: ProviderId) -> Permit {
+        let slot = Arc::clone(&self.slots[&provider]);
+        let mut avail = slot.avail.lock().unwrap_or_else(|e| e.into_inner());
+        while *avail == 0 {
+            avail = slot.free.wait(avail).unwrap_or_else(|e| e.into_inner());
+        }
+        *avail -= 1;
+        drop(avail);
+        Permit { slot }
+    }
+}
+
+/// The body of one watched job, off the tokio runtime so it is unit-testable.
+///
+/// A Completed-but-undownloaded job (returned by `unfinished()` because its
+/// bytes are not local yet) skips the provider poll entirely (AC4) and goes
+/// straight to the download retry. Everything else acquires one per-provider
+/// permit (AC3) around `poll_until_terminal` and releases it — via `Permit`'s
+/// `Drop` at the end of the block — before the download, which is not capped.
+#[allow(clippy::too_many_arguments)]
+fn run_watched(
+    job: JobSet,
+    budget: Duration,
+    store: Arc<dyn JobStore>,
+    clients: ClientFactory,
+    on_update: OnUpdate,
+    abandoned: Arc<Mutex<HashSet<String>>>,
+    library: Arc<Library>,
+    limiter: Arc<ConcurrencyLimiter>,
+) {
+    let id = job.id.clone();
+    // Checked before acquiring a permit, so a job the user deleted while it was
+    // parked in the queue never consumes a slot another job is waiting for.
+    if abandoned.lock().unwrap().contains(&id) {
+        return;
+    }
+
+    let finished = if provider_poll_needed(&job) {
+        // The permit is held only for the poll: it is scoped to this block and
+        // its `Drop` releases the slot before `download_outputs` runs below.
+        let _permit = job
+            .route_id
+            .split(':')
+            .next()
+            .and_then(ProviderId::from_slug)
+            .map(|p| limiter.acquire(p));
+        poll_until_terminal(
+            job,
+            budget,
+            Arc::clone(&store),
+            clients,
+            Arc::clone(&on_update),
+            Arc::clone(&abandoned),
+        )
+    } else {
+        // Already terminal (Completed, bytes not yet saved): never re-poll it.
+        job
+    };
+
+    // Check once more before writing the outputs: a job deleted during its final
+    // poll would otherwise reappear complete.
+    if !abandoned.lock().unwrap().contains(&id) {
+        download_outputs(finished, store, on_update, library);
+    }
+}
+
 /// The loop itself. Blocking, so it runs on the blocking pool. Returns the
 /// job in its final state so the caller can fetch its outputs.
 fn poll_until_terminal(
     mut job: JobSet,
+    budget: Duration,
     store: Arc<dyn JobStore>,
     clients: ClientFactory,
     on_update: OnUpdate,
@@ -235,15 +434,13 @@ fn poll_until_terminal(
         if is_abandoned() {
             return job;
         }
-        if started.elapsed() > DEFAULT_TIMEOUT {
-            job.status = hickeyfield_core::JobStatus::Failed;
-            job.fail_reason = Some(format!(
-                "gave up after {} minutes with no result from the provider",
-                DEFAULT_TIMEOUT.as_secs() / 60
-            ));
-            job.updated_at = now_secs();
-            let _ = store.upsert(&job);
-            on_update(&job);
+        if started.elapsed() > budget {
+            // A pause, not a failure: the job stays non-terminal so it remains
+            // in unfinished() and the next launch re-attaches it (AC2).
+            if mark_timed_out(&mut job, budget) {
+                let _ = store.upsert(&job);
+                on_update(&job);
+            }
             return job;
         }
 
@@ -395,6 +592,9 @@ mod tests {
 
         poll_until_terminal(
             job("j"),
+            // Generous budget: scripted terminal results settle in ms, so the
+            // existing tests are unaffected by the timeout branch.
+            TimeoutPolicy::HOSTED.timeout(None),
             Arc::clone(&store) as Arc<dyn JobStore>,
             Arc::new(move |_| Some(Arc::clone(&client))),
             Arc::new(move |_| {
@@ -479,6 +679,7 @@ mod tests {
 
         let out = poll_until_terminal(
             job("j"),
+            TimeoutPolicy::HOSTED.timeout(None),
             Arc::clone(&store) as Arc<dyn JobStore>,
             Arc::new(move |_| Some(Arc::clone(&client))),
             Arc::new(|_| {}),
@@ -510,6 +711,7 @@ mod tests {
         let store = Arc::new(MemStore::default());
         poll_until_terminal(
             job("j"),
+            TimeoutPolicy::HOSTED.timeout(None),
             Arc::clone(&store) as Arc<dyn JobStore>,
             Arc::new(|_| None),
             Arc::new(|_| {}),
@@ -543,5 +745,308 @@ mod tests {
             JobStatus::Completed
         );
         assert_eq!(updates, 4);
+    }
+
+    // ----- AC1: per-job timeout budget replaces the flat DEFAULT_TIMEOUT -----
+
+    #[test]
+    fn a_4k_job_gets_a_bigger_budget_than_a_short_one() {
+        // Same 10s clip, two resolutions. Asking for more output must never
+        // shorten the deadline — the property the old flat 600s violated.
+        let big = timeout_budget(
+            "fal:m",
+            &serde_json::json!({"duration": 10.0, "resolution": "4k", "aspect": "16:9"}),
+        );
+        let small = timeout_budget(
+            "fal:m",
+            &serde_json::json!({"duration": 10.0, "resolution": "720p", "aspect": "16:9"}),
+        );
+        assert!(
+            big > small,
+            "a 4K job must earn more patience than a 720p one: {big:?} vs {small:?}"
+        );
+        assert!(
+            big > Duration::from_secs(600),
+            "the 4K budget must exceed the old flat 600s: {big:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_provider_and_unsizable_settings_fall_back_to_base() {
+        // Unroutable prefix -> HOSTED policy; a settings blob that will not
+        // deserialize (the Value::Null submit_job writes on a serialize failure,
+        // and the shape a pre-policy legacy row degrades to) -> work None ->
+        // policy.base. Base, never zero: a zero budget fails every job on tick 1.
+        let fallback = timeout_budget("nope:m", &serde_json::Value::Null);
+        assert_eq!(fallback, TimeoutPolicy::HOSTED.timeout(None));
+        assert_eq!(fallback, TimeoutPolicy::HOSTED.base);
+        assert!(fallback > Duration::ZERO);
+        // A known provider with an unsizable row degrades to base the same way.
+        assert_eq!(
+            timeout_budget("fal:m", &serde_json::Value::Null),
+            TimeoutPolicy::HOSTED.timeout(None)
+        );
+    }
+
+    // ----- AC2: a timed-out job is paused, not failed, and stays resumable ----
+
+    #[test]
+    fn mark_timed_out_pauses_without_failing() {
+        let mut j = job("j");
+        j.status = JobStatus::InProgress;
+
+        let changed = mark_timed_out(&mut j, Duration::from_secs(900));
+        assert!(changed, "the first timeout records an advisory");
+        assert_eq!(
+            j.status,
+            JobStatus::InProgress,
+            "status must stay exactly what the provider last reported"
+        );
+        assert!(!j.is_terminal(), "a paused job is not terminal");
+        assert!(j.fail_reason.is_none(), "a pause is not a failure");
+        assert_eq!(j.advisories.len(), 1, "one advisory recorded");
+
+        let again = mark_timed_out(&mut j, Duration::from_secs(900));
+        assert!(!again, "a second timeout on the same job is de-duplicated");
+        assert_eq!(j.advisories.len(), 1, "the advisory is not stacked");
+    }
+
+    #[test]
+    fn a_timed_out_job_stays_in_unfinished() {
+        // A tiny budget forces the real `started.elapsed() > budget` branch in
+        // ~ms, deterministically, against an always-InProgress client.
+        let store = Arc::new(MemStore::default());
+        let client: Arc<dyn ProviderClient> =
+            Arc::new(ScriptedClient::new(vec![ok(JobStatus::InProgress)]));
+
+        let out = poll_until_terminal(
+            job("j"),
+            Duration::from_millis(1),
+            Arc::clone(&store) as Arc<dyn JobStore>,
+            Arc::new(move |_| Some(Arc::clone(&client))),
+            Arc::new(|_| {}),
+            Arc::new(Mutex::new(HashSet::new())),
+        );
+
+        assert!(
+            !out.is_terminal(),
+            "a timeout must not mark the job terminal"
+        );
+        assert!(
+            !out.is_settled(),
+            "an unsettled job is still owed to the user"
+        );
+        assert!(
+            out.advisories.iter().any(|a| a.contains("no result yet")),
+            "the pause is recorded as an advisory"
+        );
+        // unfinished() is exactly what resume_all reattaches on next launch.
+        let unfinished = store.unfinished().unwrap();
+        assert!(
+            unfinished.iter().any(|j| j.id == "j"),
+            "the timed-out job must remain resumable via unfinished()"
+        );
+    }
+
+    #[test]
+    fn a_late_result_is_reattached_after_a_timeout() {
+        // A job left InProgress with the timeout advisory (how resume_all finds
+        // it), re-polled with a generous budget against a client that now
+        // answers Completed + outputs + actual_usd. The paid result survives.
+        let store = Arc::new(MemStore::default());
+        let mut j = job("late");
+        j.status = JobStatus::InProgress;
+        mark_timed_out(&mut j, Duration::from_secs(900));
+        store.upsert(&j).unwrap();
+
+        let client: Arc<dyn ProviderClient> = Arc::new(ScriptedClient::new(vec![Ok(PollResult {
+            status: JobStatus::Completed,
+            outputs: vec![Output {
+                url: "https://a/late.mp4".into(),
+                kind: OutputKind::Video,
+                local_path: None,
+            }],
+            fail_reason: None,
+            actual_usd: Some(0.75),
+        })]));
+
+        let out = poll_until_terminal(
+            j,
+            TimeoutPolicy::HOSTED.timeout(None),
+            Arc::clone(&store) as Arc<dyn JobStore>,
+            Arc::new(move |_| Some(Arc::clone(&client))),
+            Arc::new(|_| {}),
+            Arc::new(Mutex::new(HashSet::new())),
+        );
+
+        assert_eq!(
+            out.status,
+            JobStatus::Completed,
+            "the late result completed"
+        );
+        assert_eq!(out.results.len(), 1, "the output was captured");
+        assert_eq!(out.results[0].url, "https://a/late.mp4");
+        assert_eq!(
+            out.actual_usd,
+            Some(0.75),
+            "billing on the late result stuck"
+        );
+    }
+
+    // ----- AC3: per-provider concurrency cap, none dropped, no deadlock -------
+
+    #[test]
+    fn provider_cap_bounds_simultaneous_poll_loops() {
+        // Six jobs, a fal cap of two. At most two may hold a permit at once and
+        // all six must eventually run — the extras park, none are dropped.
+        let limiter = Arc::new(ConcurrencyLimiter::new());
+        let inflight = Arc::new(AtomicUsize::new(0));
+        let max = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            let limiter = Arc::clone(&limiter);
+            let inflight = Arc::clone(&inflight);
+            let max = Arc::clone(&max);
+            let done = Arc::clone(&done);
+            handles.push(std::thread::spawn(move || {
+                let permit = limiter.acquire(ProviderId::Fal);
+                let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                max.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(5));
+                inflight.fetch_sub(1, Ordering::SeqCst);
+                drop(permit); // release on this path
+                done.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert!(
+            max.load(Ordering::SeqCst) <= 2,
+            "fal is capped at two in flight, but saw {} at once",
+            max.load(Ordering::SeqCst)
+        );
+        assert_eq!(
+            done.load(Ordering::SeqCst),
+            6,
+            "every queued job must run — the cap queues, it does not drop"
+        );
+    }
+
+    #[test]
+    fn local_runs_one_at_a_time() {
+        // Local inference is serialized to one GPU job: max in flight is exactly 1.
+        let limiter = Arc::new(ConcurrencyLimiter::new());
+        let inflight = Arc::new(AtomicUsize::new(0));
+        let max = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let limiter = Arc::clone(&limiter);
+            let inflight = Arc::clone(&inflight);
+            let max = Arc::clone(&max);
+            let done = Arc::clone(&done);
+            handles.push(std::thread::spawn(move || {
+                let _permit = limiter.acquire(ProviderId::Local);
+                let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                max.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(3));
+                inflight.fetch_sub(1, Ordering::SeqCst);
+                done.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(
+            max.load(Ordering::SeqCst),
+            1,
+            "one GPU, one local job at a time"
+        );
+        assert_eq!(done.load(Ordering::SeqCst), 4, "none dropped");
+    }
+
+    // ----- AC4: a Completed-but-undownloaded job is not re-polled on relaunch -
+
+    #[test]
+    fn a_completed_job_is_not_re_polled() {
+        let mut completed = job("c");
+        completed.status = JobStatus::Completed;
+        assert!(
+            !provider_poll_needed(&completed),
+            "a terminal job has nothing left to poll for"
+        );
+
+        let mut running = job("r");
+        running.status = JobStatus::InProgress;
+        assert!(
+            provider_poll_needed(&running),
+            "a running job must still be polled"
+        );
+    }
+
+    #[test]
+    fn resuming_a_completed_job_keeps_its_success() {
+        // A Completed job whose output is already saved locally (so
+        // download_outputs no-ops offline). Its client is scripted to a 404 —
+        // the expired-status-URL case that used to flip the row to Failed. The
+        // guard must skip the poll entirely: poll count 0, success preserved.
+        let store = Arc::new(MemStore::default());
+        let mut j = job("done");
+        j.status = JobStatus::Completed;
+        j.actual_usd = Some(1.25);
+        j.results = vec![Output {
+            url: "https://a/done.mp4".into(),
+            kind: OutputKind::Video,
+            local_path: Some("/tmp/already-saved.mp4".into()),
+        }];
+        store.upsert(&j).unwrap();
+
+        let scripted = Arc::new(ScriptedClient::new(vec![Err(JobError::Permanent(
+            "HTTP 404: status url expired".into(),
+        ))]));
+        let counter = Arc::clone(&scripted);
+        let client: Arc<dyn ProviderClient> = scripted;
+
+        let library = Arc::new(Library::new(
+            std::env::temp_dir().join("hickeyfield-ac4-never-written"),
+        ));
+
+        run_watched(
+            j,
+            TimeoutPolicy::HOSTED.timeout(None),
+            Arc::clone(&store) as Arc<dyn JobStore>,
+            Arc::new(move |_| Some(Arc::clone(&client))),
+            Arc::new(|_| {}),
+            Arc::new(Mutex::new(HashSet::new())),
+            library,
+            Arc::new(ConcurrencyLimiter::new()),
+        );
+
+        assert_eq!(
+            counter.calls.load(Ordering::SeqCst),
+            0,
+            "a completed job must never be re-polled on relaunch"
+        );
+        let stored = store.get("done").unwrap().unwrap();
+        assert_eq!(
+            stored.status,
+            JobStatus::Completed,
+            "the terminal-success record must survive the relaunch"
+        );
+        assert_eq!(
+            stored.results[0].url, "https://a/done.mp4",
+            "the result URL must survive"
+        );
+        assert_eq!(
+            stored.actual_usd,
+            Some(1.25),
+            "the billing record must survive"
+        );
     }
 }

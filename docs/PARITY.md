@@ -143,12 +143,25 @@ provider key has ever been entered. Outstanding:
 - No live generation has ever completed. Not one.
 - No verification that displayed pre-flight USD matches an actual provider charge.
 - **Never run on Windows.** CI bundles `x86_64-pc-windows-msvc`, but no human has launched it.
-- Quit-mid-generation → reattach-on-relaunch: implemented, never exercised against a real job.
-- 429 backoff: unit-tested, never seen live.
+- Quit-mid-generation → reattach-on-relaunch: hardened in code by **slice S1** (a timed-out
+  job now stays resumable, and a completed-but-undownloaded job is no longer flipped to Failed
+  on relaunch — each pinned by a `runner.rs` unit test); still never exercised against a real
+  job, which is slice #4.
+- 429 backoff: unit-tested, never seen live. **Slice S1** additionally caps concurrent provider
+  polls (two for fal) so queued jobs no longer trip each other's rate limits; still not observed
+  against the live API.
 - Pixel-parity comparison against live Higgsfield at 1920×1227: not run, in either
   WKWebView or WebView2.
 
 **This is the highest-value next action and it needs one fal key.**
+
+> **Update — slice S1 (job-engine-reliability), 2026-09-14.** The runner-side reliability
+> bugs behind these gaps landed as code fixes only: per-job `TimeoutPolicy` budgets replaced
+> the flat 600 s timeout, a timed-out job now stays resumable instead of being dropped, provider
+> polls are concurrency-capped (two for fal) so queued jobs stop self-inflicting 429s, and a
+> completed-but-undownloaded job is no longer re-polled into Failed on relaunch — each pinned by
+> a `runner.rs` unit test. The live end-to-end exercise of these paths against a real fal key is
+> unchanged and still pending; it is owned by slice #4, not S1.
 
 ### 3.3a Input media — **closed 2026-08-04**
 

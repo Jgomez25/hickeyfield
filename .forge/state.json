@@ -1,0 +1,23 @@
+{
+  "project": "hickeyfield",
+  "phases": [
+    "DISCOVER",
+    "PLAN",
+    "DESIGN",
+    "IMPLEMENT",
+    "TEST",
+    "REVIEW",
+    "SECURITY",
+    "DOCUMENT",
+    "RELEASE"
+  ],
+  "currentSlice": "S1-job-engine-reliability",
+  "slices": [
+    {
+      "id": "S1-job-engine-reliability",
+      "title": "job-engine-reliability",
+      "status": "in-progress",
+      "started": "2026-09-14"
+    }
+  ]
+}

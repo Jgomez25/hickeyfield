@@ -50,6 +50,11 @@ SKIP_DIRS = {
     ".git", "target", "node_modules", "dist", "provenance",
     # The vendored MIT spec is a licensed third-party file quoted as-is.
     "vendor",
+    # FORGE project-management scaffolding (planning + phase evidence). Committed,
+    # but never bundled into the shipped app, and evidence docs legitimately quote
+    # the very strings under discussion. Same class as `provenance`/`vendor`.
+    # See .forge/PROVENANCE-SCOPE.md.
+    ".forge",
 }
 
 # Mirrors build-provenance-index.py. Keep in sync.
