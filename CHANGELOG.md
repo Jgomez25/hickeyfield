@@ -28,6 +28,12 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A model that refuses to rewrite no longer costs you a generation.** If the
+  local or hosted enhancer replies with a refusal, apology, or other non-prompt
+  ("I can't complete this task", "As an AI…") instead of a rewritten scene, the
+  app now detects it and submits your original prompt with a note explaining what
+  happened — instead of sending the refusal text to the paid model.
+
 - **Long and high-resolution jobs are no longer given up on while they are still
   running.** The job runner now decides how long to keep waiting from the
   provider's own timeout policy, scaled to the work you asked for, instead of one

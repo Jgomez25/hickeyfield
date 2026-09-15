@@ -529,6 +529,21 @@ pub fn enhance_or_original(enhancer: &dyn Enhancer, req: &EnhanceRequest) -> Rew
                     &version,
                 );
             }
+            // A reply that is present but is a refusal/apology/meta-comment
+            // rather than a scene is the worst kind of "success": it looks
+            // changed, so it would be submitted verbatim to a paid provider.
+            // Restore the original and say so, exactly as the empty case does.
+            if out.status.changed() {
+                if let Some(why) = refusal_reason(&out.prompt) {
+                    return Rewritten::failed(
+                        &req.prompt,
+                        format!(
+                            "The model declined to rewrite this prompt ({why}), so your original was used."
+                        ),
+                        &version,
+                    );
+                }
+            }
             out
         }
         Err(e) => Rewritten::failed(
@@ -576,6 +591,77 @@ pub fn precheck(req: &EnhanceRequest, version: &str) -> Option<Rewritten> {
             "Not enhanced: an end frame is attached, and a prompt between two fixed frames must stay as written.",
             version,
         ));
+    }
+
+    None
+}
+
+/// A model reply that is a refusal/apology/meta-comment or otherwise not a
+/// scene, rather than a rewritten prompt. Returns a short human reason when the
+/// reply must **not** be submitted to a provider.
+///
+/// Model-agnostic and anchored to the reply's *shape*: the refusal patterns are
+/// only matched at (or very near) the start, because a real cinematic scene
+/// never opens with "I can't" / "I'm sorry" / "As an AI", whereas a legitimate
+/// rewrite may well contain a word like "sorry" mid-sentence. Matching a
+/// substring anywhere would flag those good rewrites (see the AC4 test), so we
+/// deliberately do not.
+pub fn refusal_reason(reply: &str) -> Option<&'static str> {
+    let t = reply.trim();
+    let lower = t.to_ascii_lowercase();
+
+    // The phrases that mean the model answered *about* the task instead of
+    // doing it. Ordered roughly by frequency; membership, not order, matters.
+    const REFUSALS: &[&str] = &[
+        "i can't",
+        "i cant",
+        "i cannot",
+        "i can not",
+        "i'm unable",
+        "i am unable",
+        "i'm sorry",
+        "i am sorry",
+        "sorry,",
+        "sorry ",
+        "i apologize",
+        "as an ai",
+        "as a language model",
+        "i won't",
+        "i will not",
+        "i'm not able",
+        "i am not able",
+        "unable to",
+        "i cannot fulfill",
+        "i can't help",
+        "i cannot assist",
+        "cannot assist",
+        "i'm just",
+        "i cannot create",
+        "i can't create",
+        "i cannot generate",
+        "i can't generate",
+    ];
+
+    // Anchor to the beginning. We tolerate a leading quote and a short
+    // "Sure, "/"Okay, " lead-in by *stripping* them and then matching a prefix
+    // of what remains — never a substring anywhere, which is exactly what keeps
+    // a legitimate rewrite that merely contains "sorry" mid-sentence safe (AC4).
+    let mut head = lower.trim_start_matches(['"', '\'', '`', '“', '‘', '«']);
+    head = head.trim_start();
+    for lead in ["sure, ", "sure ", "okay, ", "okay ", "ok, ", "well, "] {
+        if let Some(rest) = head.strip_prefix(lead) {
+            head = rest.trim_start();
+            break;
+        }
+    }
+    if REFUSALS.iter().any(|p| head.starts_with(p)) {
+        return Some("the model replied with a refusal");
+    }
+
+    // A real scene rewrite is a sentence or more; anything shorter is not a
+    // usable prompt (e.g. "ok", "no.", a stray token).
+    if t.chars().count() < 12 {
+        return Some("the reply was too short to be a prompt");
     }
 
     None
@@ -1522,6 +1608,101 @@ mod tests {
     fn a_rewrite_identical_to_the_original_does_not_count_as_changed() {
         let same = Rewritten::succeeded(&req().prompt, &req().prompt, "stub");
         assert!(!same.changed(), "nothing to show the user as different");
+    }
+
+    // ---- Refusal / non-rewrite detection (S6) -----------------------------
+
+    #[test]
+    fn refusal_reason_flags_a_plain_refusal() {
+        assert_eq!(
+            refusal_reason("I can't complete this task."),
+            Some("the model replied with a refusal"),
+        );
+    }
+
+    #[test]
+    fn refusal_reason_flags_an_apology_even_before_the_refusal() {
+        assert_eq!(
+            refusal_reason("I'm sorry, I can't do that."),
+            Some("the model replied with a refusal"),
+        );
+    }
+
+    #[test]
+    fn refusal_reason_flags_a_meta_comment() {
+        assert_eq!(
+            refusal_reason("As an AI, I cannot help with that request."),
+            Some("the model replied with a refusal"),
+        );
+    }
+
+    #[test]
+    fn refusal_reason_tolerates_a_leading_quote_or_lead_in() {
+        // A model that wraps its refusal in a quote or opens with "Sure," is
+        // still refusing — the anchor strips those before matching.
+        assert!(refusal_reason("\"I cannot generate this.\"").is_some());
+        assert!(refusal_reason("Sure, I'm unable to write that.").is_some());
+    }
+
+    #[test]
+    fn refusal_reason_flags_a_reply_too_short_to_be_a_prompt() {
+        assert_eq!(
+            refusal_reason("ok"),
+            Some("the reply was too short to be a prompt"),
+        );
+    }
+
+    #[test]
+    fn refusal_reason_passes_a_real_cinematic_rewrite() {
+        // The exact shape a good enhancer returns — must not be flagged.
+        assert_eq!(
+            refusal_reason(
+                "A ripe banana dances under warm stage light, singing into a vintage \
+                 microphone, shallow depth of field."
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn refusal_reason_does_not_trip_on_sorry_mid_sentence() {
+        // AC4: "sorry" appears mid-sentence in a perfectly good scene. Because
+        // the guard anchors to the START, this stays a valid rewrite.
+        assert_eq!(
+            refusal_reason("A soldier whispers sorry as the rain falls over the ruined street."),
+            None,
+        );
+    }
+
+    #[test]
+    fn the_funnel_restores_the_original_when_the_model_refuses() {
+        // AC2/AC3: the single funnel every backend passes through catches a
+        // refusal reply and submits the ORIGINAL with an honest note, rather
+        // than sending the refusal text to a paid provider.
+        let refusal = Rewritten::succeeded(&req().prompt, "I can't complete this task.", "stub");
+        let out = enhance_or_original(&Stub(Ok(refusal)), &req());
+        assert_eq!(out.prompt, req().prompt, "the original must be submitted");
+        assert_eq!(out.original, req().prompt);
+        assert!(!out.changed(), "a refusal must not count as a rewrite");
+        let note = out.note.expect("the fallback must explain itself");
+        assert!(note.contains("declined to rewrite"), "got: {note}");
+    }
+
+    #[test]
+    fn the_funnel_passes_a_genuine_rewrite_through_unchanged() {
+        // The guard must not disturb a legitimate rewrite.
+        let good = Rewritten::succeeded(
+            &req().prompt,
+            "A ripe banana dances under warm stage light, singing into a vintage microphone.",
+            "stub",
+        );
+        let out = enhance_or_original(&Stub(Ok(good)), &req());
+        assert!(out.changed(), "a good rewrite must still count as changed");
+        assert_eq!(
+            out.prompt,
+            "A ripe banana dances under warm stage light, singing into a vintage microphone."
+        );
+        assert_eq!(out.note, None);
     }
 
     // ---- Pre-flight refusals ----------------------------------------------

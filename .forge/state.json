@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S5-enhancer-model-curation",
+  "currentSlice": "S6-enhancer-output-validation",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -46,6 +46,12 @@
       "status": "released",
       "started": "2026-09-15",
       "branch": "forge/s5-model-curation"
+    },
+    {
+      "id": "S6-enhancer-output-validation",
+      "title": "enhancer-output-validation",
+      "status": "in-progress",
+      "started": "2026-09-15"
     }
   ]
 }
