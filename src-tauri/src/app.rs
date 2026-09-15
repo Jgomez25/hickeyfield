@@ -560,6 +560,8 @@ mod tests {
             fail_reason: None,
             settings: serde_json::Value::Null,
             media: vec![],
+            poll_cycles: 0,
+            stalled: false,
         };
         assert!(j.fail_reason.is_none(), "an advisory must not fail the job");
         assert!(j.enhance_note.is_none(), "and must not masquerade as one");

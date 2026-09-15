@@ -75,6 +75,20 @@ pub struct JobSet {
     /// rows written before this field existed still deserialise.
     #[serde(default)]
     pub media: Vec<crate::media::MediaRef>,
+    /// How many poll sessions have timed out on this job without it settling.
+    /// Incremented once per timed-out session (one per app launch — a session
+    /// re-polls only on the next `resume_all`). The cross-session bound the
+    /// runner uses to decide it has been trying too long; reset to 0 by a
+    /// manual retry. `default` so pre-v6 rows load as never-stalled.
+    #[serde(default)]
+    pub poll_cycles: u32,
+    /// The runner has stopped auto-resuming this job after the cap. NOT
+    /// terminal: `status`/`request_id` are preserved and a manual retry can
+    /// still recover a late result. Serialized so the UI can render an honest
+    /// "Stalled — retry?" affordance without duplicating the cap constant
+    /// across the bridge. `default` so pre-v6 rows load as not-stalled.
+    #[serde(default)]
+    pub stalled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -106,6 +120,14 @@ impl JobSet {
         self.is_terminal()
             && (self.status.phase() != Phase::Completed
                 || self.results.iter().all(|r| r.local_path.is_some()))
+    }
+
+    /// The runner has given up auto-resuming this one. Distinct from
+    /// `is_settled()`: a stalled job is owed nothing *automatically*, but its
+    /// last provider status and `request_id` are preserved so a manual retry
+    /// can still recover a late result. A stalled job is NOT terminal.
+    pub fn is_stalled(&self) -> bool {
+        self.stalled
     }
 }
 
@@ -164,11 +186,17 @@ pub trait JobStore: Send + Sync {
     fn get(&self, id: &str) -> Result<Option<JobSet>, JobError>;
     fn all(&self) -> Result<Vec<JobSet>, JobError>;
     /// Jobs that were still running when we last exited. Re-attached on launch.
+    ///
+    /// Excludes both settled work (nothing left to fetch) and stalled work (the
+    /// runner gave up auto-resuming after the timeout cap), so `resume_all`
+    /// stops re-attaching a never-settling job indefinitely. A stalled row still
+    /// exists and is still recoverable by a manual retry — it is only absent
+    /// from the *automatic* resume set.
     fn unfinished(&self) -> Result<Vec<JobSet>, JobError> {
         Ok(self
             .all()?
             .into_iter()
-            .filter(|j| !j.is_settled())
+            .filter(|j| !j.is_settled() && !j.is_stalled())
             .collect())
     }
 }
@@ -247,6 +275,14 @@ impl Backoff {
 /// minutes to a single 480p still and a 10s 4K clip, and reports "gave up after
 /// 10 minutes" for work the provider may still be running — and still billing.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The stable prefix on every timeout advisory the runner records (both the
+/// "still running, will keep trying" note and the "stopped retrying" stall
+/// note). Shared here — rather than kept private to the runner — so the
+/// producer (`runner::mark_timed_out`) and the clearer (`apply_poll`, on a late
+/// completion) cannot drift: if a completed job still carried "no result yet…"
+/// it would contradict its own state. Short enough to match both wordings.
+pub const TIMEOUT_ADVISORY_PREFIX: &str = "no result yet";
 
 /// A 720p frame, in megapixels. The unit [`TimeoutPolicy`] scales resolution
 /// against.
@@ -391,6 +427,16 @@ pub fn apply_poll(job: &mut JobSet, poll: PollResult, now: i64) -> bool {
     }
     job.status = poll.status;
     job.fail_reason = poll.fail_reason;
+    if poll.status.phase() == Phase::Completed {
+        // A completed job has (or is about to have) its bytes; the "still
+        // running, will keep trying" advisory now contradicts its own state.
+        // Clear ONLY the timeout-family advisory — a real `fail_reason` and any
+        // other advisory (e.g. a dropped-setting note) are left untouched. This
+        // runs inside the `changed` block, and a transition *into* Completed is
+        // always a status change, so the clear is persisted by the caller.
+        job.advisories
+            .retain(|a| !a.starts_with(TIMEOUT_ADVISORY_PREFIX));
+    }
     if !poll.outputs.is_empty() {
         // Preserve any local_path we already resolved; a later poll returning
         // the same URLs must not undo a completed download.
@@ -442,6 +488,8 @@ mod tests {
             fail_reason: None,
             settings: serde_json::json!({}),
             media: Vec::new(),
+            poll_cycles: 0,
+            stalled: false,
         }
     }
 
@@ -728,5 +776,105 @@ mod tests {
         store.upsert(&j).unwrap();
         assert_eq!(store.get("j1").unwrap().unwrap(), j);
         assert!(store.get("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_stalled_job_leaves_the_auto_resume_set() {
+        // A stalled job is dropped from unfinished() so resume_all stops
+        // re-attaching it — but it is neither terminal nor settled, so the
+        // provider's last word and its request_id survive for a manual retry.
+        let store = MemStore::default();
+        let mut running = job(JobStatus::InProgress);
+        running.id = "running".into();
+
+        let mut stalled = job(JobStatus::InProgress);
+        stalled.id = "stalled".into();
+        stalled.stalled = true;
+        stalled.poll_cycles = 5;
+
+        for j in [&running, &stalled] {
+            store.upsert(j).unwrap();
+        }
+
+        let ids: Vec<_> = store
+            .unfinished()
+            .unwrap()
+            .into_iter()
+            .map(|j| j.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["running"],
+            "a stalled job must leave unfinished()"
+        );
+
+        assert!(stalled.is_stalled());
+        assert!(!stalled.is_terminal(), "stalled is not terminal");
+        assert!(!stalled.is_settled(), "stalled is not settled either");
+    }
+
+    #[test]
+    fn completing_clears_the_timeout_advisory() {
+        // The F3 fix: a job that timed out (carrying the "still running" note)
+        // and then completes must not keep contradicting itself.
+        let mut j = job(JobStatus::InProgress);
+        j.advisories = vec![format!("{TIMEOUT_ADVISORY_PREFIX} after 15 min of polling")];
+        let done = PollResult {
+            status: JobStatus::Completed,
+            outputs: vec![out("https://cdn/x.mp4")],
+            fail_reason: None,
+            actual_usd: Some(0.5),
+        };
+        assert!(apply_poll(&mut j, done, 100));
+        assert_eq!(j.status, JobStatus::Completed);
+        assert!(
+            j.advisories.is_empty(),
+            "the stale timeout advisory must be cleared on completion"
+        );
+    }
+
+    #[test]
+    fn completion_keeps_real_advisories() {
+        // Only the timeout-family advisory is dropped; a genuine
+        // dropped-setting note and any fail_reason are untouched.
+        let mut j = job(JobStatus::InProgress);
+        j.advisories = vec![
+            format!("{TIMEOUT_ADVISORY_PREFIX} after 15 min of polling"),
+            "audio not supported on this route".into(),
+        ];
+        let done = PollResult {
+            status: JobStatus::Completed,
+            outputs: vec![out("https://cdn/x.mp4")],
+            fail_reason: None,
+            actual_usd: None,
+        };
+        assert!(apply_poll(&mut j, done, 100));
+        assert_eq!(
+            j.advisories,
+            vec!["audio not supported on this route".to_string()],
+            "the non-timeout advisory must survive completion"
+        );
+        assert!(j.fail_reason.is_none());
+    }
+
+    #[test]
+    fn a_failed_job_keeps_its_timeout_advisory() {
+        // The clear is guarded to Completed only: a Failed job keeps the
+        // advisory, since its fail_reason is the UI headline there anyway.
+        let mut j = job(JobStatus::InProgress);
+        j.advisories = vec![format!("{TIMEOUT_ADVISORY_PREFIX} after 15 min of polling")];
+        let failed = PollResult {
+            status: JobStatus::Failed,
+            outputs: vec![],
+            fail_reason: Some("provider rejected the request".into()),
+            actual_usd: None,
+        };
+        assert!(apply_poll(&mut j, failed, 100));
+        assert_eq!(j.status, JobStatus::Failed);
+        assert_eq!(
+            j.advisories.len(),
+            1,
+            "a non-Completed terminal state keeps the timeout advisory"
+        );
     }
 }

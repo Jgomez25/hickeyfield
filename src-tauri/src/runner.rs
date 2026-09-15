@@ -12,7 +12,11 @@
 //! `TimeoutPolicy` applied to the requested work (a 4K clip earns more than a
 //! still), and a session that runs out is *paused*, not failed — the row stays
 //! in `unfinished()` so the next launch re-attaches it and a late result is
-//! still collected.
+//! still collected. That pause is bounded: after `MAX_POLL_CYCLES` timed-out
+//! sessions (the active-polling bound), or once the job ages past the fixed
+//! 7-day `STALL_AGE_BACKSTOP`, it is marked `stalled` and drops out of
+//! `unfinished()` so `resume_all` stops re-attaching it forever — but its
+//! provider status and `request_id` survive for a manual retry.
 //!
 //! The runner is why a generation survives the window closing: it lives in the
 //! Rust process, writes every transition to SQLite, and is restarted from the
@@ -21,6 +25,7 @@
 use crate::library::Library;
 use hickeyfield_core::engine::{
     apply_poll, Backoff, JobError, JobSet, JobStore, ProviderClient, TimeoutPolicy,
+    TIMEOUT_ADVISORY_PREFIX,
 };
 use hickeyfield_core::{Billable, ProviderId};
 use std::collections::{HashMap, HashSet};
@@ -229,24 +234,69 @@ fn timeout_budget(route_id: &str, settings: &serde_json::Value) -> Duration {
     policy.timeout(work.as_ref())
 }
 
+/// Reuses this codebase's existing "five tries then give up" count
+/// (`Backoff::max_attempts`) rather than coining a new one. Because a session
+/// re-polls only on the next launch, five cycles means the same job survived
+/// five separate app launches without settling — "never settles", not "slow
+/// once".
+const MAX_POLL_CYCLES: u32 = 5;
+
+/// Wall-clock backstop for a job the user leaves running across long
+/// app-closed gaps, where poll cycles cannot accrue. A fixed **7 days**, matched
+/// to the provider result-retention horizon (Higgsfield deletes results after
+/// seven days): past it even a completed result is gone, so auto-resuming is
+/// pointless.
+///
+/// Deliberately NOT scaled by the timeout budget. The old `budget × MAX_POLL_
+/// CYCLES` (clamped to the hosted cap and 7 days) maxed at 30h — the largest
+/// budget is the local 6h cap — so the 7-day ceiling never bound and the
+/// effective age horizon was only ~1–5h. That stalled a slow-but-alive hosted
+/// job while its paid output was still retrievable inside the retention window.
+/// `MAX_POLL_CYCLES` (5) remains the active-polling bound; this backstop only
+/// catches the app-left-closed-for-days case.
+const STALL_AGE_BACKSTOP: Duration = Duration::from_secs(7 * 24 * 3600);
+
 /// A timeout is a pause, not a death. Leaves `job.status` non-terminal so
-/// `is_settled()` stays false and `unfinished()` still returns the row, so the
-/// next `resume_all` re-attaches it and a late provider result can still be
-/// downloaded. Records an advisory (never a `fail_reason`, which would mark the
-/// job failed). Returns whether it changed anything, to gate the upsert, and
-/// de-duplicates the note so repeated timeout/relaunch cycles do not stack
-/// identical advisories.
-fn mark_timed_out(job: &mut JobSet, budget: Duration) -> bool {
-    const NOTE: &str = "no result yet after";
-    if job.advisories.iter().any(|a| a.starts_with(NOTE)) {
-        return false;
-    }
-    job.advisories.push(format!(
-        "{NOTE} {} min of polling; still running at the provider — will keep \
-         trying when the app next launches",
-        budget.as_secs() / 60
-    ));
-    job.updated_at = now_secs();
+/// `is_settled()` stays false and — *until the cap* — `unfinished()` still
+/// returns the row, so the next `resume_all` re-attaches it and a late provider
+/// result can still be downloaded. Records an advisory (never a `fail_reason`,
+/// which would mark the job failed).
+///
+/// The cap (F1.2) bounds the resumable state: this increments `poll_cycles`
+/// once per timed-out session and sets `stalled` once the job has timed out
+/// `MAX_POLL_CYCLES` times OR aged past `STALL_AGE_BACKSTOP`. A stalled job leaves
+/// `unfinished()` so `resume_all` stops re-attaching it forever — but its
+/// `status`/`request_id`/`results` are preserved, so a manual retry can still
+/// recover a late result.
+///
+/// Always returns `true`: `poll_cycles` changes on every call, so the caller
+/// must always persist the row (the count is the whole point). The advisory
+/// *string* is still de-duplicated (retain-then-push), so the UI never sees it
+/// stacked across relaunch cycles.
+fn mark_timed_out(job: &mut JobSet, budget: Duration, now: i64) -> bool {
+    job.poll_cycles = job.poll_cycles.saturating_add(1);
+    let age = now.saturating_sub(job.created_at).max(0) as u64;
+    let aged_out = age > STALL_AGE_BACKSTOP.as_secs();
+    job.stalled = job.poll_cycles >= MAX_POLL_CYCLES || aged_out;
+
+    // Same stable prefix so F3 (`apply_poll`) clears it on a late completion,
+    // and so relaunch cycles replace rather than stack the note.
+    job.advisories
+        .retain(|a| !a.starts_with(TIMEOUT_ADVISORY_PREFIX));
+    job.advisories.push(if job.stalled {
+        format!(
+            "{TIMEOUT_ADVISORY_PREFIX} — the provider hasn't returned a result after {} \
+             attempts; it may still finish. Use Rerun to try again.",
+            job.poll_cycles
+        )
+    } else {
+        format!(
+            "{TIMEOUT_ADVISORY_PREFIX} after {} min of polling; still running at the \
+             provider — will keep trying when the app next launches",
+            budget.as_secs() / 60
+        )
+    });
+    job.updated_at = now;
     true
 }
 
@@ -435,12 +485,13 @@ fn poll_until_terminal(
             return job;
         }
         if started.elapsed() > budget {
-            // A pause, not a failure: the job stays non-terminal so it remains
-            // in unfinished() and the next launch re-attaches it (AC2).
-            if mark_timed_out(&mut job, budget) {
-                let _ = store.upsert(&job);
-                on_update(&job);
-            }
+            // A pause, not a failure: the job stays non-terminal so — until the
+            // cap — it remains in unfinished() and the next launch re-attaches
+            // it (AC2). mark_timed_out always changes the row (it increments
+            // poll_cycles), so the upsert always fires and the count persists.
+            mark_timed_out(&mut job, budget, now_secs());
+            let _ = store.upsert(&job);
+            on_update(&job);
             return job;
         }
 
@@ -572,6 +623,8 @@ mod tests {
             fail_reason: None,
             settings: serde_json::json!({}),
             media: Vec::new(),
+            poll_cycles: 0,
+            stalled: false,
         }
     }
 
@@ -795,8 +848,12 @@ mod tests {
         let mut j = job("j");
         j.status = JobStatus::InProgress;
 
-        let changed = mark_timed_out(&mut j, Duration::from_secs(900));
-        assert!(changed, "the first timeout records an advisory");
+        // `now == created_at` keeps age at zero, well inside the age cap, so
+        // stalling here is driven only by the cycle count.
+        let changed = mark_timed_out(&mut j, Duration::from_secs(900), 0);
+        assert!(changed, "a timeout always changes the row (poll_cycles++)");
+        assert_eq!(j.poll_cycles, 1, "the session counter advanced");
+        assert!(!j.stalled, "one timeout is well within the cap");
         assert_eq!(
             j.status,
             JobStatus::InProgress,
@@ -806,9 +863,14 @@ mod tests {
         assert!(j.fail_reason.is_none(), "a pause is not a failure");
         assert_eq!(j.advisories.len(), 1, "one advisory recorded");
 
-        let again = mark_timed_out(&mut j, Duration::from_secs(900));
-        assert!(!again, "a second timeout on the same job is de-duplicated");
-        assert_eq!(j.advisories.len(), 1, "the advisory is not stacked");
+        let again = mark_timed_out(&mut j, Duration::from_secs(900), 0);
+        assert!(again, "still returns true — poll_cycles changed again");
+        assert_eq!(j.poll_cycles, 2, "the session counter advanced again");
+        assert_eq!(
+            j.advisories.len(),
+            1,
+            "the advisory string is de-duplicated (retain-then-push), not stacked"
+        );
     }
 
     #[test]
@@ -819,8 +881,16 @@ mod tests {
         let client: Arc<dyn ProviderClient> =
             Arc::new(ScriptedClient::new(vec![ok(JobStatus::InProgress)]));
 
+        // A freshly-created job: created just now, so the age cap (which the
+        // real timeout path measures from `now_secs()`) does not fire on the
+        // first session — this exercises the within-cap "still resumable" path
+        // (AC2), not the stall. A job left at created_at=0 (epoch 1970) would
+        // correctly age out immediately.
+        let mut j = job("j");
+        j.created_at = now_secs();
+
         let out = poll_until_terminal(
-            job("j"),
+            j,
             Duration::from_millis(1),
             Arc::clone(&store) as Arc<dyn JobStore>,
             Arc::new(move |_| Some(Arc::clone(&client))),
@@ -856,7 +926,11 @@ mod tests {
         let store = Arc::new(MemStore::default());
         let mut j = job("late");
         j.status = JobStatus::InProgress;
-        mark_timed_out(&mut j, Duration::from_secs(900));
+        mark_timed_out(&mut j, Duration::from_secs(900), 0);
+        assert!(
+            j.advisories.iter().any(|a| a.contains("no result yet")),
+            "the timeout advisory is present before the late completion"
+        );
         store.upsert(&j).unwrap();
 
         let client: Arc<dyn ProviderClient> = Arc::new(ScriptedClient::new(vec![Ok(PollResult {
@@ -891,6 +965,199 @@ mod tests {
             Some(0.75),
             "billing on the late result stuck"
         );
+        // F3, end-to-end through the real poll loop: the stale "still running"
+        // advisory must be gone once the job actually completed.
+        assert!(
+            !out.advisories.iter().any(|a| a.contains("no result yet")),
+            "the stale timeout advisory must be cleared on completion, got {:?}",
+            out.advisories
+        );
+    }
+
+    // ----- AC6 (F1.2): the timeout state is bounded — a never-settling job stalls
+
+    #[test]
+    fn the_fifth_timeout_stalls_the_job() {
+        // Five timed-out sessions (one per app launch) is this codebase's
+        // "give up" count. The flag flips on the fifth, not before, and only
+        // then does the advisory switch to the stalled wording.
+        let mut j = job("j");
+        j.status = JobStatus::InProgress;
+        j.created_at = 0;
+
+        // `now == created_at`, so the age branch never fires — this isolates
+        // the cycle cap.
+        for cycle in 1..=4 {
+            assert!(mark_timed_out(&mut j, Duration::from_secs(900), 0));
+            assert_eq!(j.poll_cycles, cycle);
+            assert!(!j.stalled, "cycle {cycle} is still within the cap");
+        }
+        assert!(mark_timed_out(&mut j, Duration::from_secs(900), 0));
+        assert_eq!(j.poll_cycles, 5);
+        assert!(j.stalled, "the fifth timeout stalls the job");
+
+        assert_eq!(
+            j.status,
+            JobStatus::InProgress,
+            "the provider's last word is preserved on a stalled job"
+        );
+        assert!(!j.is_terminal(), "stalled is not terminal");
+        assert!(j.fail_reason.is_none(), "stalling is not a failure");
+        assert_eq!(j.advisories.len(), 1, "the advisory is not stacked");
+        // AC9b: the stalled note points at Rerun (a real affordance), never the
+        // non-existent "reopen this job", and keeps the prefix so a late
+        // completion still clears it via F3.
+        assert!(
+            !j.advisories[0].contains("reopen"),
+            "the stalled note must not reference a phantom 'reopen' affordance: {:?}",
+            j.advisories
+        );
+        assert!(
+            j.advisories[0].contains("Rerun"),
+            "the stalled note invites a manual retry via Rerun: {:?}",
+            j.advisories
+        );
+        assert!(
+            j.advisories[0].starts_with(TIMEOUT_ADVISORY_PREFIX),
+            "the stalled note keeps the shared prefix: {:?}",
+            j.advisories
+        );
+    }
+
+    #[test]
+    fn age_past_seven_days_stalls_a_job_before_the_cycle_cap() {
+        // A job the user left running across long app-closed gaps cannot accrue
+        // cycles, so the fixed 7-day wall-clock backstop stalls it at
+        // poll_cycles=1 once it ages past the provider retention horizon.
+        let mut j = job("old");
+        j.status = JobStatus::InProgress;
+        j.created_at = 0;
+        let budget = Duration::from_secs(900);
+        // Just past the fixed 7-day backstop, measured from created_at.
+        let now = STALL_AGE_BACKSTOP.as_secs() as i64 + 10;
+
+        assert!(mark_timed_out(&mut j, budget, now));
+        assert_eq!(j.poll_cycles, 1, "only one session actually ran");
+        assert!(j.stalled, "but it aged out past the 7-day backstop");
+    }
+
+    #[test]
+    fn a_six_hour_old_job_is_not_stalled_by_age() {
+        // AC9a — the F5 defect regression. The old age_cap was clamp(budget*5,
+        // 1h, 7d); for even the largest 6h budget that maxed at 30h, so the
+        // 7-day ceiling never bound and a slow-but-alive hosted job was stalled
+        // at ~1–5h — inside the provider retention window, abandoning paid
+        // output. A 6h-old job with a single timeout must NOT stall now.
+        let mut j = job("slow");
+        j.status = JobStatus::InProgress;
+        j.created_at = 0;
+        let budget = Duration::from_secs(900);
+        let six_hours = 6 * 3600;
+
+        assert!(mark_timed_out(&mut j, budget, six_hours));
+        assert_eq!(j.poll_cycles, 1, "only one session actually ran");
+        assert!(
+            !j.stalled,
+            "a 6h-old job is well inside the 7-day backstop and stays resumable"
+        );
+        // Still the within-cap pause wording, never the stalled/Rerun note.
+        assert!(
+            !j.advisories[0].contains("reopen"),
+            "no phantom affordance in the pause advisory: {:?}",
+            j.advisories
+        );
+    }
+
+    #[test]
+    fn the_stalled_advisory_points_at_rerun_and_still_clears_on_completion() {
+        // AC9b end-to-end: the stalled note references Rerun (real), never
+        // "reopen" (phantom), and keeps TIMEOUT_ADVISORY_PREFIX so F3's
+        // clear-on-Completed still matches and removes it on a late result.
+        let mut j = job("stalled");
+        j.status = JobStatus::InProgress;
+        j.created_at = 0;
+        for _ in 0..MAX_POLL_CYCLES {
+            mark_timed_out(&mut j, Duration::from_secs(900), 0);
+        }
+        assert!(j.stalled, "five timeouts stall the job");
+        let note = j.advisories[0].clone();
+        assert!(
+            !note.contains("reopen"),
+            "no phantom 'reopen' affordance: {note}"
+        );
+        assert!(
+            note.contains("Rerun"),
+            "points at the real Rerun affordance: {note}"
+        );
+        assert!(
+            note.starts_with(TIMEOUT_ADVISORY_PREFIX),
+            "keeps the shared prefix so completion clears it: {note}"
+        );
+
+        // F3, through the shared core: a late completion clears the stalled note.
+        let done = PollResult {
+            status: JobStatus::Completed,
+            outputs: vec![Output {
+                url: "https://a/late.mp4".into(),
+                kind: OutputKind::Video,
+                local_path: None,
+            }],
+            fail_reason: None,
+            actual_usd: Some(0.9),
+        };
+        assert!(apply_poll(&mut j, done, 1));
+        assert!(
+            !j.advisories
+                .iter()
+                .any(|a| a.starts_with(TIMEOUT_ADVISORY_PREFIX)),
+            "completion must clear the stalled timeout advisory, got {:?}",
+            j.advisories
+        );
+    }
+
+    #[test]
+    fn a_timeout_within_the_cap_still_stays_resumable() {
+        // Re-pins AC2 against a future cap change: one timeout leaves the job
+        // non-stalled and still in the auto-resume set.
+        let store = Arc::new(MemStore::default());
+        let mut j = job("within");
+        j.status = JobStatus::InProgress;
+        j.created_at = 0;
+
+        assert!(mark_timed_out(&mut j, Duration::from_secs(900), 0));
+        assert_eq!(j.poll_cycles, 1);
+        assert!(!j.stalled, "one timeout is within the cap");
+        store.upsert(&j).unwrap();
+
+        assert!(
+            store.unfinished().unwrap().iter().any(|u| u.id == "within"),
+            "a within-cap timed-out job must remain resumable via unfinished()"
+        );
+    }
+
+    #[test]
+    fn a_stalled_job_is_dropped_from_the_resume_set() {
+        // At the cap the runner gives up: the row leaves unfinished() so
+        // resume_all stops re-attaching it, while its record survives for a
+        // manual retry.
+        let store = Arc::new(MemStore::default());
+        let mut j = job("gone");
+        j.status = JobStatus::InProgress;
+        j.created_at = 0;
+        for _ in 0..MAX_POLL_CYCLES {
+            mark_timed_out(&mut j, Duration::from_secs(900), 0);
+        }
+        assert!(j.stalled, "five timeouts must stall the job");
+        store.upsert(&j).unwrap();
+
+        assert!(
+            !store.unfinished().unwrap().iter().any(|u| u.id == "gone"),
+            "a stalled job must not be re-attached by resume_all"
+        );
+        // The record a manual retry needs is still there.
+        let stored = store.get("gone").unwrap().unwrap();
+        assert_eq!(stored.status, JobStatus::InProgress);
+        assert_eq!(stored.request_id, "req");
     }
 
     // ----- AC3: per-provider concurrency cap, none dropped, no deadlock -------

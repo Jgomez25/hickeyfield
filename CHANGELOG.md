@@ -26,3 +26,9 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   restart the runner no longer re-queries a job the provider had already
   finished, so an expired status link can no longer turn a paid, completed result
   into a failure. The app just retries saving the file you already paid for.
+- **A job that never comes back is eventually set aside instead of retried
+  forever.** If a provider keeps a request open with no result after several full
+  waiting cycles, or after seven days (by which point providers have discarded the
+  output), the job is marked as stalled and stops being auto-retried on every
+  launch, so stuck jobs no longer pile up in the background. The job's record is
+  kept so it can be tried again with Rerun.

@@ -22,3 +22,21 @@
 **Follow-ups logged (not blockers):** F1 bound resumable timeout state (Medium), F2 dependency-advisory bump (Low), F3 clear stale advisory on completion (Minor). See `.forge/backlog.md`.
 
 **Status:** released (local branch).
+
+---
+## Amendment release (F1.2 + F3 + F5) — appended
+Reopened after S1-core release (owner: "fine to go over slice 1 again"). Closed the S1-introduced
+SECURITY finding F1 (Medium, unbounded resumable state) + REVIEW finding F3 (stale advisory), then
+F5 (owner-chosen) fixed the age-cap horizon so a slow-but-live paid job is not abandoned early.
+
+**Re-verified (final state S1+F1.2+F3+F5):**
+- gate.py → exit 0. TEST / REVIEW / SECURITY = PASS (re-run against the amended tree).
+- SECURITY: prior F1 data-loss residual now CLOSED; remaining items LOW/pre-existing (F4, F1b, dep bump).
+- `cargo test --workspace` → 738 passed / 0 failed / 9 ignored. fmt · clippy · provenance clean.
+- `tauri build --bundles app` → built + launch smoke test OK (process ran).
+- Deferred, logged as follow-ups: F1b (resume_all drain), F4 (retry_job + stalled UI; raised HIGH),
+  F2/dep-bump (h2/rustls). Minor: advisory pluralization ("after 1 attempts") → fold into F4.
+
+**Changes (this amendment):** engine.rs, runner.rs, store.rs (+ struct-literal ripple in
+commands.rs/recipe.rs/app.rs), CHANGELOG.md. New JobSet fields poll_cycles/stalled + store migration v6.
+**Landing:** second commit on branch `forge/s1-job-engine-reliability` (local only, no push, per owner).

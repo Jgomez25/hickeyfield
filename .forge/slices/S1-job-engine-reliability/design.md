@@ -401,3 +401,463 @@ verifier disagrees.
    persisted `settings` blob back into `SettingsDto`. Confirm the blob written at
    `commands.rs:763` is the camelCase `SettingsDto` shape for real jobs and that
    pre-policy/legacy rows degrade to `work=None` → `policy.base` (not zero).
+
+---
+
+# Amendment: F1 (bound resumable state) + F3 (clear stale advisory)
+
+Upstream read for this amendment (all prior-phase S1 artifacts, no downstream):
+`.forge/slices/S1-job-engine-reliability/security.md` (F1, **MEDIUM** — "Timeout-as-
+non-terminal is unbounded across sessions", cites `runner.rs:437-445`, `:86-93`,
+`:118`) and `review.md` (F3, **MINOR** — "stale timeout advisory survives a late
+completion", cites `runner.rs:239-251` + `engine.rs:385-409`). Terms are reused
+verbatim from the code and the original design above: `unfinished()`, `is_settled`,
+`is_terminal`, `advisory`, `poll session`, `budget`, `Permit`, "reattach". No
+glossary/ADR set exists in this repo (recorded in the design preamble), so no ADR
+link is owed; this section IS the decision record for the two findings.
+
+This amendment is **DESIGN only** — no code is written here, and (unlike a shipped
+slice) there is nothing yet to record in `README`/`document.md`; DOCUMENT is
+deferred to the implementing slice. It does not restate or supersede AC1–AC5
+above; it adds a bound *on top of* the AC2 pause and re-uses the AC3 limiter.
+
+## New vocabulary (one term)
+
+- **Stalled** — a job the runner has *given up auto-resuming* because it timed out
+  across the cap (below) without ever settling. It is **not** a provider status
+  and **not terminal**: the last provider-reported `JobStatus` (usually
+  `InProgress`) is preserved, the `request_id`/`endpoint` are preserved, and a
+  manual retry can still re-poll and recover a late result. "Stalled" is a
+  *runner* decision, exactly parallel to how `LocalStage` (`job.rs:80-104`) keeps
+  a process-known state out of the provider `JobStatus` vocabulary.
+
+---
+
+## F1 — bound the resumable timeout state
+
+### F1.1 Representation — recommendation and the rejected alternative
+
+**RECOMMEND (a')**: a persisted **counter + flag on the row**, *not* a new
+`JobStatus` variant. Concretely two `#[serde(default)]` fields on `JobSet`
+(`engine.rs:20-78`):
+
+```rust
+/// How many poll sessions have timed out on this job without it settling.
+/// Incremented once per timed-out session (one per app launch — a session
+/// re-polls only on the next resume_all, per the AC2 Non-goal). The cross-
+/// session bound; reset to 0 by a manual retry.
+#[serde(default)]
+pub poll_cycles: u32,
+/// The runner has stopped auto-resuming this job after the cap (F1.2). NOT
+/// terminal: status/request_id are preserved and a manual retry clears it.
+/// Serialized so the UI can render an honest "Stalled — retry?" affordance
+/// without duplicating the cap constant across the bridge.
+#[serde(default)]
+pub stalled: bool,
+```
+
+**Why a field, not `JobStatus::Stalled`** (the alternative the finding hints at):
+
+1. `job.rs:1-32` establishes that `JobStatus` is the *provider wire vocabulary*
+   parsed by `clients::normalize_status`; `job.rs:72-87` documents the deliberate
+   choice to keep process-known states (`Uploading`/`Downloading`) **out** of
+   `JobStatus` and in `Phase`/`LocalStage`, "so the next person to read the enum
+   [does not] go looking for the response field that produces it". "Stalled" is
+   precisely such a process-only state, so it belongs beside `LocalStage`, not
+   inside `JobStatus`.
+2. A new terminal `JobStatus` widens the blast radius: `is_terminal`/`phase`
+   (`job.rs:131-148`), `refund_expected`/`is_refunded` (`engine.rs:413`,
+   `job.rs:152`), the UI's hard-coded `TERMINAL` set (`ui/src/lib/status.ts:43-49`)
+   and every `match` on `Phase` would each need a new arm. A field touches none of
+   those.
+3. Preserving the provider's *last-seen* status on a stalled row is useful truth
+   for the retry ("the provider last said InProgress" ≠ "the provider said
+   Failed"). A status variant would erase it.
+
+**MUST NOT** call a stalled job terminal. `is_terminal()` stays driven by the
+provider status; `stalled` is orthogonal.
+
+`is_stalled()` helper and the `unfinished()` change (`engine.rs:98-110`,
+`:167-173`):
+
+```rust
+impl JobSet {
+    /// The runner has given up auto-resuming this one (F1). Distinct from
+    /// is_settled(): a stalled job is owed nothing *automatically*, but a
+    /// manual retry can still recover it.
+    pub fn is_stalled(&self) -> bool { self.stalled }
+}
+
+// JobStore::unfinished default (engine.rs:167-173) — the ONLY behavioural change:
+fn unfinished(&self) -> Result<Vec<JobSet>, JobError> {
+    Ok(self.all()?
+        .into_iter()
+        .filter(|j| !j.is_settled() && !j.is_stalled()) // was: !j.is_settled()
+        .collect())
+}
+```
+
+`is_settled()` (`engine.rs:105-109`) is left **pure** — folding "gave up" into
+"everything the user is owed has been fetched" would be dishonest. The auto-resume
+set (`unfinished()`) is where "and we have not given up" belongs, because that set
+is *exactly* what `resume_all` re-attaches (`runner.rs:87`). This is the single
+lever: `SqliteStore` and both `MemStore`s inherit the default `unfinished()` (no
+override — confirmed `store.rs:209-292`, `runner.rs:501-513`, `engine.rs:459-470`),
+so one edit changes every caller.
+
+### F1.2 The cap
+
+Stamped by the runner (which has the clock) inside `mark_timed_out`
+(`runner.rs:239-251`), which becomes:
+
+```rust
+// cap constants — runner policy, kept next to timeout_budget in runner.rs
+const MAX_POLL_CYCLES: u32 = 5;           // matches Backoff::max_attempts (engine.rs:222)
+// age cap ties X to the provider TimeoutPolicy per the finding: five full
+// session budgets of wall-clock, floored at the hosted 1h cap and ceilinged at
+// the 7-day provider result-retention horizon (Higgsfield deletes after 7 days,
+// engine.rs:84-88 / job.rs:60-66 — past it even a completed result is gone).
+fn age_cap(budget: Duration) -> Duration {
+    budget.saturating_mul(MAX_POLL_CYCLES)
+        .clamp(TimeoutPolicy::HOSTED.cap, Duration::from_secs(7 * 24 * 3600))
+}
+
+/// Now takes `now` (for the age branch) and returns whether it changed the row.
+fn mark_timed_out(job: &mut JobSet, budget: Duration, now: i64) -> bool {
+    job.poll_cycles = job.poll_cycles.saturating_add(1);       // once per session
+    let aged_out = now.saturating_sub(job.created_at) as u64 > age_cap(budget).as_secs();
+    job.stalled = job.poll_cycles >= MAX_POLL_CYCLES || aged_out;
+
+    // Advisory: same stable prefix so F3 clears it on a late completion. De-dup
+    // by prefix so relaunch cycles do not stack it; swap wording once stalled.
+    job.advisories.retain(|a| !a.starts_with(TIMEOUT_ADVISORY_PREFIX)); // engine.rs const (F3)
+    job.advisories.push(if job.stalled {
+        format!("{TIMEOUT_ADVISORY_PREFIX} {} attempts — Hickeyfield stopped retrying \
+                 automatically; reopen this job to try again", job.poll_cycles)
+    } else {
+        format!("{TIMEOUT_ADVISORY_PREFIX} {} min of polling; still running at the \
+                 provider — will keep trying when the app next launches",
+                budget.as_secs() / 60)
+    });
+    job.updated_at = now;
+    true // poll_cycles always changed, so the upsert must always fire (persist the count)
+}
+```
+
+- **`MUST` increment `poll_cycles` every call** (one call = one timed-out
+  session). The old early-return-on-dedup (`runner.rs:241-243`) is removed: it
+  short-circuited before any state change, which would freeze the counter. The
+  advisory *string* is still de-duplicated (retain-then-push), so the UI never
+  sees it stacked; only the return contract changes (now always `true`).
+- **`MUST` preserve `request_id`/`endpoint`/`status`/`results`** — stalling only
+  writes `poll_cycles`, `stalled`, `advisories`, `updated_at`. Nothing a retry
+  needs is discarded.
+
+**Cap values + rationale.** `MAX_POLL_CYCLES = 5` reuses the existing
+`Backoff::max_attempts = 5` (`engine.rs:222`) rather than coining a new number —
+"five tries then give up" is already this codebase's give-up count. Because a
+session re-polls only on the *next launch* (AC2 Non-goal, design §"Non-goals"),
+5 cycles means the same job survived **5 separate app launches** without settling —
+unambiguously "never settles across sessions", not "slow once". The **age cap**
+(`budget × 5`, floored 1h, ceilinged 7d) is the backstop for the job the user
+leaves for days across long app-closed gaps, where cycles cannot accrue: past
+`budget × 5` of wall-clock (e.g. a 720p fal job: `900 s × 5 = 4500 s ≈ 75 min`;
+an unsizable job: floored to 1h) it is stalled even at `poll_cycles < 5`. Both
+bounds err long and both are **recoverable**, so an over-eager stall costs one
+manual click, never a lost paid result.
+
+### F1.3 Bound the `resume_all` fan-out
+
+Today `resume_all` (`runner.rs:86-93`) calls `watch` per unfinished job; each
+`watch` does one `spawn_blocking` (`runner.rs:118`) that then **parks on the
+Condvar limiter** waiting for a slot — so N unfinished jobs park N blocking-pool
+threads at launch (the finding's cost (a)). The F1.2 cap is the **load-bearing**
+fix here: it shrinks `unfinished()` so the never-settling set can no longer grow
+without bound. This F1.3 change is **defense-in-depth** for the remaining edge
+(a user with many genuinely-in-flight jobs at one relaunch).
+
+**SHOULD** replace the per-job spawn in `resume_all` with a **bounded per-provider
+drain**, reusing the S1 limiter as the cap authority (AC3 unchanged):
+
+```rust
+pub fn resume_all(&self) -> Result<usize, JobError> {
+    let pending = self.store.unfinished()?;            // now excludes stalled (F1.1)
+    let n = pending.len();
+    // Bucket by provider (route_id prefix, provider.rs:107 from_slug).
+    let mut by_provider: HashMap<ProviderId, VecDeque<JobSet>> = HashMap::new();
+    let mut unknown = Vec::new();
+    for job in pending {
+        match job.route_id.split(':').next().and_then(ProviderId::from_slug) {
+            Some(p) => by_provider.entry(p).or_default().push_back(job),
+            None => unknown.push(job),                 // no provider -> old path
+        }
+    }
+    for (p, queue) in by_provider {
+        let queue = Arc::new(Mutex::new(queue));
+        let workers = (p.features().max_concurrent.permits() as usize).min(
+            queue.lock().unwrap().len());              // never more workers than jobs
+        for _ in 0..workers { self.spawn_drain_worker(Arc::clone(&queue)); }
+    }
+    for job in unknown { self.watch(job); }            // unroutable: unchanged
+    Ok(n)
+}
+```
+
+Each `spawn_drain_worker` is one `spawn_blocking` that loops: pop the next job
+under the lock (return when empty), then run the **existing** single-job body —
+i.e. the `watching`-set dedup insert (`runner.rs:100-106`), `run_watched(...)`
+(`runner.rs:339`, which still `acquire`s its permit), and the `watching`/
+`abandoned` cleanup (`runner.rs:130-131`). Extract that body into a shared
+`fn attach_one(&self, job: JobSet)` used by both `watch`'s spawn and the worker,
+so there is one code path.
+
+- **Blocking-pool bound**: at most `Σ over providers of min(permits, count)` tasks
+  exist during relaunch — `≤ Σ permits = 2 (fal) + 1 (local) + 4×7 (rest) = 31`,
+  independent of queue depth. Because a provider spawns `≤ permits` workers and
+  each holds one slot, its workers never park on the limiter (no wasted parked
+  threads); the limiter still bounds the *union* with any steady-state `watch`
+  calls to `permits`, so **AC3 is preserved** and the cap authority is unchanged.
+- **Nothing is dropped**: every pending job is in exactly one queue and every
+  queue is fully drained; the `watching` insert still de-duplicates.
+- **No deadlock**: `permits() >= 1` (`provider.rs:203`,
+  `every_provider_permits_at_least_one_job` `provider.rs:268-277`); a worker holds
+  only the queue lock while popping (released before `run_watched`), so it never
+  waits on a permit while holding the queue lock.
+- Steady-state `watch` from `submit_job` (`commands.rs:774`) is **unchanged** —
+  the accepted single-job tradeoff from S1 (design Open question #2).
+
+**Worked example.** Relaunch with 40 unfinished fal jobs + 3 local: `resume_all`
+buckets them, spawns `min(2,40)=2` fal drain workers and `min(1,3)=1` local worker
+— **3 blocking tasks total**, not 43. The 2 fal workers chew through 40 jobs two
+at a time (peak fal in-flight = 2, AC3 held); the 1 local worker runs the 3
+serially. Any job that stalls mid-drain is simply absent from next launch's
+`unfinished()`.
+
+### F1.4 Surfacing and recovery
+
+- **Surfaced without a new status DTO.** `list_jobs` (`commands.rs:787-790`)
+  returns the raw core `JobSet`, so the new `stalled: bool` field crosses the
+  bridge automatically (serde field name `stalled`). A stalled job also (i) keeps
+  a non-terminal `status`, so it is *not* in `watching_jobs` (`commands.rs:878-893`)
+  — the UI's existing "non-terminal in the DB but nothing is watching it → offer
+  a resume" heuristic (that command's own doc, `:880-882`) already covers it — and
+  (ii) carries the "…stopped retrying automatically; reopen to try again" advisory,
+  rendered today by `MetaCard.tsx:166-175`. So a minimal honest surface needs **no
+  new command and no new UI in this slice**.
+- **Recovery — follow-up, not built here** (per the task's "note it as a follow-up"
+  instruction). No manual-retry command exists (`commands.rs` has
+  submit/list/cancel/delete/reveal/watching, none re-attach a row). RECOMMEND a
+  follow-up `retry_job(job_set_id)` command that resets `poll_cycles = 0`,
+  `stalled = false`, clears the timeout advisory, `store.upsert`s, and calls
+  `runner.watch(job)` (idempotent via the `watching` set). Until it ships, a
+  stalled job is still recoverable via the existing Rerun (`delete_job` +
+  re-`submit_job`) path.
+
+### F1.5 Ripple flags (for TEST/REVIEW)
+
+- **Core public API**: `JobSet` (`engine.rs:20`) gains two `pub` fields. Backward-
+  compatible on the wire (both `#[serde(default)]`), but **every `JobSet` struct
+  literal must add them** — the test helpers at `engine.rs:423-446`,
+  `runner.rs:553-576`, `store.rs:300-323`, and the real construction in
+  `submit_job` (`commands.rs:741-766`). There is no `Default` impl to lean on.
+- **Store schema**: migration **v6** in `store.rs:56-145` adds
+  `poll_cycles INTEGER NOT NULL DEFAULT 0` and `stalled INTEGER NOT NULL DEFAULT 0`;
+  `row_to_job` (`:166-207`) reads both (`.unwrap_or(0)` / `!= 0`), `upsert`
+  (`:210-269`) writes both in the INSERT + `ON CONFLICT` clauses. The
+  `a_v1_database_upgrades_without_losing_rows` test (`store.rs:466-502`) **MUST**
+  add the two columns to its DROP list so it still replays from v1. Status is a
+  TEXT column parsed by serde (`:177`), so — a second reason to prefer the field
+  over a `JobStatus` variant — **no status enum migration is needed** and old rows
+  degrade to `poll_cycles=0, stalled=false` (correct: never-yet-stalled).
+- **UI DTO**: `ui/src/types.ts` `JobSet` (`:179-209`) should gain optional
+  `stalled?: boolean` and `pollCycles?: number`; `ui/src/api.ts` `RawJobSet`
+  (`:355-383`) + `toJobSet` (`:432-458`) map them. `ui/src/lib/status.ts`'s
+  `TERMINAL`/`isTerminal` (`:43-65`) do **not** need a new entry (stalled is not a
+  status), but the job card SHOULD read `job.stalled` to swap the "Generating"
+  chip for a "Stalled — retry?" affordance rather than showing a spinner — else
+  the chip contradicts the advisory (the same class of bug F3 fixes). All UI work
+  is **follow-up**, gated on the `retry_job` command; flag it, do not build it.
+
+### F1.6 AC1–AC4 preservation
+
+- **AC1 (per-job budget)** — untouched. `timeout_budget` (`runner.rs:217-230`) and
+  the budget→branch coupling are unchanged; the cap counts *sessions*, orthogonal
+  to the budget's *value*.
+- **AC2 (a timed-out job stays resumable) — THE critical one.** Within the cap the
+  behaviour is byte-for-byte today's: one timeout → `poll_cycles=1`,
+  `stalled=false`, non-terminal, `is_settled()==false`, `is_stalled()==false` →
+  still in `unfinished()` → re-attached → a late `Completed` still downloads. The
+  cap changes behaviour **only** after 5 sessions / age cap, and even then the
+  result is not lost — the request_id survives and a manual retry re-polls it. The
+  existing AC2 tests (`a_timed_out_job_stays_in_unfinished`,
+  `a_late_result_is_reattached_after_a_timeout`, `runner.rs:814-894`) both operate
+  at `poll_cycles=1` and **still pass unchanged** (beyond the mechanical `now`
+  argument to `mark_timed_out`).
+- **AC3 (per-provider cap)** — the Condvar limiter (`runner.rs:294-329`) and its
+  unit tests (`:898-972`) are **unchanged**; F1.3's drain workers funnel through
+  the same `acquire`, and worker count `≤ permits`, so peak in-flight per provider
+  is still `permits`.
+- **AC4 (Completed-but-undownloaded not re-polled)** — `provider_poll_needed =
+  !is_terminal()` (`runner.rs:259-261`) unchanged. A stalled job is non-terminal,
+  but it is excluded from `unfinished()` so `resume_all` never hands it to
+  `run_watched`; if a user manually retries it we *want* it re-polled (it is
+  genuinely non-terminal), so `provider_poll_needed==true` is correct. AC4's
+  Completed job is terminal and skipped regardless.
+
+### F1.7 Tests to ADD (reuse `runner.rs`/`engine.rs`/`store.rs` doubles)
+
+Reuse `MemStore`, `ScriptedClient`, `job(id)`, `ok(status)` in `runner.rs`
+(`:500-585`); `MemStore`/`job(status)` in `engine.rs` (`:456-470`); `job(id,status)`
++ `SqliteStore::in_memory` in `store.rs` (`:300-323`). Existing direct
+`mark_timed_out(&mut j, dur)` call sites (`runner.rs:798,809,859`) take a `now`
+argument.
+
+- `engine.rs`: **`a_stalled_job_leaves_the_auto_resume_set`** — a job with
+  `stalled=true` (status `InProgress`) is absent from `store.unfinished()` while a
+  `stalled=false` `InProgress` job is present; assert `is_terminal()==false` and
+  `is_settled()==false` on the stalled one (stalled ≠ terminal ≠ settled).
+- `runner.rs`: **`the_fifth_timeout_stalls_the_job`** — call `mark_timed_out` five
+  times (fresh `created_at`, a `now` inside the age cap); assert `poll_cycles==5`,
+  `stalled` flips to `true` on the fifth only, status still `InProgress`,
+  `fail_reason` still `None`, exactly one advisory whose text says "reopen".
+- `runner.rs`: **`age_stalls_a_job_before_the_cycle_cap`** — one `mark_timed_out`
+  with `created_at` far in the past (`now - created_at > age_cap(budget)`); assert
+  `stalled==true` at `poll_cycles==1`.
+- `runner.rs`: **`a_timeout_within_the_cap_still_stays_resumable`** — the AC2
+  guard, re-pinned: `poll_cycles=1`, `stalled==false`, `store.unfinished()` still
+  returns the row. (Guards against a future cap change silently regressing AC2.)
+- `runner.rs`: **`resume_all_bounds_workers_per_provider`** — seed a `MemStore`
+  with e.g. 6 `fal:` unfinished jobs against an always-`InProgress`
+  `ScriptedClient`; drive the drain and assert peak concurrent poll loops `<= 2`
+  and every job eventually attached (mirror the AC3
+  `provider_cap_bounds_simultaneous_poll_loops` shape, `:898-937`). If timing a
+  live `spawn_blocking` drain is flaky, unit-test the bucketing/worker-count math
+  on the pure helper instead and note the wiring is inspection-verified (as S1 did
+  for the permit wiring, review.md's minor coverage note).
+- `store.rs`: **`stall_fields_round_trip`** — upsert a job with `poll_cycles=3,
+  stalled=true`, reopen, assert both survive; extend
+  `a_v1_database_upgrades_without_losing_rows` to prove a pre-v6 row loads as
+  `poll_cycles=0, stalled=false`.
+
+---
+
+## F3 — clear the stale timeout advisory on terminal completion
+
+**Where**: `apply_poll` (`engine.rs:385-409`). **Guard**: only when the *new*
+status is terminal `Completed`, and only advisories carrying the timeout prefix.
+
+**Shared constant.** The prefix currently lives as a private `const NOTE` in
+`runner.rs:240`; `apply_poll` (core) cannot see it. **MUST** promote it to a
+`pub const` in `engine.rs` so producer (runner) and clearer (core) cannot drift:
+
+```rust
+// engine.rs, near TimeoutPolicy (used by runner::mark_timed_out AND apply_poll)
+pub const TIMEOUT_ADVISORY_PREFIX: &str = "no result yet";
+```
+
+Note the prefix is shortened to `"no result yet"` (from S1's `"no result yet
+after"`) so it matches **both** the running note ("no result yet after N min…")
+and the F1.2 stalled note ("no result yet after N attempts…"). `runner::
+mark_timed_out` references this constant instead of its local `NOTE` (F1.2 already
+shows it doing so). The existing AC2 assertion `a.contains("no result yet")`
+(`runner.rs:840`) still holds.
+
+**The edit** in `apply_poll`, after `job.status = poll.status;` (`engine.rs:392`):
+
+```rust
+if poll.status.phase() == Phase::Completed {
+    // A completed job has its bytes; the "still running, will keep trying"
+    // advisory now contradicts its own state (review.md F3). Clear ONLY the
+    // timeout-family advisory — real fail_reason and any other advisory (e.g. a
+    // dropped-setting note) are untouched.
+    job.advisories.retain(|a| !a.starts_with(TIMEOUT_ADVISORY_PREFIX));
+}
+```
+
+- `Phase` is already imported (`engine.rs:13`), so **no import change**.
+- **Guarded to `Completed` only**, per the finding: a `Failed`/`Nsfw` job keeps
+  the advisory (its `fail_reason` dominates the UI, and clearing it there could
+  hide context) — recorded default, below.
+- **`MUST NOT` touch `fail_reason`** or non-timeout advisories — the `retain`
+  predicate is the whole guard.
+- The clear runs inside the `changed` mutation block (`apply_poll` early-returns
+  at `:389-391` when nothing moved). The transition into `Completed` from a
+  non-`Completed` status is always a status change, so `changed==true` and the
+  clear fires and is persisted by the caller's `store.upsert`
+  (`runner.rs:451`). **Edge (recorded default)**: a row already `Completed` that
+  re-polls `Completed` with identical outputs returns early and is not re-cleared;
+  it does not arise on the timeout→resume→complete path (that path *transitions*),
+  so it is out of scope — noted, not fixed.
+
+**Worked example.** A job timed out at `InProgress` carrying "no result yet after
+15 min… will keep trying"; on the next launch it re-polls `Completed` with an
+output URL. `apply_poll` sets `status=Completed`, the guard fires and drops that
+one advisory, `download_outputs` saves the bytes. The card now shows "Ready" with
+**no** contradicting "still running" line — and if the job had also carried a real
+"audio setting ignored" advisory, that one **survives**.
+
+### F3 AC preservation + tests
+
+Preserves AC1–AC4 (apply_poll's status/results/actual_usd handling is untouched;
+only the advisory vector is filtered on the Completed transition). AC5 gate
+unaffected.
+
+- `engine.rs`: **`completing_clears_the_timeout_advisory`** — a job at
+  `InProgress` with `advisories = ["no result yet after 15 min…"]`; `apply_poll`
+  with a `Completed` `PollResult`; assert the advisory is gone, `status==Completed`.
+- `engine.rs`: **`completion_keeps_real_advisories`** — same but advisories =
+  `["no result yet after…", "audio not supported on this route"]`; assert only the
+  timeout one is dropped and `fail_reason` stays `None`.
+- `engine.rs`: **`a_failed_job_keeps_its_timeout_advisory`** — pins the
+  `Completed`-only guard: `apply_poll` to `Failed` leaves the advisory in place.
+- `runner.rs` (integration): extend `a_late_result_is_reattached_after_a_timeout`
+  (`:851-894`) to assert the returned job's `advisories` no longer contains "no
+  result yet" — the end-to-end F3 proof through the real poll loop.
+
+---
+
+## Amendment Non-goals (recorded)
+
+- No `retry_job`/`resume_job` command or stalled-state UI in this slice — F1.4
+  follow-up (task instruction). Recovery via Rerun works meanwhile.
+- No same-session re-poll after a timeout — still next-launch only (S1 Non-goal).
+- No billing reconciliation on stall (objective Q6 default).
+- No change to the AC3 Condvar limiter primitive, `download_outputs`, or the
+  provider `JobStatus` vocabulary.
+- F3 clears advisories only on `Completed`, not on other terminal states.
+
+## Amendment Open questions (each with a default)
+
+1. **`MAX_POLL_CYCLES` value?** Default: **5** (reuses `Backoff::max_attempts`).
+   Raise later if real fal queues legitimately exceed five relaunch cycles.
+2. **Age cap shape?** Default: **`budget × 5`, floored 1h, ceilinged 7d** — ties X
+   to the `TimeoutPolicy` per the finding while respecting the provider result-
+   retention horizon.
+3. **One field or two?** Default: **two** (`poll_cycles` counter + `stalled`
+   decision). `stalled` is derivable from `poll_cycles`+age, but persisting it (a)
+   gives the UI a clean boolean without the cap constant crossing the bridge and
+   (b) lets an age-stall be represented without clamping the counter. Collapsing to
+   a single serialized computed field is possible but awkward given `list_jobs`
+   returns the raw `JobSet` with no DTO layer.
+4. **Clear the advisory on `Failed` too?** Default: **no** — `fail_reason` is the
+   UI's headline there and the advisory is comparatively harmless.
+
+## Amendment weakest parts (verifier, start here)
+
+1. **`resume_all` drain-worker lifecycle (F1.3)** — the highest-surface change and
+   the likeliest place for a bug: worker/queue lock ordering vs. the `watching`
+   and `abandoned` locks, the `min(permits, count)` worker count, ensuring every
+   queue fully drains and no worker exits with jobs still queued, and that a worker
+   never holds the queue lock across `run_watched`. Confirm the extracted
+   `attach_one` is the *same* path `watch` uses (dedup + cleanup) so the two cannot
+   diverge. This is the single riskiest decision — see summary.
+2. **`mark_timed_out` contract change (F1.2)** — it now always returns `true` and
+   always increments `poll_cycles`; verify no caller relied on the old
+   `false`-on-dedup return, and that the counter is persisted on every timed-out
+   session (the upsert at `runner.rs:440-443` must still fire).
+3. **Two-field migration + struct-literal ripple (F1.5)** — verify v6 round-trips,
+   the pre-v1 upgrade test still replays, and every `JobSet` literal compiles.
+4. **F3 `changed`-gate interaction** — confirm the Completed transition always sets
+   `changed=true` so the advisory clear is actually persisted, and that the retain
+   predicate cannot catch a non-timeout advisory that happens to start with the
+   prefix (it will not — the prefix is a full literal, but worth a glance).

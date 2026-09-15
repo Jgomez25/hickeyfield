@@ -154,3 +154,12 @@ reword that line (never to relax the threshold).
 3. **Changelog scope call.** I kept the FORGE `SKIP_DIRS` change out of the
    user-facing changelog and the README untouched (N/A recorded). Confirm those
    are the right scope boundaries for a user-facing changelog.
+
+---
+## Amendment DOCUMENT (F1.2 + F3 + F5)
+- CHANGELOG.md: added a "Fixed" bullet for the stall cap — jobs that never return are marked
+  stalled after 5 full waiting cycles or 7 days and stop being auto-retried (record kept for Rerun).
+  (The F1.2/F3/F5 timeout+concurrency+relaunch bullets were already present from the S1-core pass.)
+- docs/PARITY.md: §3.3 note from S1-core still accurate (code fixes landed; live e2e remains slice #4).
+- README: N/A — no README claim touched.
+- Provenance: `./scripts/lint-provenance.py` exit 0 after the changelog edit.

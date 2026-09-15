@@ -141,6 +141,22 @@ impl SqliteStore {
             )
             .map_err(map_err)?;
         }
+
+        if version < 6 {
+            // The timeout-state bound. `poll_cycles` counts timed-out sessions
+            // and `stalled` records that the runner gave up auto-resuming after
+            // the cap. Old rows default to 0/false — never-yet-stalled, which
+            // is correct — so no status enum migration is needed (status stays
+            // a TEXT column parsed by serde).
+            conn.execute_batch(
+                r#"
+                ALTER TABLE job_sets ADD COLUMN poll_cycles INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE job_sets ADD COLUMN stalled INTEGER NOT NULL DEFAULT 0;
+                PRAGMA user_version = 6;
+                "#,
+            )
+            .map_err(map_err)?;
+        }
         Ok(())
     }
 
@@ -203,6 +219,13 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobSet> {
             .ok()
             .and_then(|m| serde_json::from_str(&m).ok())
             .unwrap_or_default(),
+        // Pre-v6 rows have neither column; they load as never-stalled, which is
+        // correct — the cap has simply never been reached for them.
+        poll_cycles: row
+            .get::<_, i64>("poll_cycles")
+            .map(|n| n.max(0) as u32)
+            .unwrap_or(0),
+        stalled: row.get::<_, i64>("stalled").unwrap_or(0) != 0,
     })
 }
 
@@ -227,8 +250,9 @@ impl JobStore for SqliteStore {
                     id, model_id, route_id, request_id, status, prompt,
                     enhanced_prompt, preset_id, created_at, updated_at,
                     results, estimated_usd, actual_usd, fail_reason, settings,
-                    media, endpoint, enhancer_version, enhance_note, advisories
-                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+                    media, endpoint, enhancer_version, enhance_note, advisories,
+                    poll_cycles, stalled
+                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
                 ON CONFLICT(id) DO UPDATE SET
                     status          = excluded.status,
                     enhanced_prompt = excluded.enhanced_prompt,
@@ -239,7 +263,9 @@ impl JobStore for SqliteStore {
                     results         = excluded.results,
                     actual_usd      = excluded.actual_usd,
                     fail_reason     = excluded.fail_reason,
-                    endpoint        = excluded.endpoint
+                    endpoint        = excluded.endpoint,
+                    poll_cycles     = excluded.poll_cycles,
+                    stalled         = excluded.stalled
                 "#,
                 params![
                     j.id,
@@ -262,6 +288,8 @@ impl JobStore for SqliteStore {
                     j.enhancer_version,
                     j.enhance_note,
                     advisories,
+                    j.poll_cycles,
+                    j.stalled as i64,
                 ],
             )
             .map(|_| ())
@@ -319,6 +347,8 @@ mod tests {
             fail_reason: None,
             settings: serde_json::json!({"duration": 8}),
             media: Vec::new(),
+            poll_cycles: 0,
+            stalled: false,
         }
     }
 
@@ -477,7 +507,9 @@ mod tests {
                  ALTER TABLE job_sets DROP COLUMN endpoint; \
                  ALTER TABLE job_sets DROP COLUMN enhancer_version; \
                  ALTER TABLE job_sets DROP COLUMN enhance_note; \
-                 ALTER TABLE job_sets DROP COLUMN advisories;",
+                 ALTER TABLE job_sets DROP COLUMN advisories; \
+                 ALTER TABLE job_sets DROP COLUMN poll_cycles; \
+                 ALTER TABLE job_sets DROP COLUMN stalled;",
             )
             .unwrap();
         }
@@ -499,6 +531,30 @@ mod tests {
         assert_eq!(back.id, "old");
         // A pre-v2 row has no attachments, which is correct rather than lossy.
         assert!(back.media.is_empty());
+        // A pre-v6 row has never reached the timeout cap.
+        assert_eq!(back.poll_cycles, 0);
+        assert!(!back.stalled);
+    }
+
+    #[test]
+    fn stall_fields_round_trip() {
+        // The v6 columns survive a write/read: a job the runner stalled after
+        // several timed-out sessions loads back with its counter and flag.
+        let s = SqliteStore::in_memory().unwrap();
+        let mut j = job("stalled", JobStatus::InProgress);
+        j.poll_cycles = 3;
+        j.stalled = true;
+        s.upsert(&j).unwrap();
+
+        let back = s.get("stalled").unwrap().unwrap();
+        assert_eq!(back.poll_cycles, 3);
+        assert!(back.stalled);
+        assert_eq!(back, j, "every field, including the v6 pair, round-trips");
+
+        // And an update persists the new values rather than the defaults.
+        j.poll_cycles = 5;
+        s.upsert(&j).unwrap();
+        assert_eq!(s.get("stalled").unwrap().unwrap().poll_cycles, 5);
     }
 
     #[test]

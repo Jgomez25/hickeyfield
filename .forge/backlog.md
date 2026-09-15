@@ -15,7 +15,7 @@ generator being trustworthy).
 
 | # | Slice id | Delivers (one sentence) | Status |
 |---|----------|-------------------------|--------|
-| 1 | job-engine-reliability | A generation run no longer silently loses paid output: the runner honors each provider's `TimeoutPolicy` and concurrency cap, keeps a timed-out job resumable, and never flips a completed-but-undownloaded job to Failed on relaunch. | pending |
+| 1 | job-engine-reliability | A generation run no longer silently loses paid output: the runner honors each provider's `TimeoutPolicy` and concurrency cap, keeps a timed-out job resumable, and never flips a completed-but-undownloaded job to Failed on relaunch. | released |
 | 2 | honest-free-tier | The dead `z_image`/`Local` free tier shows an explicit unavailable state instead of a "$0.00 / available / Generate" tile that fails at submit. | pending |
 | 3 | reachable-logs | A packaged `.app` writes rolling file logs plus a panic-hook crash report to the app log dir, and the user can reveal that path from inside the app. | pending |
 | 4 | live-fal-e2e | One real generation completes green against fal.ai (submit -> poll -> download -> reattach with estimated-vs-actual cost) because family-root video routes now resolve to the correct input-mode suffix instead of 404-ing. | pending |
@@ -173,3 +173,12 @@ mandatory slice; tracked here for prioritization.
   Not S1's regression; `cargo update -p h2 -p rustls`, then re-run the gate.
 - **F3 (Minor) — clear the stale timeout advisory on completion.** `apply_poll` never clears
   the NOTE advisory, so a job that later completes still shows "no result yet." Cosmetic.
+
+- **F4 (raised to HIGH)** — `retry_job` command + `stalled` UI surfacing. Named mitigation for the
+  age-cap residual below; the shipped `stalled` advisory currently points at a non-existent
+  "reopen" affordance. F4 must reset `created_at` (not only `poll_cycles`) or the age branch
+  re-stalls immediately.
+- **F5 (correctness) — fix the age-cap horizon.** `age_cap = clamp(budget*5, 1h, 7d)` never
+  reaches 7d (max budget 6h → 30h); effective hosted horizon is ~1–5h, which can abandon a
+  still-live paid job. Make the horizon match a defensible intent (e.g. a fixed 7d age backstop
+  with poll_cycles as the active bound) and correct the comment. Ship with or before F4.

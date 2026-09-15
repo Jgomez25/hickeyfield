@@ -1183,6 +1183,8 @@ mod tests {
             fail_reason: None,
             settings: json!({ "duration": 5 }),
             media: vec![url(MediaRole::Start, "https://cdn/first.png")],
+            poll_cycles: 0,
+            stalled: false,
         };
         let r = Recipe::from_job(&job);
         assert_eq!(r.media, job.media);
@@ -1226,6 +1228,8 @@ mod tests {
             fail_reason: None,
             settings: Value::Null,
             media: vec![],
+            poll_cycles: 0,
+            stalled: false,
         };
         job.settings = Value::Null;
         let r = Recipe::from_job(&job);

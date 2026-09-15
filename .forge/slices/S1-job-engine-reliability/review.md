@@ -1,133 +1,52 @@
 # S1-job-engine-reliability — REVIEW (evidence)
 
-Read-only production-standards review of the sole diff in this slice:
-`src-tauri/src/runner.rs` (`git diff --stat` confirms 1 file, +529/-24; no other
-tracked file, no `Cargo.toml`/`Cargo.lock`, changed). Reviewed against slice.md
-AC1–AC5, design.md, implement.md. Cross-checked every wired API against
-`crates/hickeyfield-core/src/engine.rs`, `provider.rs`, and
-`src-tauri/src/commands.rs`.
+Read-only production-standards review of the **FINAL** working-tree state:
+S1 + the F1.2/F3 amendment + the F5 amendment (AC9), all uncommitted on top of
+commit `909cdea`. This pass supersedes the prior on-disk review. F5's production
+delta is confined to `src-tauri/src/runner.rs` (const `STALL_AGE_BACKSTOP`,
+reworked `mark_timed_out`, reworded stalled advisory, removed `fn age_cap`);
+the engine/store/commands/recipe/app deltas belong to the earlier F1.2/F3 work
+and are re-confirmed intact. Judged against slice.md AC1–AC9, implement.md
+("## Amendment implement: F5"), and test.md.
 
-## Verification run (not modifying code)
-- `cargo test -p hickeyfield-tauri --lib runner::` → 18 passed, 0 failed (8 pre-existing + 10 new).
-- `cargo clippy -p hickeyfield-tauri --lib --all-targets -- -D warnings` → exit 0, no warnings.
+## Verification run (read-only, nothing edited; env-key overrides used to skip the pre-existing macOS Keychain hang in `commands::tests`)
+- `cargo test -p hickeyfield-tauri --lib runner::` → 24 passed, 0 failed (all S1 + F1.2 + F5 runner tests, incl. `a_six_hour_old_job_is_not_stalled_by_age`, `age_past_seven_days_stalls_a_job_before_the_cycle_cap`, `the_fifth_timeout_stalls_the_job`, `the_stalled_advisory_points_at_rerun_and_still_clears_on_completion`).
+- `cargo test -p hickeyfield-core --lib engine::` → 23 passed, 0 failed (incl. the three F3 tests + `a_stalled_job_leaves_the_auto_resume_set`).
+- `cargo test -p hickeyfield-tauri --lib store::` → 12 passed, 0 failed (incl. `stall_fields_round_trip`, `a_v1_database_upgrades_without_losing_rows`, `migration_is_idempotent`).
+- `cargo test --workspace` (dummy `hickeyfield_*_KEY=x`) → 635 + 103 = **738 passed, 0 failed, 9 ignored** (9 ignored are pre-existing core tests, untouched).
+- `cargo fmt --all --check` → exit 0. `cargo clippy --workspace --all-targets -- -D warnings` → exit 0, zero warnings.
+- `cargo deny check` not run here (cargo-deny not installed; F5 adds no crate dep — the two disclosed baseline advisories RUSTSEC-2026-0258 / -0285 are pre-existing and orthogonal). `pnpm`/`tauri build` not run (no `ui/` change).
 
-## What I checked and found clean
+## New stall condition (AC9a) — checked, correct
+- **Genuine OR, not AND.** `mark_timed_out` (`runner.rs:280`): `job.stalled = job.poll_cycles >= MAX_POLL_CYCLES || aged_out`. Two tests would fail under AND: `the_fifth_timeout_stalls_the_job` stalls with age held at 0 (cycle branch alone), `age_past_seven_days_stalls_a_job_before_the_cycle_cap` stalls at `poll_cycles == 1` (age branch alone). Both pass ⇒ definitively OR.
+- **Age is from `created_at`, no under/overflow.** `age = now.saturating_sub(job.created_at).max(0) as u64` (`runner.rs:278`): `now`/`created_at` are `i64`; `saturating_sub` bounds the i64 subtraction, `.max(0)` clamps negative (future `created_at` / clock skew) to 0, and only then casts to `u64` — never negative, never wraps. `aged_out = age > STALL_AGE_BACKSTOP.as_secs()` compares `u64` to `u64` (`604800`).
+- **The 7d constant does not overflow.** `STALL_AGE_BACKSTOP = Duration::from_secs(7 * 24 * 3600)` (`runner.rs:257`): the literals infer to `u64` (the `from_secs` arg type); `7*24*3600 = 604800` fits trivially. It compiles as a `const`, and `age_past_seven_days_stalls_a_job_before_the_cycle_cap` exercises `STALL_AGE_BACKSTOP.as_secs() as i64 + 10` and stalls, confirming the value.
+- **A fresh job never stalls.** The `job()`/`submit_job` construction sets `poll_cycles: 0, stalled: false`; a job that never times out never calls `mark_timed_out`. The first timeout gives `poll_cycles = 1 (< 5)` and, since `submit_job` stamps `created_at = now_secs()` in production, `age ≈ budget « 7d` ⇒ `stalled = false` (`mark_timed_out_pauses_without_failing`, `a_timeout_within_the_cap_still_stays_resumable`).
+- **The old ~1–5h early abandonment is genuinely gone.** `fn age_cap` and the `budget × 5`/`clamp` scheme are deleted from live code (grep: only a test comment at `runner.rs:1046` mentions them). `a_six_hour_old_job_is_not_stalled_by_age` proves a 6h-old, single-timeout hosted job now stays resumable — the exact case the old floor wrongly stalled inside the provider retention window.
+- **Cycle cap is off-by-one-clean.** `>= 5` flips on exactly the 5th call; `the_fifth_timeout_stalls_the_job` asserts cycles 1–4 non-stalled, 5 stalled. `poll_cycles` increments once per timed-out session and the timeout branch `return`s immediately (`runner.rs:487-495`), so one increment per launch — no double count.
 
-- **AC1 `timeout_budget` (runner.rs:217-230)** — Correct. `route_id.split(':').next()`
-  → `ProviderId::from_slug` → `features().timeout`, falling back to
-  `TimeoutPolicy::HOSTED` for an unroutable prefix. Settings deserialized to the
-  same camelCase `SettingsDto` (`commands.rs:553-555`) that `submit_job` persists
-  (`commands.rs:763`), then `Billable::from`. `Value::Null` (the value written on
-  a serialize failure) and legacy/unsizable rows fail `from_value` → `None` →
-  `TimeoutPolicy::timeout(None)` = `base` (600s), never zero — core clamps
-  non-finite/absurd `work_units` (`engine.rs:358-372`), so a corrupt `settings`
-  blob cannot panic `mul_f64` on the runner thread. Budget is sized once off the
-  loop (runner.rs:116) before `job` is moved into the task.
-- **AC2 `mark_timed_out` (runner.rs:239-251)** — Correct non-terminal semantics.
-  Never sets `status`/`fail_reason`; only pushes a de-duplicated advisory (stable
-  `"no result yet after"` prefix) and bumps `updated_at`. Status stays non-terminal
-  ⇒ `is_settled()` false (`engine.rs:105-109`) ⇒ `unfinished()` still returns the
-  row (`engine.rs:167-173`) ⇒ `resume_all` re-attaches it. The timeout branch
-  (runner.rs:437-445) returns the job without a terminal status. Verified real
-  provider/network/store failures are still surfaced as `Failed`: missing client
-  (400-410), exhausted retries "lost contact" (467-476), permanent error (479-486)
-  are unchanged — the timeout-as-pause change does not swallow any of them.
-- **AC3 `ConcurrencyLimiter`/`Slot`/`Permit` (runner.rs:263-329)** — Correct.
-  `acquire` holds the `avail` mutex and loops `while *avail == 0 { wait }`, so a
-  spurious wakeup or a missed notify cannot let it through with zero permits, and
-  it decrements only a value verified positive under the lock ⇒ no underflow.
-  `Permit::Drop` (281-292) increments then `notify_one` under the lock ⇒ no
-  lost-wakeup; releases on every exit path — normal return, timeout, missing
-  client, and panic unwind — because it is bound to a real name `_permit`
-  (runner.rs:359, not a bare `_` that would drop immediately) scoped to the poll
-  block, so it is held for the whole poll and released before the uncapped
-  `download_outputs`. Both `acquire` and `Drop` recover a poisoned lock
-  (`unwrap_or_else(|e| e.into_inner())`), so a slot cannot leak and stall the
-  queue. Slots are built for all 9 `ProviderId::ALL` variants (provider.rs:34-44),
-  each `permits() >= 1` (provider.rs:200-213), so `slots[&provider]` indexing
-  cannot panic and no slot starts empty (no deadlock-on-zero).
-- **No deadlock / lock ordering** — `acquire` blocks on the Condvar holding only
-  its own `avail` mutex; no store/`watching`/`abandoned` lock is held across the
-  wait. `run_watched` releases the `abandoned` lock (352-354) before acquiring a
-  permit, and `store.upsert` locks are transient inside the poll loop, never held
-  across `acquire`. `resume_all` (86-93) calls `watch` per job; each task takes its
-  own permit, extras park, all complete (proven by the AC3 tests). No starvation
-  for a finite job set.
-- **AC4 `provider_poll_needed` (runner.rs:259-261) + gate (356-376)** — Correct and
-  strictly safe: `!is_terminal()` means any terminal row (only Completed-but-
-  undownloaded reaches here via `unfinished()`) skips the poll entirely and goes
-  straight to `download_outputs`, which never flips status back (147-150, 190-204).
-  This closes the "expired status URL 404 overwrites a paid success with Failed"
-  path. `download_outputs` re-fetches only outputs missing `local_path`.
-- **Tests are real regression tests, not tautologies.** AC1 asserts strict
-  inequalities computed through the real core (`big > small` and `big > 600s`;
-  fallback `== base` and `> 0`). AC2 drives the actual `elapsed() > budget` branch
-  with a 1ms budget and asserts `unfinished()` still returns the row, plus a late
-  `Completed` re-poll preserving `actual_usd`. AC3 asserts peak concurrency `<= 2`
-  (fal) / `== 1` (local) and `done == N` (nothing dropped) under real thread
-  contention with a 3–5ms in-slot sleep to force overlap. AC4's
-  `resuming_a_completed_job_keeps_its_success` is non-vacuous: the client is
-  scripted `Err(Permanent("HTTP 404"))`, so an ungated re-poll would flip the row
-  to Failed; the test asserts `calls == 0` (poll skipped) and Completed + URL +
-  `actual_usd` survive, with `local_path` pre-set so the download stays offline.
-- **Dead code / AI-code tells** — `DEFAULT_TIMEOUT` import removed; no runtime
-  reference remains in runner.rs (only a test-section comment header). No invented
-  APIs — every call (`features().timeout`, `max_concurrent.permits()`,
-  `TimeoutPolicy::timeout/HOSTED/base`, `is_terminal`/`is_settled`/`unfinished`,
-  `Billable::from`, `ProviderId::ALL/from_slug`) exists and is public. Module doc
-  (1-19) updated to match the new limiter + per-job budget behavior; no comment
-  contradicts the code on the correctness-critical paths.
+## Advisory reword (AC9b) + F3 clear — checked, correct
+- **Prefix retained ⇒ F3 still fires.** The stalled string is `format!("{TIMEOUT_ADVISORY_PREFIX} — the provider hasn't returned a result after {} attempts; it may still finish. Use Rerun to try again.", …)` (`runner.rs:286-291`). It literally begins with the shared `pub const TIMEOUT_ADVISORY_PREFIX = "no result yet"` (`engine.rs:285`), so `apply_poll`'s `retain(|a| !a.starts_with(TIMEOUT_ADVISORY_PREFIX))` on a `Phase::Completed` transition (`engine.rs:430-438`) still removes it while leaving `fail_reason` and other advisories intact. Proven end-to-end by `the_stalled_advisory_points_at_rerun_and_still_clears_on_completion` (asserts the *stalled* note is gone after a real `apply_poll`→Completed) and `a_late_result_is_reattached_after_a_timeout`.
+- **"reopen" is gone; "Rerun" is a real affordance.** No live "reopen" wording remains (grep: only negative test assertions). Rerun (`delete_job` + re-`submit_job`) is the actual recovery path today (F4/`retry_job` deferred and confirmed unbuilt).
 
-## Findings (all minor; none on the paid-output-loss critical path)
+## No regression to AC1–AC4 / AC6–AC8; deferrals untouched — checked, clean
+- **AC1** `timeout_budget` (`runner.rs:222-235`) untouched. **AC2** `mark_timed_out` still never sets a terminal status or `fail_reason` — a timeout is still a pause; the real-failure arms (missing client, exhausted-retry "lost contact", permanent error) are unchanged. **AC3** `ConcurrencyLimiter`/`Slot`/`Permit`/`acquire` are byte-for-byte unchanged. **AC4** `provider_poll_needed = !is_terminal()` unchanged. **AC6** `unfinished()` filter `!is_settled() && !is_stalled()` (`engine.rs:199`) and migration v6 unchanged. **AC7** `apply_poll` clear unchanged. All corresponding tests pass.
+- **F1b (deferred) untouched.** `resume_all` (`runner.rs:91-98`) is the S1 per-job `watch` loop verbatim — no drain worker.
+- **F4 (deferred) untouched.** No `retry_job`/`resume_job` anywhere (grep clean across `src-tauri/`, `crates/`, `ui/`); no `ui/` change; `commands.rs` only sets the two struct-literal fields (`commands.rs:766-768`). `stalled` crosses the serde bridge on the raw `JobSet` but nothing reads it yet — exactly the deferred surface.
+- **AI-tells / dead code.** No invented APIs: `Duration::from_secs`, `Duration::as_secs`, `i64::saturating_sub`, `.max`, `retain`/`starts_with` all real and used correctly. The const/module/fn doc comments match the new behavior (the module doc at `runner.rs:15-19` and the const doc at `runner.rs:244-256` describe the fixed 7-day backstop accurately). No dead code introduced by F5.
 
-- **MINOR — stale timeout advisory survives a late completion.**
-  `runner.rs:239-251` records the advisory "no result yet after N min … will keep
-  trying when the app next launches"; `apply_poll` (`engine.rs:385-409`) never
-  touches `job.advisories`. So when a timed-out job later re-polls to `Completed`
-  and its bytes are saved, the row still carries a user-facing advisory that
-  contradicts its own state (result is present, nothing is "still running"). Not
-  data loss and not on the critical path — status is correctly `Completed` — but
-  it is a misleading, self-contradicting user-facing string.
-  Fix (follow-up, not applied): clear advisories matching the `NOTE` prefix when a
-  job reaches terminal `Completed` (e.g. in `run_watched`/download path), or filter
-  them out in the UI for settled jobs. Recommend a backlog item.
+## Findings (ranked)
 
-- **MINOR — comment overstates the abandoned-while-parked guarantee (runner.rs:350-351).**
-  The comment says a job "deleted while it was parked in the queue never consumes a
-  slot another job is waiting for." The `abandoned` check is *before* `acquire`, so
-  it protects a job that has not yet reached `acquire`; a job already parked inside
-  `limiter.acquire()` has passed the check and, if deleted while parked, will still
-  take a permit when woken — then return immediately via the `is_abandoned()` check
-  at the top of `poll_until_terminal` (434-436). Behavior is safe (RAII release, no
-  leak/deadlock, permit held for microseconds), but the comment is imprecise about
-  which window it covers. Fix: reword the comment. No code change needed.
+- **MINOR — one stalled-advisory string serves two stall reasons and slightly over-promises (`runner.rs:286-291`).** Standard: honest/precise user messaging. (a) When stalled via the age backstop, `poll_cycles` can be `1`, so the note reads "…after 1 attempts…" — both a pluralization nit and misleading, since that stall was driven by 7-day age, not the attempt count. (b) The const's own doc (`runner.rs:246-248`) states that past 7 days "even a completed result is gone," yet the same advisory says "it may still finish" — optimistic/contradictory on the age path. (c) It points at Rerun without noting Rerun creates a new *paid* job (it does not resume the original); the no-cost resume path is the deferred F4. Concrete fix: branch the wording on stall reason (cycle-cap vs age-backstop), drop "it may still finish" for the age path, fix the "1 attempts" pluralization, and (optionally) hint that Rerun re-charges. Non-blocking product/wording polish. Related trivial doc-drift: `engine.rs:280` still calls the stall note the "stopped retrying" note, wording F5 removed — reword for accuracy.
+- **MINOR (carried, still valid) — comment overstates the abandoned-while-parked guarantee (`runner.rs:400-401`).** The comment claims a job deleted while parked "never consumes a slot another job is waiting for." The `abandoned` check runs *before* `acquire`; a job already parked inside `limiter.acquire()` has passed it and, if deleted while parked, still takes a permit on wake, then returns immediately via the top-of-loop `is_abandoned()` check (`runner.rs:484-486`). Behavior is safe (RAII release, permit held microseconds); only the comment is imprecise. Reword; no code change. Unchanged by F5.
+- **MINOR (carried, accepted tradeoff) — parked poll loops still occupy blocking-pool threads.** Each resumed job is a `spawn_blocking` task that may park on the Condvar. The F1.2 cap shrinks `unfinished()` (the load-bearing mitigation) but the per-job spawn in `resume_all` is unchanged because F1b is deferred. Acknowledged in design; no action this slice.
+- **MINOR (carried, test coverage) — the permit-around-poll wiring is inspection-verified, not covered by a concurrent end-to-end test.** The limiter primitive is well-tested in isolation (AC3); no test spawns two live `run_watched` calls for one provider. Unchanged by F5; noted, not blocking.
 
-- **MINOR (accepted design tradeoff) — parked tasks occupy blocking-pool threads.**
-  Each queued job is a `spawn_blocking` task that parks on the Condvar while waiting
-  for a permit (runner.rs:118-132, 319-328). A very large queue (hundreds) would
-  pressure tokio's default ~512-thread blocking pool. Explicitly acknowledged and
-  defaulted in design.md (Open question #2) as acceptable for a desktop app; no
-  action required for this slice, noted for awareness.
-
-- **MINOR (test coverage) — the permit-around-poll wiring in `run_watched` is
-  verified by inspection, not by a concurrent end-to-end test.** The limiter
-  primitive is well-tested in isolation (AC3) and the wiring is a trivial
-  `.map(|p| limiter.acquire(p))` scoping the poll (359-372); no test spawns two
-  live `run_watched` calls for the same provider and asserts their polls serialize.
-  Acceptable gap given the difficulty of timing `spawn_blocking`; noted, not
-  blocking.
-
-## Cosmetic (no action)
-- `budget.as_secs() / 60` (runner.rs:247) reads "0 min" for sub-minute budgets,
-  which only occurs in the 1ms-budget unit test; the production floor is `base`
-  (600s = 10 min), so the advisory always reads a sensible minute count in the app.
+## Prior findings — status
+- **RESOLVED — "the age-floor stall can outrun the (unbuilt) recovery path" (the prior review's one substantive MINOR / the "age-cap-horizon" item).** F5 removes the `clamp(budget×5, 1h, 7d)` scheme (effective ~1–5h floor) and replaces it with a fixed 7-day backstop matched to the provider retention horizon. A slow-but-alive hosted job aged a few hours is no longer stalled (`a_six_hour_old_job_is_not_stalled_by_age`), so it stays auto-resumable while its paid output is still retrievable. slice.md:24's deferral rationale ("output already provider-expired by the cap age") is now accurate at the real 7-day horizon.
+- **RESOLVED (stays resolved) — "stale timeout advisory survives a late completion."** Fixed by F3; F5 keeps the shared prefix on the reworded note, so completion still clears it (verified by the F3 engine tests + `the_stalled_advisory_points_at_rerun_and_still_clears_on_completion`).
 
 ## Conclusion
-The slice delivers AC1–AC4 with correct, defensive logic and non-vacuous tests;
-error propagation is intact and the timeout-as-pause change is narrowly scoped.
-The Condvar limiter is free of the missed-notify, underflow, permit-leak, and
-poison failure modes flagged as the weakest part. The only findings are minor and
-off the critical path — chiefly a stale advisory after late completion, worth a
-follow-up backlog item but not a merge blocker. No blockers, no majors.
+F5 is a small, well-contained fix that makes the stall backstop honest (a defensible fixed 7-day horizon replacing an effective ~1–5h one), preserves the `MAX_POLL_CYCLES=5` active-polling bound as a genuine OR, is free of over/underflow, never stalls a fresh job, and re-words the advisory onto a real affordance while keeping the `TIMEOUT_ADVISORY_PREFIX` so F3's clear-on-Completed still fires. AC1–AC4 and AC6–AC8 are untouched and green; F1b and F4 remain correctly deferred and unbuilt; the full gate is clean (738 passed / 0 failed, fmt + clippy exit 0). All findings are MINOR — none is a correctness, error-handling, or paid-output-loss defect on the critical path. The slice is production-ready to merge; the advisory-wording polish and the two carried comment/coverage items are follow-ups, not blockers.
 
 VERDICT: PASS

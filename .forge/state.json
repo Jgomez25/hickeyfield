@@ -16,7 +16,15 @@
     {
       "id": "S1-job-engine-reliability",
       "title": "job-engine-reliability",
-      "status": "in-progress",
+      "status": "in-progress (reopened: F1+F3)",
+      "started": "2026-09-14",
+      "sha": "909cdea",
+      "branch": "forge/s1-job-engine-reliability"
+    },
+    {
+      "id": "S2-honest-free-tier",
+      "title": "honest-free-tier",
+      "status": "parked (not started)",
       "started": "2026-09-14"
     }
   ]

@@ -763,6 +763,9 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
         settings: serde_json::to_value(&input.settings).unwrap_or(serde_json::Value::Null),
         // Persisted so Rerun repeats the generation the user actually ran.
         media: input.media.clone(),
+        // A fresh job has timed out zero times and is not stalled.
+        poll_cycles: 0,
+        stalled: false,
     };
     state.store.upsert(&job).map_err(|e| e.to_string())?;
 
