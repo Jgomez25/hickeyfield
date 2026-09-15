@@ -16,6 +16,7 @@ import type {
   MediaRef,
   Model,
   PresetFamily,
+  PromptPreview,
   Route,
   SubmitInput,
   UseCase,
@@ -26,6 +27,7 @@ import {
   mockCancel,
   mockEstimate,
   mockListJobs,
+  mockPreview,
   mockSubmit,
   mockSubscribe,
 } from "./mock";
@@ -608,6 +610,36 @@ export async function submitJob(input: SubmitInput): Promise<string> {
     // synthetic job that marched to "completed" with an invented seed and an
     // invented price. Never fabricate a generation inside the app.
     if (!isDesktop()) return mockSubmit(input);
+    throw asError(e);
+  }
+}
+
+/**
+ * Compile the prompt for display WITHOUT submitting anything.
+ *
+ * Wrapped in `{ input }` exactly like {@link submitJob} — Tauri matches command
+ * parameters by name, and `preview_prompt` takes a single `input`. The DTO is
+ * already camelCase, but both spellings are accepted defensively so a rename on
+ * either side degrades to a missing field, not a crash. Runs no route, price or
+ * generation: it exists so the user can see (and edit) the enhancer's output
+ * before spending money.
+ */
+export async function previewPrompt(input: SubmitInput): Promise<PromptPreview> {
+  try {
+    const raw = await invoke<Record<string, unknown>>("preview_prompt", {
+      input,
+    } as unknown as Record<string, unknown>);
+    const str = (v: unknown): string | null =>
+      typeof v === "string" ? v : null;
+    return {
+      prompt: str(raw.prompt) ?? "",
+      original: str(raw.original) ?? input.prompt,
+      enhanced: str(raw.enhanced),
+      version: str(raw.version),
+      note: str(raw.note),
+    };
+  } catch (e) {
+    if (!isDesktop()) return mockPreview(input);
     throw asError(e);
   }
 }

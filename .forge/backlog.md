@@ -190,3 +190,8 @@ mandatory slice; tracked here for prioritization.
 - **F7 (enhancer UX)** — probe-on-select to detect an unloadable Ollama model (a model
   that lists in /api/tags but errors on /api/chat with e.g. "unknown model architecture").
   Today it passes name-based tiering and only fails at enhance-time via the honest fallback.
+
+- **F8 (enhancer UX)** — invalidate the prompt preview when the raw prompt / model / settings
+  change after previewing (App.tsx useEffect). Today the stale preview panel persists; Generate
+  still sends the shown text (safe), but the stored `original` can diverge from what was shown.
+  Cosmetic provenance, non-blocking.

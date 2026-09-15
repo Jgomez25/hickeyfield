@@ -18,6 +18,13 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Preview, edit, and retry the enhanced prompt before generating.** A new
+  "Preview prompt" button shows exactly what the enhancer will send — the rewritten
+  scene plus your original for reference — in an editable box. Edit it if it assumed
+  too much, hit Retry for a different rewrite, then Generate with exactly the text
+  shown. The one-click Generate still works as before for when you trust the enhancer.
+  The preview is a dry run: it never starts or charges a generation.
+
 - **The prompt enhancer now actually rewrites your prompt.** Previously the Enhance
   switch was on by default but nothing behind it ran, so a short prompt went to the
   model word-for-word. It now expands your scene through the filmmaking corpus using

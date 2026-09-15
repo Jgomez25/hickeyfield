@@ -568,6 +568,134 @@
   text-align: center;
 }
 
+/* ── Prompt preview panel ───────────────────────────────────────────────── */
+
+.prompt-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-250);
+  padding: var(--space-300);
+  border-radius: var(--radius-300);
+  background: var(--light-05);
+}
+
+.prompt-preview-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-150);
+}
+
+.prompt-preview-icon {
+  opacity: 0.65;
+}
+
+.prompt-preview-title {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+}
+
+.prompt-preview-field,
+.prompt-preview-original {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-100);
+}
+
+.prompt-preview-label {
+  color: var(--text-tertiary);
+  font-size: var(--text-xxs);
+}
+
+.prompt-preview-text {
+  width: 100%;
+  padding: var(--space-250);
+  border: 0;
+  border-radius: var(--radius-300);
+  background: var(--light-05);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.prompt-preview-text:disabled {
+  opacity: 0.6;
+}
+
+.prompt-preview-original-body {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.prompt-preview-note {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-xxs);
+  line-height: 1.4;
+}
+
+.prompt-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-200);
+}
+
+.prompt-preview-retry {
+  padding: var(--space-200) var(--space-300);
+  border: 0;
+  border-radius: var(--radius-300);
+  background: var(--light-10);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.prompt-preview-retry:hover:not(:disabled) {
+  background: var(--light-15);
+}
+
+.prompt-preview-retry:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.prompt-preview-caveat {
+  color: var(--text-tertiary);
+  font-size: var(--text-xxs);
+}
+
+/* The "Preview prompt" trigger that sits beside Generate. Secondary weight so
+ * the paid action stays the primary one. */
+.preview-trigger {
+  width: 100%;
+  padding: var(--space-250);
+  border: 1px solid var(--light-15);
+  border-radius: var(--radius-300);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.preview-trigger:hover:not(:disabled) {
+  background: var(--light-05);
+}
+
+.preview-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* An unfilled required slot. Accent rather than danger: nothing is wrong yet,
  * this is the thing still to do. */
 .frame-slot-required {

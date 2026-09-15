@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S6-enhancer-output-validation",
+  "currentSlice": "S7-enhancer-prompt-preview",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -51,6 +51,12 @@
       "id": "S6-enhancer-output-validation",
       "title": "enhancer-output-validation",
       "status": "released",
+      "started": "2026-09-15"
+    },
+    {
+      "id": "S7-enhancer-prompt-preview",
+      "title": "enhancer-prompt-preview",
+      "status": "in-progress",
       "started": "2026-09-15"
     }
   ]

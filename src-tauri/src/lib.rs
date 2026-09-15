@@ -78,6 +78,7 @@ pub fn run() {
             commands::list_presets,
             commands::estimate_cost,
             commands::price_status,
+            commands::preview_prompt,
             commands::submit_job,
             commands::list_jobs,
             commands::cancel_job,

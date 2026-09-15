@@ -697,6 +697,13 @@ pub struct SubmitInput {
     /// when `settings.enhance` is on and the three enhance rules allow it.
     #[serde(default)]
     pub rewriter: Option<RewriterChoice>,
+    /// The exact prompt the user previewed (and possibly edited). When present
+    /// and non-empty, `submit_job` sends it VERBATIM and does NOT re-run the
+    /// harness — the previewed text already carries the camera clause, so
+    /// re-compiling would double-append it and re-charge the rewrite. Blank or
+    /// whitespace-only falls through to the normal enhance+compile path.
+    #[serde(default)]
+    pub final_prompt: Option<String>,
 }
 
 /// The UI's explicit enhancer choice. Structured rather than a bare tag so a
@@ -804,6 +811,157 @@ pub fn list_ollama_models() -> Vec<hickeyfield_core::enhancer::LocalModel> {
         .unwrap_or_default()
 }
 
+/// Probe the impure enhancer environment: the stored OpenAI key, whether Ollama
+/// is up, and the chat models it has installed.
+///
+/// Lifted verbatim out of `submit_job` so `preview_prompt` can share it (both
+/// commands need it, and borrow lifetimes require the caller to own these
+/// locals). When enhancement is off there is nothing to rewrite, so the vault
+/// read and daemon probe are skipped entirely. One probe of `/api/tags`, not
+/// two: `local_models` distinguishes a down daemon (`Err`) from a running-but-
+/// empty one (`Ok([])`), the exact `ollama_up` vs. no-models split
+/// `select_rewriter` needs.
+fn probe_enhancer_env(
+    enhance: bool,
+) -> (
+    Option<String>,
+    bool,
+    Vec<hickeyfield_core::enhancer::LocalModel>,
+) {
+    if !enhance {
+        return (None, false, Vec::new());
+    }
+    let openai_key = vault::get(ProviderId::OpenAi, false);
+    let (ollama_up, ollama_models) =
+        match hickeyfield_core::enhancer::local_models(hickeyfield_core::clients::OLLAMA_URL) {
+            Ok(models) => (true, models),
+            Err(_) => (false, Vec::new()),
+        };
+    (openai_key, ollama_up, ollama_models)
+}
+
+/// Turn a submission into the prompt actually sent over the wire.
+///
+/// Two paths, one place. When the user previewed (and possibly edited) the
+/// prompt, `final_prompt` holds the exact text they saw. That text already
+/// carries the camera clause the preview appended, so it is sent VERBATIM and
+/// the harness is NOT run again — re-compiling would double-append the camera
+/// template and re-charge (or silently re-change) the rewrite. This is the S7
+/// invariant. A blank/whitespace-only `final_prompt` falls through to the
+/// normal enhance+compile path, so an empty edit can never submit an empty
+/// prompt. Kept off the store/fal path so it is unit-testable.
+fn compiled_for_submit(
+    model: &hickeyfield_core::Model,
+    input: &SubmitInput,
+) -> Result<crate::harness::Compiled, String> {
+    match input
+        .final_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        // Previewed/edited: send exactly what the user saw. The camera clause is
+        // already in this text — do NOT call `compile` again.
+        Some(text) => Ok(crate::harness::Compiled {
+            prompt: text.to_string(),
+            original: input.prompt.clone(),
+            enhanced: Some(text.to_string()),
+            // A human edit has no reproducible recipe, so there is no version to
+            // pin — a guessed pin would make two unlike generations look alike.
+            version: None,
+            note: Some("Previewed before generating; sent exactly as shown.".into()),
+        }),
+        // The normal path: pick a rewriter from what is actually reachable and
+        // run the harness. Bound in locals so the borrowed key/model outlive the
+        // `compile` call.
+        None => {
+            let enhance = input.settings.enhance;
+            let (openai_key, ollama_up, ollama_models) = probe_enhancer_env(enhance);
+            let rewriter = if enhance {
+                select_rewriter(
+                    input.rewriter.as_ref(),
+                    openai_key.as_deref(),
+                    ollama_up,
+                    &ollama_models,
+                )
+            } else {
+                crate::harness::Rewriter::None
+            };
+            // The harness. Resolves the preset, appends its camera clause,
+            // applies the three enhance rules, and — when asked and able —
+            // rewrites the scene through the filmmaking corpus. Runs *before*
+            // pricing and routing because a refusal here must cost nothing.
+            crate::harness::compile(
+                model,
+                &input.prompt,
+                input.preset_id.as_deref(),
+                &input.media,
+                enhance,
+                rewriter,
+            )
+        }
+    }
+}
+
+/// What the user sees before spending money: the compiled wire prompt (with the
+/// camera clause and any rewrite already applied), their original words, and the
+/// same honest note the meta rail shows. `#[serde(rename_all = "camelCase")]` so
+/// the fields land as `enhanced`, `version`, `note` for the UI.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewDto {
+    pub prompt: String,
+    pub original: String,
+    pub enhanced: Option<String>,
+    pub version: Option<String>,
+    pub note: Option<String>,
+}
+
+/// Compile the prompt for display WITHOUT submitting anything.
+///
+/// Takes NO `State` on purpose: with no handle to the store, prices, or fal it
+/// structurally cannot resolve a route, read a price, or call
+/// `submit_to_provider`, so a preview can never bill a generation. It reuses the
+/// exact same `harness::compile` (camera clause + enhance rules + the S6 refusal
+/// guard) `submit_job` uses, so what the user previews is what they would send.
+#[tauri::command]
+pub fn preview_prompt(input: SubmitInput) -> Result<PreviewDto, String> {
+    let reg = registry();
+    let model = reg
+        .get(&input.model_id)
+        .ok_or_else(|| format!("unknown model: {}", input.model_id))?;
+
+    let enhance = input.settings.enhance;
+    let (openai_key, ollama_up, ollama_models) = probe_enhancer_env(enhance);
+    let rewriter = if enhance {
+        select_rewriter(
+            input.rewriter.as_ref(),
+            openai_key.as_deref(),
+            ollama_up,
+            &ollama_models,
+        )
+    } else {
+        crate::harness::Rewriter::None
+    };
+
+    let compiled = crate::harness::compile(
+        model,
+        &input.prompt,
+        input.preset_id.as_deref(),
+        &input.media,
+        enhance,
+        rewriter,
+    )?;
+
+    Ok(PreviewDto {
+        prompt: compiled.prompt,
+        original: compiled.original,
+        enhanced: compiled.enhanced,
+        version: compiled.version,
+        note: compiled.note,
+    })
+}
+
 #[tauri::command]
 pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<String, String> {
     let reg = registry();
@@ -816,51 +974,9 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
         .filter_map(|s| ProviderId::from_slug(s))
         .collect();
 
-    // Pick a rewriter from what is actually reachable. Bound in locals so the
-    // borrowed key/model outlive the `compile` call. When enhancement is off we
-    // pass `Rewriter::None` and skip the vault read and daemon probe entirely —
-    // there is nothing to rewrite, so there is nothing to detect.
-    let enhance = input.settings.enhance;
-    let openai_key = if enhance {
-        vault::get(ProviderId::OpenAi, false)
-    } else {
-        None
-    };
-    // One probe of `/api/tags`, not two: `local_models` distinguishes a down
-    // daemon (`Err`) from a running-but-empty one (`Ok([])`), which is exactly
-    // the `ollama_up` vs. no-models split `select_rewriter` needs — so it stands
-    // in for the earlier `detect_local()` probe as well.
-    let (ollama_up, ollama_models) = if enhance {
-        match hickeyfield_core::enhancer::local_models(hickeyfield_core::clients::OLLAMA_URL) {
-            Ok(models) => (true, models),
-            Err(_) => (false, Vec::new()),
-        }
-    } else {
-        (false, Vec::new())
-    };
-    let rewriter = if enhance {
-        select_rewriter(
-            input.rewriter.as_ref(),
-            openai_key.as_deref(),
-            ollama_up,
-            &ollama_models,
-        )
-    } else {
-        crate::harness::Rewriter::None
-    };
-
-    // The harness. Resolves the preset, appends its camera clause, applies the
-    // three enhance rules, and — when asked and able — rewrites the scene
-    // through the filmmaking corpus. Runs *before* pricing and routing because
-    // a refusal here must cost nothing.
-    let compiled = crate::harness::compile(
-        model,
-        &input.prompt,
-        input.preset_id.as_deref(),
-        &input.media,
-        input.settings.enhance,
-        rewriter,
-    )?;
+    // The wire prompt: either the exact text the user previewed (sent verbatim,
+    // never re-compiled) or, on the quick path, a fresh enhance+compile.
+    let compiled = compiled_for_submit(model, &input)?;
 
     let billable = Billable::from(&input.settings);
     let route = hickeyfield_core::route::resolve(
@@ -1506,6 +1622,129 @@ mod tests {
             Rewriter::Unavailable { note } => note,
             other => panic!("expected Unavailable, got {}", name(&other)),
         }
+    }
+
+    // ---- Prompt preview + verbatim final prompt (S7: AC1, AC2, AC4) --------
+
+    /// A minimal `SubmitInput` for the preview/compile helpers. Enhance-off by
+    /// default so the compile path is deterministic and touches no network.
+    fn preview_input(prompt: &str) -> SubmitInput {
+        SubmitInput {
+            model_id: "kling3_0".into(),
+            route_id: None,
+            prompt: prompt.into(),
+            preset_id: None,
+            settings: SettingsDto {
+                enhance: false,
+                ..Default::default()
+            },
+            media: Vec::new(),
+            rewriter: None,
+            final_prompt: None,
+        }
+    }
+
+    #[test]
+    fn preview_returns_a_compiled_prompt_and_creates_no_job() {
+        // AC1. With enhance off the preview is deterministic and needs no
+        // network: it must return the compiled wire prompt — the raw text plus
+        // the model's camera template — with the original preserved and no
+        // rewrite claimed. `preview_prompt` takes no `State`, so there is no
+        // store to write a job to: the signature is the structural proof.
+        let input = preview_input("a lighthouse at dawn");
+        let dto = preview_prompt(input).expect("preview must compile");
+
+        assert!(
+            dto.prompt.contains("a lighthouse at dawn"),
+            "the raw text must survive into the wire prompt: {}",
+            dto.prompt
+        );
+        // The camera clause is always appended, so the wire prompt is longer
+        // than the raw text the user typed.
+        assert!(
+            dto.prompt.len() > "a lighthouse at dawn".len(),
+            "a camera clause must be appended: {}",
+            dto.prompt
+        );
+        assert_eq!(
+            dto.original, "a lighthouse at dawn",
+            "the user's own words are preserved verbatim"
+        );
+        assert!(
+            dto.enhanced.is_none(),
+            "enhance is off, so nothing was rewritten: {:?}",
+            dto.enhanced
+        );
+        assert!(dto.version.is_none(), "no rewrite ran, so no version pin");
+    }
+
+    #[test]
+    fn a_final_prompt_is_used_verbatim_and_never_re_enhanced() {
+        // AC2 (the riskiest invariant). A previewed/edited prompt already
+        // carries the camera clause, so `compiled_for_submit` must send it
+        // VERBATIM and NOT call `compile` again — no double camera clause, no
+        // re-charged rewrite. We prove the bypass by pairing a non-empty
+        // `final_prompt` with enhance ON *and* a bogus Ollama choice: if compile
+        // ran it would try to reach that rewriter and would append a camera
+        // clause. Neither happens.
+        let reg = registry();
+        let model = reg.get("kling3_0").expect("a known model");
+
+        let mut input = preview_input("original scene");
+        input.settings.enhance = true;
+        input.rewriter = Some(choice("ollama", Some("definitely-not-installed")));
+        input.final_prompt = Some("edited text".into());
+
+        let compiled = compiled_for_submit(model, &input).expect("verbatim path never fails");
+
+        assert_eq!(
+            compiled.prompt, "edited text",
+            "the previewed text must go over the wire byte-for-byte"
+        );
+        assert_eq!(compiled.enhanced.as_deref(), Some("edited text"));
+        assert_eq!(compiled.original, "original scene");
+        assert!(
+            compiled.version.is_none(),
+            "a human edit has no reproducible recipe, so no version pin"
+        );
+        assert_eq!(
+            compiled.note.as_deref(),
+            Some("Previewed before generating; sent exactly as shown."),
+            "the note must say the text was sent exactly as shown"
+        );
+    }
+
+    #[test]
+    fn a_blank_final_prompt_falls_back_to_the_normal_compile_path() {
+        // AC4. A whitespace-only edit must never submit an empty prompt: it is
+        // filtered out and `compiled_for_submit` falls through to the normal
+        // enhance+compile path, which appends the camera clause to the raw
+        // prompt just like the quick Generate. Enhance stays off here so the
+        // fallback is deterministic and network-free.
+        let reg = registry();
+        let model = reg.get("kling3_0").expect("a known model");
+
+        let mut input = preview_input("a quiet harbour");
+        input.final_prompt = Some("   ".into());
+
+        let compiled = compiled_for_submit(model, &input).expect("fallback compiles");
+
+        assert!(
+            compiled.prompt.contains("a quiet harbour"),
+            "the raw prompt drives the fallback compile: {}",
+            compiled.prompt
+        );
+        assert!(
+            compiled.prompt.len() > "a quiet harbour".len(),
+            "the fallback path still appends the camera clause: {}",
+            compiled.prompt
+        );
+        // The blank edit was ignored, so this is NOT the verbatim note.
+        assert_ne!(
+            compiled.note.as_deref(),
+            Some("Previewed before generating; sent exactly as shown."),
+            "a blank final_prompt must not be treated as a previewed submission"
+        );
     }
 
     #[test]

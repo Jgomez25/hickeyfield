@@ -14,6 +14,7 @@ import type {
   JobSet,
   Model,
   PresetFamily,
+  PromptPreview,
   SubmitInput,
 } from "./types";
 import { gradientDataUri } from "./lib/placeholder";
@@ -647,6 +648,34 @@ export function mockSubmit(input: SubmitInput): string {
   }, 6500);
 
   return id;
+}
+
+/**
+ * Browser-dev stand-in for `preview_prompt`. Mirrors the real command: with
+ * enhance on it appends the same camera-style clause `mockSubmit` uses and marks
+ * the text as rewritten; with enhance off it returns the original plus that
+ * clause and an honest note, so the panel is exercisable without the shell.
+ */
+export function mockPreview(input: SubmitInput): PromptPreview {
+  const clause =
+    "Shot on 35mm, shallow depth of field, motivated practical lighting.";
+  const prompt = `${input.prompt} ${clause}`;
+  if (input.settings.enhance) {
+    return {
+      prompt,
+      original: input.prompt,
+      enhanced: prompt,
+      version: "hickeyfield-enhance-1.2",
+      note: null,
+    };
+  }
+  return {
+    prompt,
+    original: input.prompt,
+    enhanced: null,
+    version: null,
+    note: "Enhance is off — your prompt was sent exactly as you wrote it, with the camera clause added.",
+  };
 }
 
 export function mockCancel(jobSetId: string): void {

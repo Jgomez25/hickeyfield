@@ -245,6 +245,27 @@ export interface SubmitInput {
   media: MediaRef[];
   /** null means auto — the shell picks from what is actually reachable. */
   rewriter?: RewriterChoice | null;
+  /**
+   * The exact prompt the user previewed and possibly edited. When present and
+   * non-empty the shell sends it VERBATIM and does not re-run the enhancer —
+   * the previewed text already carries the camera clause. Absent on the quick
+   * one-click Generate, which enhances silently as before.
+   */
+  finalPrompt?: string | null;
+}
+
+/**
+ * What the enhancer would produce for a prompt, shown before any money is spent.
+ * Mirrors the Rust `PreviewDto`: `prompt` is the full wire text (camera clause +
+ * any rewrite), `original` the user's own words, `enhanced` set only when a
+ * rewrite actually changed the text, `note` the honest reason when it did not.
+ */
+export interface PromptPreview {
+  prompt: string;
+  original: string;
+  enhanced?: string | null;
+  version?: string | null;
+  note?: string | null;
 }
 
 /**

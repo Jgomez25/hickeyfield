@@ -13,6 +13,7 @@ import {
   modelsForUseCase,
   localEndpoints,
   ollamaModels,
+  previewPrompt,
   providerInfo,
   submitJob,
   modelCapabilities,
@@ -30,6 +31,7 @@ import type {
   Model,
   ModelCapabilities,
   PresetFamily,
+  PromptPreview,
   RewriterChoice,
   UseCase,
   WorkspaceTab,
@@ -108,6 +110,12 @@ export default function App() {
 
   const [estimate, setEstimate] = useState<CostEstimate | null>(null);
   const [pending, setPending] = useState(false);
+  // The opt-in prompt preview: the enhancer's output shown before spending
+  // money. `preview` is null when the panel is closed; `previewText` is the
+  // editable string that Generate-from-preview sends VERBATIM as `finalPrompt`.
+  const [preview, setPreview] = useState<PromptPreview | null>(null);
+  const [previewText, setPreviewText] = useState("");
+  const [previewing, setPreviewing] = useState(false);
   /**
    * The last submit failure, shown above the feed. Held here rather than in a
    * toast because a refused generation is something the user must act on —
@@ -402,9 +410,13 @@ export default function App() {
     [forget],
   );
 
+  // One submit path for both buttons. `finalPrompt` is the exact previewed
+  // text: when present the shell sends it verbatim and does NOT re-enhance.
+  // Quick Generate calls `send()` with no argument, so its behaviour — a silent
+  // enhance-and-submit — is unchanged.
   const send = useCallback(
-    async () => {
-      if (!modelId || !route) return;
+    async (finalPrompt?: string) => {
+      if (!modelId || !route) return false;
       setPending(true);
       setSubmitError(null);
       try {
@@ -416,8 +428,10 @@ export default function App() {
           settings,
           media,
           rewriter: enhancer,
+          finalPrompt: finalPrompt ?? null,
         });
         setJobs(await listJobs());
+        return true;
       } catch (e) {
         setSubmitError(e instanceof Error ? e.message : String(e));
         try {
@@ -425,6 +439,7 @@ export default function App() {
         } catch {
           // Already reporting the more useful error.
         }
+        return false;
       } finally {
         setPending(false);
       }
@@ -436,6 +451,45 @@ export default function App() {
     if (!modelId || !route) return;
     await send();
   }, [modelId, route, send]);
+
+  // Fetch (or re-fetch) the preview. Guards the same way submit does — no model
+  // or route means nothing to compile — and opens the panel with the compiled
+  // text seeded into the editable box.
+  const runPreview = useCallback(async () => {
+    if (!modelId || !route) return;
+    setPreviewing(true);
+    setSubmitError(null);
+    try {
+      const p = await previewPrompt({
+        modelId,
+        routeId: route.id,
+        prompt,
+        presetId,
+        settings,
+        media,
+        rewriter: enhancer,
+        finalPrompt: null,
+      });
+      setPreview(p);
+      // Seed the editable box with the rewrite when there was one, else the
+      // compiled original — the exact text the user would otherwise send.
+      setPreviewText(p.enhanced ?? p.prompt);
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPreviewing(false);
+    }
+  }, [modelId, route, prompt, presetId, settings, media, enhancer]);
+
+  // Generate with exactly the text shown in the preview. On success the panel
+  // is cleared so the next generation starts from the quick path again.
+  const onGenerateFromPreview = useCallback(async () => {
+    const ok = await send(previewText);
+    if (ok) {
+      setPreview(null);
+      setPreviewText("");
+    }
+  }, [send, previewText]);
 
   const onRerun = useCallback(
     (job: JobSet) => {
@@ -570,6 +624,13 @@ export default function App() {
           onOpenModels={() => setOverlay("models")}
           onOpenSetup={() => setOverlay("onboarding")}
           onSubmit={() => void onSubmit()}
+          preview={preview}
+          previewText={previewText}
+          onPreviewTextChange={setPreviewText}
+          previewing={previewing}
+          onPreview={() => void runPreview()}
+          onRetryPreview={() => void runPreview()}
+          onGenerateFromPreview={() => void onGenerateFromPreview()}
         />
 
         <ResultsFeed

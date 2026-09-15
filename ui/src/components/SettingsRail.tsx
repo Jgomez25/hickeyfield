@@ -7,6 +7,7 @@ import type {
   Model,
   ModelCapabilities,
   PresetFamily,
+  PromptPreview as Preview,
   RewriterChoice,
   Route,
   UseCase,
@@ -20,6 +21,7 @@ import { EnhancerPicker } from "./EnhancerPicker";
 import { ModelRow } from "./ModelRow";
 import { ChipRow } from "./ChipRow";
 import { GenerateButton } from "./GenerateButton";
+import { PromptPreview } from "./PromptPreview";
 
 const PANEL_ID = "generator-panel";
 
@@ -83,6 +85,13 @@ export function SettingsRail({
   onOpenModels,
   onOpenSetup,
   onSubmit,
+  preview,
+  previewText,
+  onPreviewTextChange,
+  previewing,
+  onPreview,
+  onRetryPreview,
+  onGenerateFromPreview,
 }: {
   useCases: UseCase[];
   tab: WorkspaceTab;
@@ -115,6 +124,16 @@ export function SettingsRail({
   onOpenModels: () => void;
   onOpenSetup: () => void;
   onSubmit: () => void;
+  /** The current preview, or null when the panel is closed. */
+  preview: Preview | null;
+  /** The editable preview text — what Generate-from-preview sends verbatim. */
+  previewText: string;
+  onPreviewTextChange: (next: string) => void;
+  /** A preview fetch is in flight (initial Preview or Retry). */
+  previewing: boolean;
+  onPreview: () => void;
+  onRetryPreview: () => void;
+  onGenerateFromPreview: () => void;
 }) {
   // Chain presets carry their own prompt body; typing into the box would be
   // rejected by the provider, so the box is disabled rather than silently
@@ -195,6 +214,37 @@ export function SettingsRail({
             onSubmit={onSubmit}
             onSetup={onOpenSetup}
           />
+
+          {!needsSetup ? (
+            <button
+              type="button"
+              className="preview-trigger"
+              onClick={onPreview}
+              disabled={Boolean(blockedReason) || pending || previewing}
+            >
+              {previewing && !preview
+                ? "Preparing preview…"
+                : "Preview prompt"}
+            </button>
+          ) : null}
+
+          {preview ? (
+            <PromptPreview
+              preview={preview}
+              value={previewText}
+              onChange={onPreviewTextChange}
+              onRetry={onRetryPreview}
+              onGenerate={onGenerateFromPreview}
+              previewing={previewing}
+              pending={pending}
+              estimate={estimate}
+              blockedReason={
+                previewText.trim().length < 2
+                  ? "Add a prompt before generating"
+                  : null
+              }
+            />
+          ) : null}
 
           <p className="rail-disclaimer">
             Independent open-source project. Not affiliated with, endorsed by,
