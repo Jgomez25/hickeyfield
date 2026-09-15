@@ -209,6 +209,24 @@ export interface JobSet {
 }
 
 /**
+ * How suitable a local Ollama model is for prompt enhancement, decided by Rust.
+ * Not a filter — any model still runs if picked — but a ranking the picker uses
+ * to lead with a fast go-to and warn about the rest. Mirrors the Rust
+ * `ModelTier` (serialized lowercase).
+ */
+export type ModelTier = "recommended" | "neutral" | "discouraged";
+
+/**
+ * One installed Ollama model plus Rust's suitability verdict. The list arrives
+ * already sorted (Recommended→Neutral→Discouraged); the UI consumes it untouched
+ * and takes `[0]` as the default, so what the picker shows == what submit sends.
+ */
+export interface LocalModel {
+  name: string;
+  tier: ModelTier;
+}
+
+/**
  * The user's explicit enhancer choice. `null`/omitted means "decide for me":
  * the shell auto-detects. `backend` is `"ollama"` or `"openai"`; `model` is the
  * installed Ollama tag or the hosted model id (required for both).

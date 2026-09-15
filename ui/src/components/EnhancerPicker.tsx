@@ -1,11 +1,29 @@
 import { useEffect } from "react";
-import type { RewriterChoice } from "../types";
+import type { LocalModel, ModelTier, RewriterChoice } from "../types";
+
+/**
+ * The label suffix that turns Rust's tier into a word the user can act on.
+ * Recommended earns a badge; discouraged gets an honest "this may be slow /
+ * not ideal here" so a vision or oversized model is a warning, not a trap;
+ * neutral says nothing. Paired with a `data-tier` attribute so styling and
+ * tests can key off the tier without parsing this text.
+ */
+function tierSuffix(tier: ModelTier): string {
+  switch (tier) {
+    case "recommended":
+      return " (recommended)";
+    case "discouraged":
+      return " (may be slow / not ideal here)";
+    default:
+      return "";
+  }
+}
 
 /**
  * The enhancer backend + model control that rides next to the Enhance toggle.
  *
  * The Enhance *switch* lives in PromptCard; this only picks *what* rewrites the
- * prompt. Two honesty rules shape it:
+ * prompt. Three honesty rules shape it:
  *
  * - It never offers a dead dropdown. When nothing can run — Ollama down and no
  *   OpenAI key — it renders the reason in words, matching the app's habit of
@@ -13,6 +31,12 @@ import type { RewriterChoice } from "../types";
  * - It names no default hosted model. Hosted rosters churn, so OpenAI shows a
  *   free-text model field the user fills in, mirroring the shell's refusal to
  *   invent a model id.
+ * - For local models it does the opposite of hiding a default: Rust ranks the
+ *   installed models by suitability and hands them **already sorted**, so `[0]`
+ *   is the recommended default and the picker badges the rest (recommended vs.
+ *   "may be slow / not ideal"). The list is passed through untouched — no
+ *   re-sort or re-filter — so what the picker shows selected is exactly what
+ *   submit sends.
  *
  * It is inert when Enhance is off: the rewrite will not run, so there is nothing
  * to configure.
@@ -27,14 +51,15 @@ export function EnhancerPicker({
 }: {
   enhance: boolean;
   ollamaUp: boolean;
-  ollamaModels: string[];
+  ollamaModels: LocalModel[];
   openaiAvailable: boolean;
   value: RewriterChoice | null;
   onChange: (next: RewriterChoice | null) => void;
 }) {
   const hasOllama = ollamaUp && ollamaModels.length > 0;
   const hasOpenai = openaiAvailable;
-  const firstModel = ollamaModels[0] ?? "";
+  // Rust pre-sorts best-first, so [0] is the recommended default. Never re-sort.
+  const firstModel = ollamaModels[0]?.name ?? "";
 
   // Commit a concrete default so what the picker *shows* is what submit *sends*.
   // Without this the control renders "Local (Ollama) + first model" selected
@@ -67,7 +92,7 @@ export function EnhancerPicker({
   if (!hasOllama && !hasOpenai) {
     const reason =
       ollamaUp && ollamaModels.length === 0
-        ? "Ollama is running but no chat model is installed. Run `ollama pull gemma3:1b`, or add an OpenAI key in Settings."
+        ? "Ollama is running but no chat model is installed. Pull a small, fast one (`ollama pull llama3.2`, `phi4-mini` or `gemma3` all work well here), or add an OpenAI key in Settings."
         : "Ollama isn't running and no OpenAI key is stored. Start Ollama and install a model, or add an OpenAI key in Settings.";
     return (
       <div className="enhancer-picker enhancer-picker-unavailable">
@@ -122,8 +147,9 @@ export function EnhancerPicker({
             }
           >
             {ollamaModels.map((m) => (
-              <option key={m} value={m}>
-                {m}
+              <option key={m.name} value={m.name} data-tier={m.tier}>
+                {m.name}
+                {tierSuffix(m.tier)}
               </option>
             ))}
           </select>

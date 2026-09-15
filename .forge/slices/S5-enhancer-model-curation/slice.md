@@ -1,0 +1,15 @@
+# S5-enhancer-model-curation — SLICE (DISCOVER + PLAN)
+
+## Delivers (one sentence, end-to-end)
+Hickeyfield knows which local Ollama models suit prompt enhancement — it auto-selects a recommended fast model, badges recommended vs. "may be slow / not ideal" in the picker, and no longer hardcodes a single model in its "no models installed" hint.
+
+## Acceptance criteria (testable)
+- [ ] AC1 — Pure `model_tier(name, param_billions) -> ModelTier {Recommended,Neutral,Discouraged}` in `enhancer.rs`. Discouraged checked first: vision (`-vl`/`llava`/`vision`), `<think>`-leakers (`deepseek-r1`/`qwq`/`-r1`), size `>=20B` (from `details.parameter_size`, else a `\d+(\.\d+)?b` tag scan). Recommended: family starts_with `phi4-mini`|`llama3.2`|`gemma3`. Else Neutral. Rust tests cover phi4-mini/llama3.2:3b/gemma3n:e2b→Recommended, qwen3-vl:4b/deepseek-r1:8b/qwq→Discouraged, qwen3-coder:30b & gemma3:27b→Discouraged (incl. size-absent name scan), qwen2.5:7b→Neutral.
+- [ ] AC2 — `parse_local_models` returns `Vec<LocalModel{name,tier}>` (serde camelCase), keeps the embedding-only filter, reads `details.parameter_size`, and stable-sorts Recommended→Neutral→Discouraged (Ollama order preserved within tier). `local_models` + `list_ollama_models` (commands.rs:800) return `Vec<LocalModel>`. Rust test asserts sort + parameter_size parse.
+- [ ] AC3 — Auto-select prefers the top-ranked model in BOTH `select_rewriter` (commands.rs auto branch, now `&[LocalModel]`, `.first()`) and `EnhancerPicker` (`ollamaModels[0].name`) — one Rust-owned source of truth (pre-sorted list), consumed untouched by the UI (no re-sort → show==submit preserved). Rust test `auto_picks_the_top_ranked_model` uses a fixture NOT already recommended-first to prove ranking; "only discouraged still picks one"; an end-to-end raw-/api/tags→select test.
+- [ ] AC4 — Picker badges: `(recommended)` / `(may be slow / not ideal here)` label suffix + `data-tier` attribute; every option stays selectable. vitest: auto-commits a recommended model when present; commits a discouraged one when it's the only model; badges/hints asserted via `data-tier`; discouraged still selectable.
+- [ ] AC5 — Genericized zero-models copy in `NOTE_OLLAMA_NO_MODELS` (commands.rs:721) + `EnhancerPicker.tsx:70` — recommend the go-to set generically (llama3.2/phi4-mini/gemma3 as examples), original wording, keeps the Rust note's "...sent exactly as you wrote it." `./scripts/lint-provenance.py` exit 0.
+- [ ] AC6 (regression) — `cargo test --workspace` (0 failed, >=754), fmt, clippy, provenance, `cd ui && pnpm test && pnpm build`. App builds+launches.
+
+## Approach + why now
+Owner pruned local models to a fast go-to set (phi4-mini, llama3.2:3b, gemma3n:e2b + gemma3:1b). Testing showed the app auto-picks Ollama's first-listed model with no quality signal — a vision model (qwen3-vl) timed out at the 120s local limit. This slice makes suitability a first-class, Rust-owned concept so the enhancer defaults well and the picker warns. Single source of truth in Rust (tier-annotated, pre-sorted list) is the key design decision — it prevents the show≠submit divergence a prior S4 review bug turned on.

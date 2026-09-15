@@ -718,7 +718,7 @@ pub struct RewriterChoice {
 // provenance-safe promise the rest of the fallback family makes: the prompt was
 // sent unchanged, never silently rewritten and never silently dropped.
 const NOTE_NOTHING_AVAILABLE: &str = "Enhance is on, but there is no rewriter to run it: no OpenAI key is stored and Ollama isn't running on this machine. Add an OpenAI key in Settings, or start Ollama and pick a model. Your prompt was sent exactly as you wrote it.";
-const NOTE_OLLAMA_NO_MODELS: &str = "Enhance is on and Ollama is running, but no chat model is installed yet — run `ollama pull gemma3:1b` (or any chat model), then choose it here. Your prompt was sent exactly as you wrote it.";
+const NOTE_OLLAMA_NO_MODELS: &str = "Enhance is on and Ollama is running, but no chat model is installed yet — pull a small, fast one (`ollama pull llama3.2`, `phi4-mini` or `gemma3` all work well here), then choose it. Your prompt was sent exactly as you wrote it.";
 const NOTE_OPENAI_NO_KEY: &str = "Enhance is on and OpenAI is selected, but no OpenAI key is stored — add one in Settings, or switch the enhancer to Local. Your prompt was sent exactly as you wrote it.";
 const NOTE_NO_MODEL_CHOSEN: &str = "Enhance is on, but no model was chosen for the enhancer — pick one next to the Enhance switch. Your prompt was sent exactly as you wrote it.";
 
@@ -733,7 +733,7 @@ fn select_rewriter<'a>(
     choice: Option<&'a RewriterChoice>,
     openai_key: Option<&'a str>,
     ollama_up: bool,
-    ollama_models: &'a [String],
+    ollama_models: &'a [hickeyfield_core::enhancer::LocalModel],
 ) -> crate::harness::Rewriter<'a> {
     use crate::harness::Rewriter;
     use hickeyfield_core::enhancer::HostedBackend;
@@ -762,7 +762,7 @@ fn select_rewriter<'a>(
                 return unavailable(NOTE_NOTHING_AVAILABLE);
             }
             match c.model.as_deref().filter(|m| !m.trim().is_empty()) {
-                Some(model) if ollama_models.iter().any(|m| m == model) => {
+                Some(model) if ollama_models.iter().any(|m| m.name == model) => {
                     Rewriter::Ollama { model }
                 }
                 Some(_) if ollama_models.is_empty() => unavailable(NOTE_OLLAMA_NO_MODELS),
@@ -778,8 +778,10 @@ fn select_rewriter<'a>(
         // Only when nothing can run at all do we surface an honest note.
         _ => match ollama_models.first() {
             // A running Ollama with at least one installed model always wins:
-            // it needs no key and no explicit model id, so auto can run it.
-            Some(first) if ollama_up => Rewriter::Ollama { model: first },
+            // it needs no key and no explicit model id, so auto can run it. The
+            // list is pre-sorted by suitability in `local_models`, so `.first()`
+            // is the top-ranked model — the same one the picker shows selected.
+            Some(first) if ollama_up => Rewriter::Ollama { model: &first.name },
             // No Ollama model to run. If an OpenAI key is stored the user only
             // has to name a hosted model — decline with the pick-a-model note
             // rather than invent one.
@@ -797,7 +799,7 @@ fn select_rewriter<'a>(
 /// error: the UI already tells "not running" apart from "running but empty"
 /// using [`local_endpoints`], so this command only has to supply the names.
 #[tauri::command]
-pub fn list_ollama_models() -> Vec<String> {
+pub fn list_ollama_models() -> Vec<hickeyfield_core::enhancer::LocalModel> {
     hickeyfield_core::enhancer::local_models(hickeyfield_core::clients::OLLAMA_URL)
         .unwrap_or_default()
 }
@@ -1355,13 +1357,27 @@ mod tests {
     // ---- Enhancer backend selection (AC2) ----------------------------------
 
     use crate::harness::Rewriter;
-    use hickeyfield_core::enhancer::HostedBackend;
+    use hickeyfield_core::enhancer::{model_tier, HostedBackend, LocalModel};
 
     fn choice(backend: &str, model: Option<&str>) -> RewriterChoice {
         RewriterChoice {
             backend: backend.to_string(),
             model: model.map(str::to_string),
         }
+    }
+
+    /// Build the `Vec<LocalModel>` shape `local_models` hands `select_rewriter`,
+    /// tiering each name the same way production does. Order is preserved as
+    /// given, so a test can hand an *unsorted* list to prove select_rewriter
+    /// itself trusts the incoming order (the sort is `local_models`' job).
+    fn models(names: &[&str]) -> Vec<LocalModel> {
+        names
+            .iter()
+            .map(|n| LocalModel {
+                name: n.to_string(),
+                tier: model_tier(n, None),
+            })
+            .collect()
     }
 
     #[test]
@@ -1390,19 +1406,43 @@ mod tests {
 
     #[test]
     fn an_explicit_ollama_choice_with_an_installed_model_runs_local() {
-        let models = vec!["gemma3:1b".to_string(), "qwen3-vl:4b".to_string()];
+        // A discouraged model is still runnable if the user explicitly picks it.
+        let installed = models(&["gemma3:1b", "qwen3-vl:4b"]);
         let c = choice("ollama", Some("qwen3-vl:4b"));
-        match select_rewriter(Some(&c), None, true, &models) {
+        match select_rewriter(Some(&c), None, true, &installed) {
             Rewriter::Ollama { model } => assert_eq!(model, "qwen3-vl:4b"),
             other => panic!("expected Ollama, got {}", name(&other)),
         }
     }
 
     #[test]
-    fn auto_with_only_ollama_available_picks_the_first_installed_model() {
-        let models = vec!["gemma3:1b".to_string(), "qwen3-vl:4b".to_string()];
-        match select_rewriter(None, None, true, &models) {
-            Rewriter::Ollama { model } => assert_eq!(model, "gemma3:1b"),
+    fn auto_picks_the_top_ranked_model() {
+        // AC3. Auto takes `.first()` of the list `local_models` pre-sorts by
+        // suitability. Feeding the *sorted* order (recommended leading a
+        // discouraged) proves auto picks the recommended one — a plain
+        // "first installed" would have grabbed whatever Ollama listed first.
+        let raw = serde_json::json!({"models": [
+            {"name": "qwen3-vl:4b"},
+            {"name": "llama3.2:3b"},
+        ]});
+        let installed = hickeyfield_core::enhancer::parse_local_models(&raw);
+        // The sort put the recommended model first even though Ollama listed the
+        // vision model first.
+        assert_eq!(installed[0].name, "llama3.2:3b");
+        match select_rewriter(None, None, true, &installed) {
+            Rewriter::Ollama { model } => assert_eq!(model, "llama3.2:3b"),
+            other => panic!("expected Ollama, got {}", name(&other)),
+        }
+    }
+
+    #[test]
+    fn auto_with_only_discouraged_models_still_picks_one() {
+        // Discouraged is a warning, not a ban: if the only installed models are
+        // discouraged, auto still runs the top of the list rather than declining
+        // to enhance.
+        let installed = models(&["qwen3-vl:4b", "deepseek-r1:8b"]);
+        match select_rewriter(None, None, true, &installed) {
+            Rewriter::Ollama { model } => assert_eq!(model, "qwen3-vl:4b"),
             other => panic!("expected Ollama, got {}", name(&other)),
         }
     }
@@ -1411,10 +1451,10 @@ mod tests {
     fn auto_with_a_key_and_ollama_still_runs_ollama_not_the_no_model_note() {
         // The MAJOR review bug: an OpenAI key present must NOT block auto from
         // running a perfectly good local Ollama. With both available and no
-        // explicit choice, auto runs Ollama's first model — it never silently
-        // declines to enhance while a runnable backend sits right there.
-        let models = vec!["gemma3:1b".to_string(), "qwen3-vl:4b".to_string()];
-        match select_rewriter(None, Some("sk-live"), true, &models) {
+        // explicit choice, auto runs Ollama's top-ranked model — it never
+        // silently declines to enhance while a runnable backend sits right there.
+        let installed = models(&["gemma3:1b", "qwen3-vl:4b"]);
+        match select_rewriter(None, Some("sk-live"), true, &installed) {
             Rewriter::Ollama { model } => assert_eq!(model, "gemma3:1b"),
             other => panic!("expected Ollama, got {}", name(&other)),
         }
@@ -1449,7 +1489,7 @@ mod tests {
     fn a_list_of_installed_models_never_errors() {
         // Whether or not Ollama is running here, the command returns a list, not
         // an Err — a down daemon is an empty picker, not a broken submit.
-        let _models: Vec<String> = list_ollama_models();
+        let _models: Vec<LocalModel> = list_ollama_models();
     }
 
     fn name(r: &Rewriter<'_>) -> &'static str {

@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S4-prompt-enhancer-wired",
+  "currentSlice": "S5-enhancer-model-curation",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -39,6 +39,12 @@
       "status": "released",
       "started": "2026-09-14",
       "branch": "forge/s3-prompt-enhancer"
+    },
+    {
+      "id": "S5-enhancer-model-curation",
+      "title": "enhancer-model-curation",
+      "status": "in-progress",
+      "started": "2026-09-15"
     }
   ]
 }

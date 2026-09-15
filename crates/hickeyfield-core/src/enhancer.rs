@@ -844,9 +844,10 @@ fn send_json(req: reqwest::blocking::RequestBuilder) -> Result<Value, String> {
 /// `127.0.0.1:11434`, which is why every web clone of this product has to put a
 /// server (and a bill) in the middle.
 pub struct LocalEnhancer {
-    /// An Ollama tag, e.g. `qwen2.5:7b`. Supplied by the caller: this module
-    /// does not name a default, because a model that is not installed produces
-    /// a 404 the user cannot act on. Populate a picker from [`local_models`].
+    /// An Ollama tag, e.g. `qwen2.5:7b`. Supplied by the caller: any installed
+    /// model runs, so nothing is hardcoded, but [`local_models`] ranks and
+    /// recommends a fast go-to set (see [`model_tier`]) so the picker can lead
+    /// with a suitable default rather than whatever Ollama happens to list first.
     model: String,
     system_prompt: String,
     /// Overridable so tests and unusual setups are not pinned to the default
@@ -1017,25 +1018,159 @@ impl Enhancer for LocalEnhancer {
 /// offering `nomic-embed-text` as a prompt enhancer produces a baffling failure
 /// at submit time. A model that declares *no* capabilities is kept — unknown is
 /// not the same as unsupported, and older Ollama builds omit the field.
-pub fn local_models(base_url: &str) -> Result<Vec<String>, String> {
+///
+/// Each surviving entry is tagged with a [`ModelTier`] and the list is
+/// **stable-sorted** Recommended→Neutral→Discouraged (Ollama's own order kept
+/// within a tier). This is the single source of truth for suitability: the UI
+/// consumes the already-sorted list and takes `[0]` untouched, so the model the
+/// picker *shows* selected is exactly the one auto-select *submits*.
+pub fn local_models(base_url: &str) -> Result<Vec<LocalModel>, String> {
     let c = client(LOCAL_LIST_TIMEOUT)?;
     let v = send_json(c.get(format!("{base_url}{OLLAMA_TAGS_PATH}")))?;
     Ok(parse_local_models(&v))
 }
 
-/// Split from the fetch so the filter is testable against a captured document.
-fn parse_local_models(v: &Value) -> Vec<String> {
+/// Split from the fetch so the filter, tiering and sort are testable against a
+/// captured document — and so the command layer can exercise the whole
+/// raw-`/api/tags`→ranked-list chain without a live daemon.
+pub fn parse_local_models(v: &Value) -> Vec<LocalModel> {
     let Some(models) = v.get("models").and_then(Value::as_array) else {
         return Vec::new();
     };
-    models
+    let mut out: Vec<LocalModel> = models
         .iter()
         .filter(|m| match m.get("capabilities").and_then(Value::as_array) {
             Some(caps) => caps.iter().any(|c| c.as_str() == Some("completion")),
             None => true,
         })
-        .filter_map(|m| m.get("name").and_then(Value::as_str).map(str::to_string))
-        .collect()
+        .filter_map(|m| {
+            let name = m.get("name").and_then(Value::as_str)?.to_string();
+            // Ollama reports the parameter count under details, e.g. "3.2B".
+            // Absent on older builds — model_tier then falls back to a name scan.
+            let param_billions = m
+                .get("details")
+                .and_then(|d| d.get("parameter_size"))
+                .and_then(Value::as_str)
+                .and_then(parse_param_billions);
+            let tier = model_tier(&name, param_billions);
+            Some(LocalModel { name, tier })
+        })
+        .collect();
+    // Stable so Ollama's ordering is preserved *within* a tier — only the tier
+    // rank reshuffles. `sort_by_key` is guaranteed stable.
+    out.sort_by_key(|m| tier_rank(m.tier));
+    out
+}
+
+/// How suitable a local model is for prompt enhancement.
+///
+/// This is the product's one opinion about local models: not a hard filter (any
+/// installed model still runs if the user picks it), but a ranking that lets the
+/// enhancer default to a fast, well-behaved model and lets the picker warn about
+/// the rest. Serialized lowercase so the TS `ModelTier` union matches the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelTier {
+    /// A fast, reliable go-to for rewriting — the auto default leads with these.
+    Recommended,
+    /// Runs fine but is not one of the curated go-tos; offered without comment.
+    Neutral,
+    /// Runs, but likely slow or ill-suited here (vision, `<think>`-leakers, or
+    /// large models that time out at the local limit). Offered with a warning.
+    Discouraged,
+}
+
+/// One installed Ollama model plus our suitability verdict. Serialized camelCase
+/// to match the TS `LocalModel` the picker consumes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalModel {
+    pub name: String,
+    pub tier: ModelTier,
+}
+
+/// Sort key: Recommended first, Discouraged last.
+fn tier_rank(t: ModelTier) -> u8 {
+    match t {
+        ModelTier::Recommended => 0,
+        ModelTier::Neutral => 1,
+        ModelTier::Discouraged => 2,
+    }
+}
+
+/// Classify a model tag for prompt-enhancement suitability. Pure so the whole
+/// policy is unit-testable without a daemon.
+///
+/// `param_billions` is the declared parameter count when Ollama reports one
+/// (from `details.parameter_size`); `None` on older builds, where the size rule
+/// falls back to scanning the tag for a `\d+(\.\d+)?b` token.
+///
+/// **Discouraged is checked first, on purpose.** It must win ties so a small
+/// vision or reasoning model is still warned about, and so `gemma3:27b` is
+/// flagged for size *before* the `gemma3` recommend rule would bless it.
+pub fn model_tier(name: &str, param_billions: Option<f64>) -> ModelTier {
+    let lower = name.to_ascii_lowercase();
+
+    // 1. Discouraged.
+    // Vision models: the local limit is a 120s wall and a vision model blows it.
+    let is_vision = lower.contains("-vl") || lower.contains("llava") || lower.contains("vision");
+    // Reasoning models leak <think> blocks into the rewritten prompt.
+    let is_reasoning =
+        lower.contains("deepseek-r1") || lower.contains("qwq") || lower.contains("-r1");
+    // Big models: use the declared size when we have it, else scan the tag.
+    let billions = param_billions.or_else(|| parse_param_billions(&lower));
+    let is_large = billions.is_some_and(|b| b >= 20.0);
+    if is_vision || is_reasoning || is_large {
+        return ModelTier::Discouraged;
+    }
+
+    // 2. Recommended: the curated fast go-to families. Match on the family
+    // (before the first `:`) so a tag like `gemma3n:e2b` is covered by `gemma3`.
+    let family = lower.split(':').next().unwrap_or(&lower);
+    if family.starts_with("phi4-mini")
+        || family.starts_with("llama3.2")
+        || family.starts_with("gemma3")
+    {
+        return ModelTier::Recommended;
+    }
+
+    // 3. Everything else runs, just without an opinion.
+    ModelTier::Neutral
+}
+
+/// Parse a parameter-count string like `"3.2B"` or a `\d+(\.\d+)?b` token into a
+/// count in billions. Case-insensitive on the trailing `b`; anything that is not
+/// a bare number followed by `b` is `None`.
+pub fn parse_param_billions(s: &str) -> Option<f64> {
+    let bytes = s.as_bytes();
+    let mut best: Option<f64> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c.is_ascii_digit() {
+            let start = i;
+            let mut seen_dot = false;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || (bytes[i] == b'.' && !seen_dot))
+            {
+                if bytes[i] == b'.' {
+                    seen_dot = true;
+                }
+                i += 1;
+            }
+            // The number must be immediately followed by a `b`/`B` to be a size.
+            if i < bytes.len() && bytes[i].eq_ignore_ascii_case(&b'b') {
+                if let Ok(n) = s[start..i].parse::<f64>() {
+                    // Keep the largest match so "qwen3-coder:30b" is not fooled by
+                    // an earlier "3" in the name.
+                    best = Some(best.map_or(n, |m: f64| m.max(n)));
+                }
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    best
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,8 +1216,11 @@ impl HostedBackend {
 /// A rewriter on the user's own hosted key.
 ///
 /// Their key, their bill, their model choice. No default model is named here:
-/// model rosters move faster than releases, and a hardcoded id that gets retired
-/// turns into a 404 nobody can fix without a new binary.
+/// hosted rosters move faster than releases, and a hardcoded id that gets
+/// retired turns into a 404 nobody can fix without a new binary. (The *local*
+/// path is different — installed models are enumerable, so [`local_models`]
+/// ranks and recommends a go-to set while still running any model the user
+/// picks. Hosted ids are not enumerable, so nothing is recommended here.)
 pub struct HostedEnhancer {
     backend: HostedBackend,
     api_key: String,
@@ -1932,6 +2070,10 @@ mod tests {
         assert!(e.contains("message.content"), "got: {e}");
     }
 
+    fn names(models: &[LocalModel]) -> Vec<&str> {
+        models.iter().map(|m| m.name.as_str()).collect()
+    }
+
     #[test]
     fn installed_models_drop_embedding_only_entries() {
         // Captured from a live /api/tags on 2026-08-05. Offering
@@ -1941,7 +2083,9 @@ mod tests {
             {"name": "qwen2.5:7b", "capabilities": ["completion", "tools"]},
             {"name": "nomic-embed-text:latest", "capabilities": ["embedding"]},
         ]});
-        assert_eq!(parse_local_models(&v), vec!["qwen2.5:7b".to_string()]);
+        let got = parse_local_models(&v);
+        assert_eq!(names(&got), vec!["qwen2.5:7b"]);
+        assert_eq!(got[0].tier, ModelTier::Neutral);
     }
 
     #[test]
@@ -1949,13 +2093,87 @@ mod tests {
         // Unknown is not the same as unsupported: older Ollama builds omit the
         // field entirely, and filtering those out would empty the picker.
         let v = serde_json::json!({"models": [{"name": "llama3.2:3b"}]});
-        assert_eq!(parse_local_models(&v), vec!["llama3.2:3b".to_string()]);
+        let got = parse_local_models(&v);
+        assert_eq!(names(&got), vec!["llama3.2:3b"]);
+        assert_eq!(got[0].tier, ModelTier::Recommended);
     }
 
     #[test]
     fn a_tags_document_we_cannot_read_is_an_empty_list_not_a_panic() {
         assert!(parse_local_models(&serde_json::json!({})).is_empty());
         assert!(parse_local_models(&serde_json::json!({"models": "nope"})).is_empty());
+    }
+
+    // ---- Model suitability tiering (AC1/AC2) -------------------------------
+
+    #[test]
+    fn the_curated_go_to_families_are_recommended() {
+        // phi4-mini, llama3.2 and gemma3 (incl. the gemma3n variant) are the
+        // fast, well-behaved set the enhancer should default to.
+        assert_eq!(model_tier("phi4-mini", None), ModelTier::Recommended);
+        assert_eq!(model_tier("llama3.2:3b", None), ModelTier::Recommended);
+        assert_eq!(model_tier("gemma3n:e2b", None), ModelTier::Recommended);
+    }
+
+    #[test]
+    fn vision_and_reasoning_models_are_discouraged() {
+        // A vision model blows the 120s local wall; <think>-leakers pollute the
+        // rewritten prompt. Both are discouraged even at small sizes.
+        assert_eq!(model_tier("qwen3-vl:4b", None), ModelTier::Discouraged);
+        assert_eq!(model_tier("deepseek-r1:8b", None), ModelTier::Discouraged);
+        assert_eq!(model_tier("qwq", None), ModelTier::Discouraged);
+    }
+
+    #[test]
+    fn large_models_are_discouraged_by_size_from_details_or_name() {
+        // qwen3-coder:30b via a declared parameter_size; gemma3:27b via a name
+        // scan when the size is absent — and size beats the gemma3 recommend
+        // rule because Discouraged is checked first.
+        assert_eq!(
+            model_tier("qwen3-coder:30b", Some(30.0)),
+            ModelTier::Discouraged
+        );
+        assert_eq!(model_tier("gemma3:27b", None), ModelTier::Discouraged);
+    }
+
+    #[test]
+    fn an_ordinary_chat_model_is_neutral() {
+        assert_eq!(model_tier("qwen2.5:7b", None), ModelTier::Neutral);
+    }
+
+    #[test]
+    fn parse_param_billions_reads_a_declared_size() {
+        assert_eq!(parse_param_billions("3.2B"), Some(3.2));
+        assert_eq!(parse_param_billions("27B"), Some(27.0));
+        assert_eq!(parse_param_billions("nope"), None);
+    }
+
+    #[test]
+    fn the_installed_list_is_stable_sorted_by_tier_reading_parameter_size() {
+        // Ollama lists in its own order (here a discouraged model first). The
+        // parse must read details.parameter_size, tier each entry, and stable
+        // sort Recommended->Neutral->Discouraged while preserving Ollama's order
+        // within a tier.
+        let v = serde_json::json!({"models": [
+            {"name": "qwen3-coder:30b", "details": {"parameter_size": "30.5B"}},
+            {"name": "qwen2.5:7b", "details": {"parameter_size": "7.6B"}},
+            {"name": "llama3.2:3b", "details": {"parameter_size": "3.2B"}},
+            {"name": "phi4-mini:latest", "details": {"parameter_size": "3.8B"}},
+        ]});
+        let got = parse_local_models(&v);
+        assert_eq!(
+            names(&got),
+            vec![
+                "llama3.2:3b",
+                "phi4-mini:latest",
+                "qwen2.5:7b",
+                "qwen3-coder:30b"
+            ]
+        );
+        assert_eq!(got[0].tier, ModelTier::Recommended);
+        assert_eq!(got[1].tier, ModelTier::Recommended);
+        assert_eq!(got[2].tier, ModelTier::Neutral);
+        assert_eq!(got[3].tier, ModelTier::Discouraged);
     }
 
     // ---- OpenAI wire format ------------------------------------------------
@@ -2165,7 +2383,10 @@ mod tests {
         let model = std::env::var("OLLAMA_ENHANCE_MODEL")
             .expect("set OLLAMA_ENHANCE_MODEL to an installed tag");
         let installed = local_models(OLLAMA_URL).expect("Ollama must be running");
-        assert!(installed.contains(&model), "installed: {installed:?}");
+        assert!(
+            installed.iter().any(|m| m.name == model),
+            "installed: {installed:?}"
+        );
 
         // The *real* corpus, not a stand-in. Using a two-line placeholder here
         // is what let the context-window truncation ship unnoticed: the bug only

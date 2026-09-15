@@ -183,3 +183,10 @@ mandatory slice; tracked here for prioritization.
   reaches 7d (max budget 6h → 30h); effective hosted horizon is ~1–5h, which can abandon a
   still-live paid job. Make the horizon match a defensible intent (e.g. a fixed 7d age backstop
   with poll_cycles as the active bound) and correct the comment. Ship with or before F4.
+
+- **F6 (enhancer robustness)** — adaptive local-enhancer timeout and/or a lighter system
+  prompt for small models under heavy machine load. S5 live test: recommended 3-4B models
+  hit the fixed 120s wall when the GPU was saturated (load avg 20-30); gemma3:1b did 32.7s.
+- **F7 (enhancer UX)** — probe-on-select to detect an unloadable Ollama model (a model
+  that lists in /api/tags but errors on /api/chat with e.g. "unknown model architecture").
+  Today it passes name-based tiering and only fails at enhance-time via the honest fallback.

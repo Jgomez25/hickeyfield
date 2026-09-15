@@ -12,6 +12,7 @@ import type {
   GenSettings,
   JobResult,
   JobSet,
+  LocalModel,
   MediaRef,
   Model,
   PresetFamily,
@@ -241,13 +242,14 @@ export async function localEndpoints(): Promise<LocalEndpoints> {
 }
 
 /**
- * Chat-capable models the local Ollama has installed, for the enhancer picker.
- * An empty list on any failure — a down daemon is an empty dropdown, never a
- * thrown error the picker would have to handle.
+ * Chat-capable models the local Ollama has installed, for the enhancer picker,
+ * each tagged with Rust's suitability tier and already sorted best-first. An
+ * empty list on any failure — a down daemon is an empty dropdown, never a thrown
+ * error the picker would have to handle.
  */
-export async function ollamaModels(): Promise<string[]> {
+export async function ollamaModels(): Promise<LocalModel[]> {
   try {
-    return await invoke<string[]>("list_ollama_models");
+    return await invoke<LocalModel[]>("list_ollama_models");
   } catch {
     return [];
   }

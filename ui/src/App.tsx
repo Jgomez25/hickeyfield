@@ -24,6 +24,7 @@ import type {
   CostEstimate,
   GenSettings,
   JobSet,
+  LocalModel,
   MediaRef,
   MediaRole,
   Model,
@@ -127,7 +128,7 @@ export default function App() {
   const [local, setLocal] = useState<LocalEndpoints | null>(null);
   // Chat models the local Ollama has installed, for the enhancer picker, and
   // the user's explicit enhancer choice (null = auto: the shell decides).
-  const [ollamaModelList, setOllamaModelList] = useState<string[]>([]);
+  const [ollamaModelList, setOllamaModelList] = useState<LocalModel[]>([]);
   const [enhancer, setEnhancer] = useState<RewriterChoice | null>(null);
   const [libraryPath, setLibraryPath] = useState<string | null>(null);
 

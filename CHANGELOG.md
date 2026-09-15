@@ -6,6 +6,16 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The enhancer now recommends good local models and warns about slow ones.** The
+  model picker labels each installed Ollama model — small, fast instruct models suited
+  to prompt rewriting (Llama 3.2, Phi-4 Mini, Gemma 3 family) are marked *recommended*
+  and auto-selected first; vision models, chain-of-thought reasoning models, and very
+  large models are flagged as likely slow or unsuitable. You can still pick any of them.
+  The "no model installed" hint now suggests the recommended set generically instead of
+  a single fixed model.
+
 ### Added
 
 - **The prompt enhancer now actually rewrites your prompt.** Previously the Enhance

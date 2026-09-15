@@ -1,6 +1,7 @@
 import type {
   CostEstimate,
   GenSettings,
+  LocalModel,
   MediaRef,
   MediaRole,
   Model,
@@ -101,7 +102,7 @@ export function SettingsRail({
   /** Whether the local Ollama daemon is up, its installed chat models, and
    * whether an OpenAI key is stored — the enhancer picker's availability. */
   ollamaUp: boolean;
-  ollamaModels: string[];
+  ollamaModels: LocalModel[];
   openaiAvailable: boolean;
   /** The explicit enhancer choice (null = auto). */
   enhancer: RewriterChoice | null;
