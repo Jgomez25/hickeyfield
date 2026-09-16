@@ -104,6 +104,13 @@ pub struct Shot {
     /// field still parses.
     #[serde(default)]
     pub chainable: bool,
+    /// S17: whether this shot's model can bind an END frame (an `end_image_url`
+    /// route not in `NO_END_FRAME`). The keyframe toggle enables only when every
+    /// shot is end-frame-capable, so the UI default cannot drift from the
+    /// scheduler. Computed server-side in [`plan`], mirroring `chainable`.
+    /// `#[serde(default)]` (false) so a plan written before this field parses.
+    #[serde(default)]
+    pub end_frame_capable: bool,
     /// An optional per-shot resolution. One resolution per set is the rule (the
     /// frame dictates the canvas, so a mixed-resolution set is a continuity
     /// hazard — memo D-F); when shots disagree, [`plan`] records a
@@ -137,6 +144,45 @@ pub struct StoryboardPlan {
     #[serde(default)]
     pub use_case: String,
     pub shots: Vec<Shot>,
+    /// S17: the `N+1` still boundaries of a keyframe-anchored set (memo §3).
+    /// Empty for a non-keyframe plan (`#[serde(default)]`), so every stored
+    /// S13/S16 plan still parses. Derived by [`derive_keyframes`] from the world
+    /// block + the shots' hold clauses — the model does not draft this; it is
+    /// composed after validation.
+    #[serde(default)]
+    pub keyframes: Vec<Keyframe>,
+}
+
+/// A still's canvas, written into the image job's free-form `image_size` object
+/// (the fal image models take `image_size: {width, height}` — verified keyless
+/// against `alibaba/qwen-image-3/text-to-image`, S17 `schemas/`). Because "the
+/// output canvas follows this image" on H3 Max i2v, this MUST equal the set's
+/// target resolution × aspect, or the still is rescaled before conditioning and
+/// the end anchor drifts (memo D-F). Serde camelCase for the UI bridge.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// One still boundary of a keyframe-anchored set. `K0` is shot 0's opening (its
+/// `image_url`); `K_{i+1}` is shot `i`'s planned ending (its `end_image_url`).
+/// Derived, not model-drafted (D1), so the still shares the identical world
+/// string verbatim with the shots it anchors.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Keyframe {
+    /// Boundary index `k` in `0..=N`.
+    pub index: usize,
+    /// `"{world} {hold clause}"` verbatim — the same world string the shots
+    /// carry, so the still cannot drift from the run it anchors.
+    pub prompt: String,
+    /// The registry image model that will render this still (one model per set;
+    /// default `qwen_image_3`, the D1 priced default).
+    pub model_id: String,
+    /// The canvas the still (and therefore the video) renders at.
+    pub image_size: ImageSize,
 }
 
 /// Why a plan was rejected. Each variant carries what the UI (or a test) needs
@@ -189,6 +235,17 @@ pub enum PlanError {
         seconds: f64,
         ceiling: f64,
     },
+    /// S17: a keyframe set whose still count is not `shots.len() + 1` — every
+    /// shot boundary needs one still (both ends of every clip pinned).
+    KeyframeCount { expected: usize, got: usize },
+    /// S17: a keyframe's still model is not a registry model runnable for
+    /// text-to-image, so it cannot render a still (the same predicate the
+    /// picker gates on).
+    KeyframeModelNotRunnable { index: usize, model_id: String },
+    /// S17: a keyframe's `image_size` disagrees with the set's target canvas
+    /// (aspect or resolution height) — a mixed canvas re-opens the continuity
+    /// hazard, because H3 Max rescales the still before conditioning (memo D-F).
+    KeyframeCanvasMismatch { index: usize },
 }
 
 impl std::fmt::Display for PlanError {
@@ -269,6 +326,18 @@ impl std::fmt::Display for PlanError {
                 shot + 1,
                 trim_secs(*seconds),
                 trim_secs(*ceiling)
+            ),
+            PlanError::KeyframeCount { expected, got } => write!(
+                f,
+                "a keyframe set needs one still per shot boundary ({expected}), but the plan has {got}. Try drafting again."
+            ),
+            PlanError::KeyframeModelNotRunnable { index, model_id } => write!(
+                f,
+                "keyframe {index} names still model {model_id}, which cannot generate an image."
+            ),
+            PlanError::KeyframeCanvasMismatch { index } => write!(
+                f,
+                "keyframe {index}'s canvas does not match the set's resolution and aspect, which would rescale the still and break the anchor."
             ),
         }
     }
@@ -356,6 +425,19 @@ pub fn join_passes(score: &JoinScore, t: ContinuityThresholds) -> bool {
         // Unscored: not failing.
         _ => true,
     }
+}
+
+/// Whether a keyframe end-adherence score clears the thresholds (S17, AC4).
+///
+/// End adherence is the SSIM (+ colour drift) between a clip's ACTUAL last frame
+/// and its planned still `K_{i+1}`. Keyframe mode is the 99% path, so this is
+/// gated against [`CONTINUITY_IDEAL`], not the floor. Like [`join_passes`], an
+/// **unscored** end (`None`) returns `true` (not failing): a missing score must
+/// never fire a paid regenerate.
+pub fn join_passes_end(score: &JoinScore, t: ContinuityThresholds) -> bool {
+    // Identical shape to `join_passes` — the end score reuses the same
+    // `JoinScore` carrier (its end-* fields on the record map onto this).
+    join_passes(score, t)
 }
 
 /// The pass rate over the **scored** joins — "95% as a test, not a feeling"
@@ -517,6 +599,16 @@ pub fn plan(
             // gates on (a route that binds a start frame), so the two cannot
             // drift.
             shot.chainable = use_case::supports(model, UseCase::ImageToVideo);
+            // S17: can this shot's model bind an END frame? The keyframe toggle
+            // reads this so its default matches the scheduler's binding gate.
+            shot.end_frame_capable = model.routes.first().is_some_and(|r| {
+                crate::media::can_bind(
+                    &model.spec,
+                    crate::media::MediaRole::End,
+                    crate::media::dialect_for(r.provider, &r.slug),
+                    &r.slug,
+                )
+            });
         }
         shot.continuity = if i == 0 {
             None
@@ -594,6 +686,128 @@ fn contains_word(hay: &str, needle: &str) -> bool {
 /// `hold`/`holds` counts (the phrase "static hold" contains the word "hold").
 fn ends_on_hold(action: &str) -> bool {
     contains_word(action, "hold") || contains_word(action, "holds")
+}
+
+/// The opening framing of a shot: the first sentence of its `action` (verbatim,
+/// trimmed). Shot 0 opens on its own framing (the run's first still, K0), so K0
+/// is derived from this rather than from a hold clause.
+fn opening_clause(action: &str) -> String {
+    action
+        .split('.')
+        .next()
+        .unwrap_or(action)
+        .trim()
+        .to_string()
+}
+
+/// The ending-hold framing of a shot: the exact framing named after "hold of …"
+/// (memo D-E — every non-final shot ends "Ends on a static hold of <framing>").
+/// This is the describable still `K_{i+1}` must render. Falls back to the last
+/// non-empty sentence, then the whole action, so a shot without the exact phrase
+/// still yields a still prompt rather than an empty one.
+fn ending_hold_clause(action: &str) -> String {
+    let lower = action.to_lowercase();
+    if let Some(pos) = lower.rfind("hold of ") {
+        let tail = &action[pos + "hold of ".len()..];
+        let clause = tail.trim().trim_end_matches('.').trim();
+        if !clause.is_empty() {
+            return clause.to_string();
+        }
+    }
+    action
+        .rsplit('.')
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .unwrap_or(action.trim())
+        .to_string()
+}
+
+/// Compose a keyframe prompt: `"{world} {body}"` verbatim (the exact string the
+/// shots carry), or just `body` when the plan declares no world.
+fn compose_keyframe_prompt(world: &str, body: &str) -> String {
+    let world = world.trim();
+    if world.is_empty() {
+        body.trim().to_string()
+    } else {
+        format!("{world} {}", body.trim())
+    }
+}
+
+/// Derive the `N+1` keyframe stills of a keyframe-anchored set from an already
+/// validated plan (D1). Pure: `K0` is shot 0's opening framing; `K_{i+1}` is
+/// shot `i`'s ending hold clause; every still shares the plan's world string
+/// verbatim and renders at `image_size`. `keyframes.len() == shots.len() + 1`.
+///
+/// The model does not draft this — deriving it guarantees the still and the
+/// video share the identical world string (a second free-text draft is drift by
+/// construction, memo §1) and needs no second LLM round trip.
+pub fn derive_keyframes(
+    plan: &StoryboardPlan,
+    still_model: &str,
+    image_size: ImageSize,
+) -> Vec<Keyframe> {
+    let world = plan.world.as_str();
+    let n = plan.shots.len();
+    let mut out = Vec::with_capacity(n + 1);
+
+    // K0: shot 0's opening framing (the run's first still — its `image_url`).
+    let k0_body = plan
+        .shots
+        .first()
+        .map(|s| opening_clause(s.action.as_deref().unwrap_or(&s.prompt)))
+        .unwrap_or_default();
+    out.push(Keyframe {
+        index: 0,
+        prompt: compose_keyframe_prompt(world, &k0_body),
+        model_id: still_model.to_string(),
+        image_size,
+    });
+
+    // K_{i+1}: shot i's ending hold clause (that shot's `end_image_url`).
+    for (i, shot) in plan.shots.iter().enumerate() {
+        let body = ending_hold_clause(shot.action.as_deref().unwrap_or(&shot.prompt));
+        out.push(Keyframe {
+            index: i + 1,
+            prompt: compose_keyframe_prompt(world, &body),
+            model_id: still_model.to_string(),
+            image_size,
+        });
+    }
+    out
+}
+
+/// Validate the derived keyframes against the set (AC1), pure. Checks: the count
+/// is `shots_len + 1`; every still model is a registry model runnable for
+/// text-to-image (the picker's predicate); every still's canvas equals the set's
+/// target `expected` canvas (a mixed canvas rescales the still — memo D-F).
+pub fn validate_keyframes(
+    keyframes: &[Keyframe],
+    shots_len: usize,
+    expected: ImageSize,
+) -> Result<(), PlanError> {
+    let want = shots_len + 1;
+    if keyframes.len() != want {
+        return Err(PlanError::KeyframeCount {
+            expected: want,
+            got: keyframes.len(),
+        });
+    }
+    let reg = registry();
+    for kf in keyframes {
+        let runnable = reg
+            .get(&kf.model_id)
+            .is_some_and(|m| use_case::supports(m, UseCase::TextToImage));
+        if !runnable {
+            return Err(PlanError::KeyframeModelNotRunnable {
+                index: kf.index,
+                model_id: kf.model_id.clone(),
+            });
+        }
+        if kf.image_size != expected {
+            return Err(PlanError::KeyframeCanvasMismatch { index: kf.index });
+        }
+    }
+    Ok(())
 }
 
 /// The continuity rules on a multi-shot **continuous** plan (memo D-E), pure.
@@ -1007,6 +1221,7 @@ mod tests {
                 continuity: None,
                 advisories: Vec::new(),
                 chainable: false,
+                end_frame_capable: false,
                 action: None,
                 resolution: None,
             })
@@ -1341,6 +1556,7 @@ mod tests {
             continuity: None,
             advisories: Vec::new(),
             chainable: false,
+            end_frame_capable: false,
             action: None,
             resolution: None,
         };
@@ -1372,6 +1588,7 @@ mod tests {
             continuity: None,
             advisories: Vec::new(),
             chainable: false,
+            end_frame_capable: false,
             action: None,
             resolution: None,
         };
@@ -1467,6 +1684,7 @@ mod tests {
             continuity: None,
             advisories: Vec::new(),
             chainable: false,
+            end_frame_capable: false,
             resolution: None,
         }
     }
@@ -1786,5 +2004,141 @@ mod tests {
             continuity_rate(&[JoinScore::unscored()], CONTINUITY_FLOOR),
             1.0
         );
+    }
+
+    // ---- S17: keyframe derivation + validation (D1) + end adherence (D4) ----
+
+    fn a_keyframe_plan() -> StoryboardPlan {
+        // A 2×15 continuous plan with distinct hold clauses, parsed through the
+        // real `plan()` so the shots carry composed prompts + actions.
+        let model = h3_max();
+        let json = format!(
+            r#"{{"world": "{WORLD}",
+"shots": [
+  {{"title":"A","action":"The can centred, label to camera, one drop about to fall. Ends on a static hold of the can centred, label to camera.","seconds":15,"camera":null,"modelId":"{model}","role":"start"}},
+  {{"title":"B","action":"Opens on the same static hold of the can centred, then the can fills the frame. Ends on a static hold of the can filling the frame, label sharp.","seconds":15,"camera":null,"modelId":"{model}","role":"end"}}
+]}}"#
+        );
+        plan(
+            &fake(&json),
+            "sys",
+            "a 30s cold-brew ad",
+            30.0,
+            UseCase::ImageToVideo,
+            &[model.to_string()],
+        )
+        .expect("the keyframe fixture plans clean")
+    }
+
+    const CANVAS: ImageSize = ImageSize {
+        width: 1360,
+        height: 768,
+    };
+
+    #[test]
+    fn derive_keyframes_builds_n_plus_one_stills_from_the_holds() {
+        let plan = a_keyframe_plan();
+        let kfs = derive_keyframes(&plan, "qwen_image_3", CANVAS);
+        assert_eq!(kfs.len(), plan.shots.len() + 1, "N+1 stills");
+        assert_eq!(kfs.len(), 3);
+        // K0 is shot 0's opening framing; K1/K2 are each shot's ending hold.
+        assert_eq!(
+            kfs[0].prompt,
+            format!("{WORLD} The can centred, label to camera, one drop about to fall")
+        );
+        assert_eq!(
+            kfs[1].prompt,
+            format!("{WORLD} the can centred, label to camera")
+        );
+        assert_eq!(
+            kfs[2].prompt,
+            format!("{WORLD} the can filling the frame, label sharp")
+        );
+        for (i, kf) in kfs.iter().enumerate() {
+            assert_eq!(kf.index, i);
+            assert_eq!(kf.model_id, "qwen_image_3");
+            assert_eq!(kf.image_size, CANVAS);
+            assert!(kf.prompt.starts_with(WORLD), "world is verbatim");
+        }
+    }
+
+    #[test]
+    fn a_keyframe_count_mismatch_is_rejected() {
+        let plan = a_keyframe_plan();
+        let mut kfs = derive_keyframes(&plan, "qwen_image_3", CANVAS);
+        // The correct count validates.
+        assert!(validate_keyframes(&kfs, plan.shots.len(), CANVAS).is_ok());
+        // One short → KeyframeCount.
+        kfs.pop();
+        let err = validate_keyframes(&kfs, plan.shots.len(), CANVAS).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PlanError::KeyframeCount {
+                    expected: 3,
+                    got: 2
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_text_to_image_still_model_is_rejected() {
+        let plan = a_keyframe_plan();
+        // qwen_image_3 is a runnable text-to-image model → accepted.
+        let ok = derive_keyframes(&plan, "qwen_image_3", CANVAS);
+        assert!(validate_keyframes(&ok, plan.shots.len(), CANVAS).is_ok());
+        // kling3_0_pro is a video model, not text-to-image → rejected.
+        let bad = derive_keyframes(&plan, "kling3_0_pro", CANVAS);
+        let err = validate_keyframes(&bad, plan.shots.len(), CANVAS).unwrap_err();
+        assert!(
+            matches!(&err, PlanError::KeyframeModelNotRunnable { model_id, .. } if model_id == "kling3_0_pro"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_still_canvas_that_disagrees_with_the_set_is_rejected() {
+        let plan = a_keyframe_plan();
+        let mut kfs = derive_keyframes(&plan, "qwen_image_3", CANVAS);
+        // A single still off the set canvas (wrong aspect/height) → mismatch.
+        kfs[1].image_size = ImageSize {
+            width: 768,
+            height: 768,
+        };
+        let err = validate_keyframes(&kfs, plan.shots.len(), CANVAS).unwrap_err();
+        assert!(
+            matches!(err, PlanError::KeyframeCanvasMismatch { index: 1 }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn join_passes_end_at_the_ideal_boundaries() {
+        // Exactly on the ideal (0.90 / 6 / 3) passes.
+        assert!(join_passes_end(
+            &scored(0.90, 6.0, 3.0, 3.0),
+            CONTINUITY_IDEAL
+        ));
+        // One-over each bound fails.
+        assert!(!join_passes_end(
+            &scored(0.89, 6.0, 3.0, 3.0),
+            CONTINUITY_IDEAL
+        ));
+        assert!(!join_passes_end(
+            &scored(0.95, 6.1, 3.0, 3.0),
+            CONTINUITY_IDEAL
+        ));
+        assert!(!join_passes_end(
+            &scored(0.95, 6.0, 3.1, 3.0),
+            CONTINUITY_IDEAL
+        ));
+        assert!(!join_passes_end(
+            &scored(0.95, 6.0, 3.0, 3.1),
+            CONTINUITY_IDEAL
+        ));
+        // All-None is not failing (unscored end must never fire a regenerate).
+        assert!(join_passes_end(&JoinScore::unscored(), CONTINUITY_IDEAL));
     }
 }

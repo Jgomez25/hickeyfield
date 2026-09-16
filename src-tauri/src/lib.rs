@@ -84,6 +84,7 @@ pub fn run() {
             commands::submit_job,
             commands::plan_storyboard,
             commands::generate_storyboard,
+            commands::regenerate_keyframe_still,
             commands::list_storyboards,
             render::render_storyboard,
             render::list_storyboard_renders,

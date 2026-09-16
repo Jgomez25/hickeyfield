@@ -223,6 +223,10 @@ export interface Shot {
    * image-to-video route). Computed server-side; the Chain toggle defaults on
    * only when every shot is chainable. */
   chainable?: boolean;
+  /** S17: whether this shot's model can bind an end frame (an `end_image_url`
+   * route). The Keyframe toggle enables only when every shot is end-frame-capable,
+   * computed server-side so the default matches the scheduler. */
+  endFrameCapable?: boolean;
   /** S16: an optional per-shot resolution (one per set is the rule). */
   resolution?: string | null;
 }
@@ -249,6 +253,27 @@ export interface JoinRecord {
   du: number | null;
   dv: number | null;
   pass: boolean | null;
+  attempt: number;
+  /** S17: end-frame adherence — the SSIM (+ colour drift) of this shot's actual
+   * last frame vs its planned still. `null` when unscored (never 0). Gated
+   * against the ideal tier. */
+  endSsim?: number | null;
+  endPsnr?: number | null;
+  endDy?: number | null;
+  endDu?: number | null;
+  endDv?: number | null;
+  endPass?: boolean | null;
+}
+
+/** S17: one keyframe still boundary of a keyframe-anchored set. */
+export interface KeyframeRecord {
+  index: number;
+  jobSetId?: string | null;
+  /** The downloaded still PNG, once the still settles; `null` while queued /
+   * running, or if it failed (the set is parked). */
+  localPath?: string | null;
+  /** Priced at submit; `null` when unpriced (never summed as $0). */
+  estimatedUsd?: number | null;
   attempt: number;
 }
 
@@ -280,6 +305,9 @@ export interface Storyboard {
   joins?: JoinRecord[];
   /** S16: whether the set opted into bounded auto-retry. */
   autoRetry?: boolean;
+  /** S17: the keyframe boundaries of a keyframe-anchored set (one still per shot
+   * boundary). Empty for a non-keyframe set. */
+  keyframes?: KeyframeRecord[];
 }
 
 /** S15: a finished, stitched storyboard ad on disk. Mirrors the Rust

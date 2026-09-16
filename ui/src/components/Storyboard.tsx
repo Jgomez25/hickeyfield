@@ -38,6 +38,8 @@ export function Storyboard({
   onPreview,
   onGenerate,
   onGenerated,
+  imageModelAvailable = true,
+  stillEstimate = null,
 }: {
   /** The current use-case slug the plan is validated against. */
   tab: string;
@@ -48,6 +50,12 @@ export function Storyboard({
   /** The rail's current settings, used as the base for each shot's estimate. */
   settings: GenSettings;
   enhancer: RewriterChoice | null;
+  /** S17: whether a runnable text-to-image model exists for the stills. The
+   * Keyframe toggle enables only when true (always true today: qwen_image_3). */
+  imageModelAvailable?: boolean;
+  /** S17: the per-still cost, folded into the total shown before Generate.
+   * `null` → unpriced (a GPT tier), which marks the whole total "unpriced". */
+  stillEstimate?: CostEstimate | null;
   onPlan: (args: {
     brief: string;
     targetSeconds: number;
@@ -97,8 +105,17 @@ export function Storyboard({
   // S16 D9: opt into bounded auto-retry of a below-floor join (≤2 attempts,
   // each priced first). Off by default — nothing spends without an opt-in.
   const [autoRetry, setAutoRetry] = useState(false);
+  // S17: keyframe-anchored mode — render one still per boundary and anchor every
+  // shot on both ends. Off by default; a keyframe set is chained by nature.
+  const [keyframeMode, setKeyframeMode] = useState(false);
   const canChain = shots.length > 1;
   const allChainable = canChain && shots.every((s) => s.chainable ?? false);
+  // The Keyframe toggle enables only when every shot's model can bind an end
+  // frame AND a runnable image model exists for the stills (D5) — so the toggle
+  // default cannot drift from the scheduler's binding gate.
+  const allEndFrameCapable =
+    canChain && shots.every((s) => s.endFrameCapable ?? false);
+  const canKeyframe = allEndFrameCapable && imageModelAvailable;
 
   /** Close any open inline preview — called on reorder/delete so a stale
    * preview cannot be accepted for the shot that now sits at that index. */
@@ -133,6 +150,10 @@ export function Storyboard({
   // frame; it follows the current plan (a re-draft re-applies the default).
   useEffect(() => {
     setChained(shots.length > 1 && shots.every((s) => s.chainable ?? false));
+    // S17: keyframe mode is opt-in (off by default) and only offered when the
+    // whole set can bind end frames; a re-draft that loses that capability
+    // clears it so it cannot ride a stale plan.
+    setKeyframeMode(false);
   }, [shots]);
 
   const draft = useCallback(async () => {
@@ -231,7 +252,15 @@ export function Storyboard({
     [previewText],
   );
 
-  const total = totalCostCaption(estimates);
+  // S17: in keyframe mode the total the Generate button gates on includes the
+  // N+1 stills (a still per shot boundary). An unpriced still (a GPT tier →
+  // `stillEstimate === null`) marks the whole total "unpriced" — never $0.
+  const stillCount = shots.length + 1;
+  const totalEstimates =
+    keyframeMode && canChain
+      ? [...estimates, ...Array.from({ length: stillCount }, () => stillEstimate)]
+      : estimates;
+  const total = totalCostCaption(totalEstimates);
   const targetInvalid = !(targetSeconds > 0);
   const canGenerate =
     shots.length > 0 && estimates.length === shots.length && !generating;
@@ -289,13 +318,16 @@ export function Storyboard({
         shotIndices: isRetry ? indices : undefined,
         storyboardId: retryStoryboardId,
         // Chaining applies only to a first generate-all; a retry re-submits a
-        // single failed shot and the runner's hook resumes the chain from it.
-        chained: isRetry ? undefined : chained,
+        // single failed shot and the runner's hook resumes the chain from it. A
+        // keyframe set is chained by nature (S17).
+        chained: isRetry ? undefined : chained || (keyframeMode && canKeyframe),
         // Auto-retry rides on a chained first generate-all only.
-        autoRetry: isRetry ? undefined : chained && autoRetry,
+        autoRetry: isRetry ? undefined : (chained || keyframeMode) && autoRetry,
+        // S17: keyframe-anchored mode + the still model (default qwen_image_3).
+        keyframeMode: isRetry ? undefined : keyframeMode && canKeyframe,
       });
     },
-    [shots, brief, targetSeconds, tab, models, settings, enhancer, finalPrompts, onGenerate, chained, autoRetry],
+    [shots, brief, targetSeconds, tab, models, settings, enhancer, finalPrompts, onGenerate, chained, autoRetry, keyframeMode, canKeyframe],
   );
 
   const generate = useCallback(async () => {
@@ -634,6 +666,42 @@ export function Storyboard({
                     </span>
                   </label>
                 ) : null}
+                <label
+                  className="storyboard-keyframe-toggle"
+                  data-disabled={!canKeyframe || undefined}
+                >
+                  <input
+                    type="checkbox"
+                    checked={keyframeMode && canKeyframe}
+                    disabled={!canKeyframe}
+                    aria-label="Keyframe-anchor every shot on both ends"
+                    onChange={(e) => setKeyframeMode(e.currentTarget.checked)}
+                  />
+                  <span>
+                    Keyframe mode (a still per boundary, both ends anchored)
+                  </span>
+                </label>
+                {!canKeyframe ? (
+                  <p className="storyboard-keyframe-note">
+                    {!imageModelAvailable
+                      ? "No image model is available to render the stills."
+                      : "Every shot's model must take an end frame to keyframe-anchor the set."}
+                  </p>
+                ) : null}
+                {keyframeMode && canKeyframe ? (
+                  <div className="storyboard-keyframe-cards">
+                    {Array.from({ length: shots.length + 1 }, (_, k) => (
+                      <div className="storyboard-keyframe-card" key={k}>
+                        <span className="storyboard-keyframe-index">
+                          Still {k + 1} of {shots.length + 1}
+                        </span>
+                        <span className="storyboard-keyframe-prompt">
+                          {keyframeStillText(shots, k)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             <div className="storyboard-total-line">
@@ -683,6 +751,25 @@ function renumber(shots: Shot[]): Shot[] {
     role: i === 0 ? "start" : i === shots.length - 1 ? "end" : "middle",
     continuity: i === 0 ? null : { lastFrameOf: i - 1 },
   }));
+}
+
+/** S17: the derived still text for keyframe boundary `k` (preview only). K0 is
+ * shot 0's opening framing; K_{i+1} is shot i's ending hold clause — the same
+ * derivation the server uses (a still per boundary, both ends anchored). */
+function keyframeStillText(shots: Shot[], k: number): string {
+  const holdClause = (action: string): string => {
+    const lower = action.toLowerCase();
+    const at = lower.lastIndexOf("hold of ");
+    if (at >= 0) return action.slice(at + "hold of ".length).replace(/\.$/, "").trim();
+    return action.trim();
+  };
+  if (k === 0) {
+    const a = shots[0]?.action ?? shots[0]?.prompt ?? "";
+    return a.split(".")[0]?.trim() || "opening frame";
+  }
+  const shot = shots[k - 1];
+  const a = shot?.action ?? shot?.prompt ?? "";
+  return holdClause(a) || "held frame";
 }
 
 /** The first usable route id for a model, for the shot's submit payload. */

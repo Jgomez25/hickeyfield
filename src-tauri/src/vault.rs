@@ -35,6 +35,20 @@ fn env_override(provider: ProviderId, secret_half: bool) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// True when the login keychain must not be consulted: every `cfg(test)`
+/// build, and any process started with `HICKEYFIELD_NO_KEYCHAIN=1`.
+pub fn keychain_blocked() -> bool {
+    if cfg!(test) {
+        return true;
+    }
+    std::env::var("HICKEYFIELD_NO_KEYCHAIN")
+        .map(|v| {
+            let v = v.trim();
+            !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
 fn entry(provider: ProviderId, secret_half: bool) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, &account(provider, secret_half)).map_err(|e| e.to_string())
 }
@@ -44,6 +58,15 @@ fn entry(provider: ProviderId, secret_half: bool) -> Result<keyring::Entry, Stri
 pub fn get(provider: ProviderId, secret_half: bool) -> Option<String> {
     if let Some(v) = env_override(provider, secret_half) {
         return Some(v);
+    }
+    // The keychain holds the owner's REAL keys. A test that unsets the dummy
+    // env override must resolve to "no key", never fall through to the
+    // keychain: on 2026-09-16 exactly that fall-through let a unit test submit
+    // nine paid image generations. Compiled-for-test builds never touch the
+    // keychain, and any agent-run binary can opt out with
+    // `HICKEYFIELD_NO_KEYCHAIN=1`.
+    if keychain_blocked() {
+        return None;
     }
     entry(provider, secret_half)
         .ok()?
@@ -130,5 +153,26 @@ mod tests {
         std::env::set_var("hickeyfield_BFL_KEY", "   ");
         assert_eq!(env_override(ProviderId::Bfl, false), None);
         std::env::remove_var("hickeyfield_BFL_KEY");
+    }
+}
+
+#[cfg(test)]
+mod keychain_guard_tests {
+    use super::*;
+
+    #[test]
+    fn a_test_build_never_reaches_the_keychain_when_the_env_override_is_absent() {
+        // The 2026-09-16 incident: stripping `hickeyfield_FAL_KEY` in a test
+        // must yield "no key", not the owner's real key from the keychain.
+        std::env::remove_var("hickeyfield_FAL_KEY");
+        assert!(keychain_blocked(), "cfg(test) must block the keychain");
+        assert_eq!(get(ProviderId::Fal, false), None);
+    }
+
+    #[test]
+    fn the_env_override_still_wins_in_tests() {
+        std::env::set_var("hickeyfield_FAL_KEY", "dummy-x");
+        assert_eq!(get(ProviderId::Fal, false).as_deref(), Some("dummy-x"));
+        std::env::remove_var("hickeyfield_FAL_KEY");
     }
 }

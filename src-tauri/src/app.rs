@@ -182,6 +182,16 @@ impl AppState {
                     // Local ffmpeg on saved frames only; spends nothing. A low
                     // join flags but never blocks the chain.
                     let join = crate::chain::score_join(&store, &ffmpeg_dir, &renders_root, job);
+                    // S17: the stills-ready → shot-0 barrier. Fires when a
+                    // settled still lands its download; idempotent with resume.
+                    crate::chain::keyframes_advance(
+                        &store,
+                        &prices,
+                        &ffmpeg_dir,
+                        &renders_root,
+                        &runner,
+                        job,
+                    );
                     crate::chain::advance(
                         &store,
                         &prices,

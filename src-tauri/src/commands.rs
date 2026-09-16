@@ -1210,6 +1210,107 @@ pub(crate) fn submit_one(
 
 // ── Storyboard ───────────────────────────────────────────────────────────────
 
+/// The default still model for a keyframe set (D1): the only priced fal
+/// text-to-image route, so the total shows a real number. The owner may override
+/// via `StoryboardGenerateInput.still_model_id`.
+pub(crate) const DEFAULT_STILL_MODEL: &str = "qwen_image_3";
+
+/// The derived keyframe plan for one generate call: the `N+1` stills, their
+/// crash-safe records (with per-still estimates), and the set canvas the stills
+/// render at. Kept as a named struct so the generate path stays readable.
+struct KeyframePlan {
+    keyframes: Vec<hickeyfield_core::storyboard::Keyframe>,
+    records: Vec<crate::store::KeyframeRecord>,
+    resolution: Option<String>,
+    aspect: Option<String>,
+}
+
+/// Derive the still canvas for a keyframe set (D1/Q1) from the set's resolution
+/// and aspect: `image_size = width_for(height, aspect) × height`, rounded even.
+/// Because H3 Max i2v's canvas "follows the frame", the still MUST render at the
+/// set's target size. Defaults 768p × 16:9 when the shot omits them.
+fn keyframe_canvas(
+    resolution: Option<&str>,
+    aspect: Option<&str>,
+) -> Result<hickeyfield_core::storyboard::ImageSize, String> {
+    let res = resolution.unwrap_or("768p");
+    let asp = aspect.unwrap_or("16:9");
+    let height = resolution_height(res)
+        .ok_or_else(|| format!("keyframe stills need a known resolution, not {res:?}"))?;
+    let width = width_for(height, Some(asp))
+        .ok_or_else(|| format!("keyframe stills need a known aspect, not {asp:?}"))?;
+    Ok(hickeyfield_core::storyboard::ImageSize { width, height })
+}
+
+/// Build the still job's [`SubmitInput`] for one keyframe boundary. The derived
+/// prompt is sent VERBATIM (`final_prompt`) — it is already the world + hold
+/// clause, so re-enhancing it would be drift; the canvas rides as an
+/// `image_size` constant override (the S15 override seam, schema-gated so it
+/// only lands on a model that declares `image_size`, verified keyless against
+/// qwen-image-3). A `seed` offset makes a regenerate reproducibly different.
+fn still_submit_input(
+    kf: &hickeyfield_core::storyboard::Keyframe,
+    resolution: Option<&str>,
+    aspect: Option<&str>,
+    seed: u64,
+) -> SubmitInput {
+    let mut overrides = serde_json::Map::new();
+    overrides.insert(
+        "image_size".into(),
+        serde_json::json!({ "width": kf.image_size.width, "height": kf.image_size.height }),
+    );
+    overrides.insert("seed".into(), serde_json::Value::Number(seed.into()));
+    SubmitInput {
+        model_id: kf.model_id.clone(),
+        route_id: None,
+        prompt: kf.prompt.clone(),
+        preset_id: None,
+        settings: SettingsDto {
+            duration: None,
+            resolution: resolution.map(str::to_string),
+            aspect: aspect.map(str::to_string),
+            audio: false,
+            enhance: false,
+            seed: None,
+            steps: None,
+            batch: 1,
+            extra_inputs: 0,
+        },
+        media: Vec::new(),
+        rewriter: None,
+        // Verbatim: the derived prompt already carries the world + hold clause.
+        final_prompt: Some(kf.prompt.clone()),
+        constant_overrides: Some(overrides),
+    }
+}
+
+/// Price one still up front (D2/D6) — the same estimate `submit_one` will write,
+/// computed here so the stored `KeyframeRecord.estimated_usd` feeds the
+/// total-shown-before-Generate sum. `None` for an unpriced model (a GPT tier);
+/// never summed as $0.
+fn still_estimate(
+    prices: &Arc<crate::pricing::Prices>,
+    model: &hickeyfield_core::Model,
+    settings: &SettingsDto,
+) -> Option<f64> {
+    let available: Vec<ProviderId> = configured_providers()
+        .iter()
+        .filter_map(|s| ProviderId::from_slug(s))
+        .collect();
+    let billable = Billable::from(settings);
+    let route = hickeyfield_core::route::resolve(
+        &model.routes,
+        &available,
+        RoutePolicy::Cheapest,
+        None,
+        |r| prices.usd(model, r, &billable),
+    )
+    .ok()?;
+    prices
+        .estimate_with_provenance(model, route, &billable)
+        .map(|(e, _)| e.usd)
+}
+
 /// Turn the UI's (optional) enhancer choice plus what is actually reachable into
 /// a concrete [`hickeyfield_core::enhancer::ChatBackend`], or an honest note when
 /// nothing can run. The `ChatBackend` analogue of [`select_rewriter`], sharing
@@ -1344,6 +1445,16 @@ pub struct StoryboardGenerateInput {
     /// without an explicit opt-in and the total shown.
     #[serde(default)]
     pub auto_retry: bool,
+    /// S17: generate this set in keyframe-anchored mode — render one still per
+    /// shot boundary (N+1) and anchor every shot on BOTH ends. Default off. Only
+    /// valid when the set is chained and every shot's model takes an end frame.
+    #[serde(default)]
+    pub keyframe_mode: bool,
+    /// S17: the image model that renders the stills (one per set). `None`
+    /// defaults to `qwen_image_3` (D1 — the priced default). Gated by the
+    /// keyframe validator to a runnable text-to-image model.
+    #[serde(default)]
+    pub still_model_id: Option<String>,
 }
 
 /// One shot's fate in a generate-all batch. A shot that failed (a refusal, a
@@ -1527,6 +1638,66 @@ fn generate_storyboard_inner(
 
     // Determine the group id: a retry writes into the existing set, so its new
     // job rows join the original storyboard; a first generate mints a fresh group.
+    // S17: keyframe-anchored mode. Only a first generate of a chained multi-shot
+    // set can enter it (a retry resumes the existing set's chain). When active,
+    // the N+1 stills are submitted first (priced, gated) and every shot is held
+    // pending until the stills-ready barrier fires shot 0.
+    let keyframe_active = input.keyframe_mode
+        && input.storyboard_id.is_none()
+        && !is_retry_subset
+        && input.chained
+        && input.shots.len() > 1;
+
+    // Derived once here so both the stored `keyframes_json` (with per-still
+    // estimates for the total) and the still submits below share one list.
+    let keyframe_plan: Option<KeyframePlan> = if keyframe_active {
+        let plan_json = input
+            .plan_json
+            .as_deref()
+            .ok_or_else(|| "keyframe mode needs the plan to derive the stills.".to_string())?;
+        let plan: hickeyfield_core::storyboard::StoryboardPlan =
+            serde_json::from_str(plan_json).map_err(|e| format!("plan is not valid: {e}"))?;
+        let still_model = input
+            .still_model_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_STILL_MODEL.to_string());
+        // The set canvas comes from shot 0's chosen resolution/aspect.
+        let res = input
+            .shots
+            .first()
+            .and_then(|s| s.settings.resolution.clone());
+        let asp = input.shots.first().and_then(|s| s.settings.aspect.clone());
+        let canvas = keyframe_canvas(res.as_deref(), asp.as_deref())?;
+        let kfs = hickeyfield_core::storyboard::derive_keyframes(&plan, &still_model, canvas);
+        hickeyfield_core::storyboard::validate_keyframes(&kfs, plan.shots.len(), canvas)
+            .map_err(|e| e.to_string())?;
+        // Price each still up front for the total shown before Generate.
+        let still = reg
+            .get(&still_model)
+            .ok_or_else(|| format!("unknown still model: {still_model}"))?;
+        let records: Vec<crate::store::KeyframeRecord> = kfs
+            .iter()
+            .map(|kf| {
+                let si = still_submit_input(kf, res.as_deref(), asp.as_deref(), 0);
+                crate::store::KeyframeRecord {
+                    index: kf.index,
+                    job_set_id: None,
+                    local_path: None,
+                    estimated_usd: still_estimate(&state.prices, still, &si.settings),
+                    attempt: 0,
+                }
+            })
+            .collect();
+        Some(KeyframePlan {
+            keyframes: kfs,
+            records,
+            resolution: res,
+            aspect: asp,
+        })
+    } else {
+        None
+    };
+
     let sid = match input.storyboard_id.clone() {
         Some(existing) => {
             let Some(sb) = state
@@ -1625,6 +1796,13 @@ fn generate_storyboard_inner(
                 joins_json: None,
                 // S16 D9: the opt-in auto-retry toggle, off unless the UI set it.
                 auto_retry: input.auto_retry,
+                // S17: the N+1 still boundaries (with per-still estimates), or
+                // None for a non-keyframe set.
+                keyframes_json: keyframe_plan
+                    .as_ref()
+                    .map(|kp| serde_json::to_string(&kp.records))
+                    .transpose()
+                    .map_err(|e| e.to_string())?,
             };
             state
                 .store
@@ -1633,6 +1811,67 @@ fn generate_storyboard_inner(
             sid
         }
     };
+
+    // S17: in keyframe mode, submit the N+1 stills first — each through the same
+    // gated `submit_one` money path (priced, guarded) — and hold every shot
+    // pending. The stills-ready barrier (`chain::keyframes_advance`) submits shot
+    // 0 once the last still settles. Nothing here submits a shot.
+    if let Some(KeyframePlan {
+        keyframes: kfs,
+        mut records,
+        resolution: res,
+        aspect: asp,
+    }) = keyframe_plan
+    {
+        let seed = crate::chain::storyboard_seed(&sid);
+        for kf in &kfs {
+            let si = still_submit_input(kf, res.as_deref(), asp.as_deref(), seed);
+            let Some(model) = reg.get(&kf.model_id) else {
+                continue;
+            };
+            match submit_one(
+                &state.store,
+                &state.prices,
+                &state.runner,
+                model,
+                &si,
+                Some(&sid),
+                None, // a still occupies no shot index (D2/Q5)
+            ) {
+                Ok(job_id) => {
+                    if let Some(rec) = records.iter_mut().find(|r| r.index == kf.index) {
+                        rec.job_set_id = Some(job_id);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "storyboard {sid}: keyframe {} did not submit: {e}",
+                        kf.index
+                    );
+                }
+            }
+        }
+        // Persist the still job ids back onto the set so the barrier and a
+        // relaunch can map each settled still job to its boundary.
+        if let Ok(Some(mut sb)) = state.store.storyboard(&sid) {
+            sb.keyframes_json = serde_json::to_string(&records).ok();
+            let _ = state.store.upsert_storyboard(&sb);
+        }
+        // Every shot is pending; the barrier drives the chain from shot 0.
+        let outcomes = indices
+            .iter()
+            .map(|&idx| ShotOutcome {
+                shot_index: idx,
+                job_set_id: None,
+                error: None,
+                pending: true,
+            })
+            .collect();
+        return Ok(StoryboardResult {
+            storyboard_id: sid,
+            shots: outcomes,
+        });
+    }
 
     // S15: in chained mode only shot 0 is submitted now; the runner's settled
     // hook (`chain::advance`) extracts its last frame and submits shot 1, and so
@@ -1710,6 +1949,10 @@ pub struct StoryboardDto {
     pub joins_json: Option<String>,
     /// S16: whether the set opted into auto-retry (surfaced for the badge copy).
     pub auto_retry: bool,
+    /// S17: the keyframe boundaries (a serialised `Vec<KeyframeRecord>`) for a
+    /// keyframe set, so the Library/Storyboard views can show the still cards,
+    /// the parked state, and the priced-total contribution. `None` otherwise.
+    pub keyframes_json: Option<String>,
 }
 
 #[tauri::command]
@@ -1727,8 +1970,125 @@ pub fn list_storyboards(state: State<'_, AppState>) -> Result<Vec<StoryboardDto>
             created_at: s.created_at,
             joins_json: s.joins_json,
             auto_retry: s.auto_retry,
+            keyframes_json: s.keyframes_json,
         })
         .collect())
+}
+
+/// Regenerate one keyframe still (S17, D4/D5). Re-derives the still prompt from
+/// the stored plan (so it stays the world + hold clause verbatim), prices it
+/// through `submit_one` **before** it spends (the total-shown invariant, AC6),
+/// and re-parks the set until the new still settles and the barrier proceeds.
+///
+/// Guards: an in-flight still at this boundary is refused (a queued/running
+/// still would be double-billed); on the auto path the `KeyframeRecord.attempt`
+/// bound (≤ [`KEYFRAME_RETRY_CAP`]) caps it separately from a shot's bound.
+#[tauri::command]
+pub fn regenerate_keyframe_still(
+    state: State<'_, AppState>,
+    storyboard_id: String,
+    index: usize,
+) -> Result<String, String> {
+    regenerate_keyframe_still_inner(
+        &state.store,
+        &state.prices,
+        &state.runner,
+        &storyboard_id,
+        index,
+        false,
+    )
+}
+
+pub(crate) fn regenerate_keyframe_still_inner(
+    store: &Arc<crate::store::SqliteStore>,
+    prices: &Arc<crate::pricing::Prices>,
+    runner: &crate::runner::Runner,
+    sid: &str,
+    index: usize,
+    auto: bool,
+) -> Result<String, String> {
+    let Some(mut sb) = store.storyboard(sid).map_err(|e| e.to_string())? else {
+        return Err(format!("no such storyboard: {sid}"));
+    };
+    let mut records = crate::store::parse_keyframes(sb.keyframes_json.as_deref());
+    let Some(pos) = records.iter().position(|k| k.index == index) else {
+        return Err(format!("storyboard {sid} has no keyframe {index}"));
+    };
+
+    // In-flight guard: never resubmit while this boundary's still is queued or
+    // running — a second submit would mint a duplicate in-flight still (a
+    // double-bill), the S16 M1 invariant extended to stills.
+    if let Some(job_id) = records[pos].job_set_id.clone() {
+        if let Ok(Some(job)) = store.get(&job_id) {
+            if !job.status.is_terminal() {
+                return Err(format!(
+                    "keyframe {index} is still in flight — refusing to resubmit it."
+                ));
+            }
+        }
+    }
+    // On the auto path, the still bound is separate from a shot's (D4/Q6).
+    if auto && records[pos].attempt >= crate::chain::KEYFRAME_RETRY_CAP {
+        return Err(format!(
+            "keyframe {index} has hit the auto-retry cap ({}).",
+            crate::chain::KEYFRAME_RETRY_CAP
+        ));
+    }
+
+    // Re-derive the still input from the stored plan (verbatim world + hold).
+    let plan: hickeyfield_core::storyboard::StoryboardPlan =
+        serde_json::from_str(&sb.plan_json).map_err(|e| format!("plan is not valid: {e}"))?;
+    let (res, asp) = match sb.shots_json.as_deref() {
+        Some(sj) => {
+            let shots: Vec<SubmitInput> =
+                serde_json::from_str(sj).map_err(|e| format!("shots are not valid: {e}"))?;
+            let s0 = shots.first();
+            (
+                s0.and_then(|s| s.settings.resolution.clone()),
+                s0.and_then(|s| s.settings.aspect.clone()),
+            )
+        }
+        None => (None, None),
+    };
+    let canvas = keyframe_canvas(res.as_deref(), asp.as_deref())?;
+    // The still model: whatever the existing still job used, else the default.
+    let still_model = records[pos]
+        .job_set_id
+        .as_ref()
+        .and_then(|id| store.get(id).ok().flatten())
+        .map(|j| j.model_id)
+        .unwrap_or_else(|| DEFAULT_STILL_MODEL.to_string());
+    let kfs = hickeyfield_core::storyboard::derive_keyframes(&plan, &still_model, canvas);
+    let Some(kf) = kfs.iter().find(|k| k.index == index) else {
+        return Err(format!("could not derive keyframe {index}"));
+    };
+    let Some(model) = reg().get(&still_model).cloned() else {
+        return Err(format!("unknown still model: {still_model}"));
+    };
+
+    // A regenerate MUST change the seed or identical inputs reproduce identically.
+    let seed = crate::chain::storyboard_seed(sid) + (records[pos].attempt as u64 + 1);
+    let si = still_submit_input(kf, res.as_deref(), asp.as_deref(), seed);
+    let job_id = submit_one(store, prices, runner, &model, &si, Some(sid), None)?;
+
+    // Re-park this boundary: point it at the new still, clear its downloaded
+    // path, bump its own bound. The barrier waits for the new still to settle.
+    let reparked = crate::store::KeyframeRecord {
+        index,
+        job_set_id: Some(job_id.clone()),
+        local_path: None,
+        estimated_usd: records[pos].estimated_usd,
+        attempt: records[pos].attempt + 1,
+    };
+    crate::store::upsert_keyframe(&mut records, reparked);
+    sb.keyframes_json = serde_json::to_string(&records).ok();
+    store.upsert_storyboard(&sb).map_err(|e| e.to_string())?;
+    Ok(job_id)
+}
+
+/// The registry helper alias used by the storyboard commands.
+fn reg() -> std::collections::BTreeMap<String, hickeyfield_core::Model> {
+    registry()
 }
 
 #[tauri::command]
@@ -2675,6 +3035,8 @@ mod tests {
             overlap_seconds: None,
             shots: vec![shot_input("no-such-model-a"), shot_input("no-such-model-b")],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         // Call the inner logic directly with a plain &AppState (the #[command]
         // wrapper only adds the State extractor).
@@ -2715,6 +3077,8 @@ mod tests {
                 shot_input("nope-c"),
             ],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         let out = generate_storyboard_inner(&state, input).unwrap();
         let indices: Vec<u32> = out.shots.iter().map(|s| s.shot_index).collect();
@@ -2798,6 +3162,7 @@ mod tests {
                 overlap_seconds: None,
                 joins_json: None,
                 auto_retry: false,
+                keyframes_json: None,
             })
             .unwrap();
 
@@ -2819,6 +3184,266 @@ mod tests {
         assert_eq!(indices, vec![0, 1, 2], "dense shot_index, none clobbered");
     }
 
+    // ── S17: keyframe-anchored mode ──────────────────────────────────────────
+
+    fn keyframe_plan_json() -> String {
+        serde_json::json!({
+            "world": "a matte-black cold-brew can on wet slate, deep teal palette, studio product light",
+            "brief": "",
+            "targetSeconds": 30.0,
+            "useCase": "image-to-video",
+            "shots": [
+                {"title":"A","action":"The can beads with condensation. Ends on a static hold of the can centred.","seconds":15.0,"camera":null,"modelId":"minimax_h3_max","role":"start"},
+                {"title":"B","action":"Opens on the same static hold of the can centred, then a drop falls. Ends on a static hold of the drop landing.","seconds":15.0,"camera":null,"modelId":"minimax_h3_max","role":"end"}
+            ]
+        })
+        .to_string()
+    }
+
+    fn keyframe_shot(res: &str, aspect: &str) -> SubmitInput {
+        SubmitInput {
+            model_id: "minimax_h3_max".into(),
+            route_id: None,
+            prompt: "a shot".into(),
+            preset_id: None,
+            settings: SettingsDto {
+                duration: Some(15.0),
+                resolution: Some(res.into()),
+                aspect: Some(aspect.into()),
+                enhance: false,
+                ..Default::default()
+            },
+            media: Vec::new(),
+            rewriter: None,
+            final_prompt: Some("a shot, wide.".into()),
+            constant_overrides: None,
+        }
+    }
+
+    #[test]
+    fn keyframe_stills_are_priced_and_the_canvas_matches_the_set() {
+        // AC1/AC6 (network-free): the still canvas equals the set's
+        // resolution × aspect, and the default still (qwen_image_3) prices at
+        // $0.04 — the real number in the total shown before Generate. Pricing
+        // makes NO network call (bundled prices + offline route resolve); the
+        // gate's dummy FAL key makes the fal route available.
+        let canvas = keyframe_canvas(Some("768p"), Some("16:9")).expect("known res/aspect");
+        // 768 × 16/9 = 1365.3 → rounded to the nearest even width (encoders
+        // reject odd dimensions), the same rule S10 prices on.
+        assert_eq!(
+            canvas,
+            hickeyfield_core::storyboard::ImageSize {
+                width: 1366,
+                height: 768
+            }
+        );
+
+        let prices = std::sync::Arc::new(crate::pricing::Prices::bundled());
+        let reg = registry();
+        let model = reg.get(DEFAULT_STILL_MODEL).expect("qwen is registered");
+        let settings = SettingsDto {
+            resolution: Some("768p".into()),
+            aspect: Some("16:9".into()),
+            ..Default::default()
+        };
+        // Only meaningful when a fal key is configured (the gate sets one).
+        if configured_providers().iter().any(|p| p == "fal") {
+            assert_eq!(
+                still_estimate(&prices, model, &settings),
+                Some(0.04),
+                "qwen_image_3 prices at $0.04/image at 1K"
+            );
+        }
+    }
+
+    #[test]
+    fn keyframe_generate_holds_the_shots_and_stores_the_boundaries() {
+        // AC2/AC6: a keyframe generate stores the N+1 boundaries (with the
+        // per-still estimate rows) and returns every shot PENDING — the
+        // stills-ready barrier submits shot 0 later. Provider keys are removed
+        // for the scope so `submit_one` fails at route resolution BEFORE any
+        // network call: this proves the storage + hold WITHOUT touching a
+        // provider (the live still submit is the shared, audited `submit_one`).
+        let saved = strip_provider_env();
+        let state = test_state();
+        let input = StoryboardGenerateInput {
+            brief: "a 30s cold-brew ad".into(),
+            target_seconds: 30.0,
+            plan_json: Some(keyframe_plan_json()),
+            shot_indices: None,
+            storyboard_id: None,
+            chained: true,
+            overlap_seconds: None,
+            shots: vec![keyframe_shot("768p", "16:9"), keyframe_shot("768p", "16:9")],
+            auto_retry: false,
+            keyframe_mode: true,
+            still_model_id: None,
+        };
+        let out = generate_storyboard_inner(&state, input).expect("keyframe generate returns");
+        restore_provider_env(saved);
+
+        assert_eq!(out.shots.len(), 2, "one outcome per shot");
+        assert!(
+            out.shots
+                .iter()
+                .all(|s| s.pending && s.job_set_id.is_none()),
+            "every shot is held pending until the stills-ready barrier"
+        );
+
+        let sb = state
+            .store
+            .storyboard(&out.storyboard_id)
+            .unwrap()
+            .expect("the group row persists");
+        assert!(sb.chained, "a keyframe set is chained");
+        let records = crate::store::parse_keyframes(sb.keyframes_json.as_deref());
+        assert_eq!(records.len(), 3, "N+1 = 3 keyframe boundaries stored");
+        assert_eq!(
+            records.iter().map(|r| r.index).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn keyframe_generate_rejects_a_non_text_to_image_still_model() {
+        // AC1: a still model that cannot generate an image is refused at the
+        // boundary (the keyframe validator), before anything is stored/spent.
+        let saved = strip_provider_env();
+        let state = test_state();
+        let input = StoryboardGenerateInput {
+            brief: "a 30s ad".into(),
+            target_seconds: 30.0,
+            plan_json: Some(keyframe_plan_json()),
+            shot_indices: None,
+            storyboard_id: None,
+            chained: true,
+            overlap_seconds: None,
+            shots: vec![keyframe_shot("768p", "16:9"), keyframe_shot("768p", "16:9")],
+            auto_retry: false,
+            keyframe_mode: true,
+            still_model_id: Some("kling3_0_pro".into()), // a video model
+        };
+        let err = generate_storyboard_inner(&state, input).unwrap_err();
+        restore_provider_env(saved);
+        assert!(
+            err.contains("cannot generate an image"),
+            "a non-image still model is rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn a_still_regenerate_in_flight_is_refused() {
+        // AC6: a still regenerate is refused while that boundary's still is still
+        // queued/running — a second submit would double-bill the still (the S16
+        // M1 invariant, extended to stills). Network-free: the guard returns
+        // before `submit_one`.
+        let state = test_state();
+        // A keyframe set whose boundary-0 still job is Queued (in flight).
+        let records = vec![crate::store::KeyframeRecord {
+            index: 0,
+            job_set_id: Some("still-0".into()),
+            local_path: None,
+            estimated_usd: Some(0.04),
+            attempt: 0,
+        }];
+        state
+            .store
+            .upsert_storyboard(&crate::store::Storyboard {
+                id: "kf".into(),
+                brief: "b".into(),
+                target_seconds: 30.0,
+                plan_json: keyframe_plan_json(),
+                created_at: 1,
+                chained: true,
+                shots_json: Some(
+                    serde_json::to_string(&vec![keyframe_shot("768p", "16:9")]).unwrap(),
+                ),
+                overlap_seconds: Some(0.0),
+                joins_json: None,
+                auto_retry: false,
+                keyframes_json: Some(serde_json::to_string(&records).unwrap()),
+            })
+            .unwrap();
+        // Persist a Queued (non-terminal) job row for the boundary-0 still id.
+        state.store.upsert(&job_for_still("still-0")).unwrap();
+
+        let err = regenerate_keyframe_still_inner(
+            &state.store,
+            &state.prices,
+            &state.runner,
+            "kf",
+            0,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("still in flight"),
+            "an in-flight still refuses a regenerate: {err}"
+        );
+    }
+
+    fn job_for_still(id: &str) -> JobSet {
+        JobSet {
+            id: id.into(),
+            model_id: "qwen_image_3".into(),
+            route_id: "fal:alibaba/qwen-image-3/text-to-image".into(),
+            request_id: "r".into(),
+            endpoint: String::new(),
+            status: hickeyfield_core::JobStatus::Queued,
+            prompt: "p".into(),
+            enhanced_prompt: None,
+            enhancer_version: None,
+            enhance_note: None,
+            advisories: Vec::new(),
+            preset_id: None,
+            created_at: 0,
+            updated_at: 0,
+            results: Vec::new(),
+            estimated_usd: Some(0.04),
+            actual_usd: None,
+            priced_from: None,
+            priced_at: None,
+            actual_source: None,
+            fail_reason: None,
+            settings: serde_json::json!({}),
+            media: Vec::new(),
+            poll_cycles: 0,
+            stalled: false,
+            storyboard_id: Some("kf".into()),
+            shot_index: None,
+        }
+    }
+
+    /// Remove every provider key/secret env for the scope of a test so
+    /// `submit_one` fails at route resolution before any network call. Returns
+    /// the saved values for [`restore_provider_env`].
+    fn strip_provider_env() -> Vec<(String, String)> {
+        let mut saved = Vec::new();
+        for var in [
+            "hickeyfield_FAL_KEY",
+            "hickeyfield_HIGGSFIELD_KEY",
+            "hickeyfield_HIGGSFIELD_SECRET",
+            "hickeyfield_GOOGLE_KEY",
+            "hickeyfield_OPENAI_KEY",
+            "hickeyfield_XAI_KEY",
+            "hickeyfield_BFL_KEY",
+            "hickeyfield_RECRAFT_KEY",
+            "hickeyfield_VAIG_KEY",
+        ] {
+            if let Ok(v) = std::env::var(var) {
+                saved.push((var.to_string(), v));
+                std::env::remove_var(var);
+            }
+        }
+        saved
+    }
+
+    fn restore_provider_env(saved: Vec<(String, String)>) {
+        for (k, v) in saved {
+            std::env::set_var(k, v);
+        }
+    }
+
     #[test]
     fn generate_rejects_a_brief_over_the_size_cap() {
         // Security L3: a runaway brief is refused at the boundary with a typed
@@ -2834,6 +3459,8 @@ mod tests {
             overlap_seconds: None,
             shots: vec![shot_input("nope")],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("brief is too large"), "got: {err}");
@@ -2853,6 +3480,8 @@ mod tests {
             overlap_seconds: None,
             shots: vec![shot_input("nope")],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("plan is too large"), "got: {err}");
@@ -2873,6 +3502,8 @@ mod tests {
             overlap_seconds: None,
             shots: (0..9).map(|_| shot_input("nope")).collect(),
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("at most 8 shots"), "got: {err}");
@@ -2903,6 +3534,8 @@ mod tests {
                 shot_input("no-such-model"),
             ],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("does not exist"), "got: {err}");
@@ -2949,6 +3582,8 @@ mod tests {
             overlap_seconds: None,
             shots: (0..4).map(|_| shot_input(&model)).collect(),
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("does not match the plan"), "got: {err}");
@@ -3014,6 +3649,8 @@ mod tests {
             overlap_seconds: None,
             shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         let out = generate_storyboard_inner(&state, input)
             .expect("a one-shot plan validates under the 1..=8 floor");
@@ -3051,6 +3688,7 @@ mod tests {
                 overlap_seconds: None,
                 joins_json: None,
                 auto_retry: false,
+                keyframes_json: None,
             })
             .unwrap();
         // Seed the first-generate outcome: shots 0/1/3 started (Queued), shot 2
@@ -3079,6 +3717,8 @@ mod tests {
             // passes) but has no adapter, so `route::resolve` fails offline.
             shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         let out = generate_storyboard_inner(&state, input).expect("retry is accepted");
 
@@ -3124,6 +3764,7 @@ mod tests {
                 overlap_seconds: None,
                 joins_json: None,
                 auto_retry: false,
+                keyframes_json: None,
             })
             .unwrap();
         // Shot 2 already STARTED (Queued, not Failed).
@@ -3143,6 +3784,8 @@ mod tests {
             overlap_seconds: None,
             shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("already started"), "got: {err}");
@@ -3165,6 +3808,12 @@ mod tests {
             dv: Some(1.0),
             pass: Some(false),
             attempt: 0,
+            end_ssim: None,
+            end_psnr: None,
+            end_dy: None,
+            end_du: None,
+            end_dv: None,
+            end_pass: None,
         };
         let make_state = |pass: bool| {
             let state = test_state();
@@ -3185,6 +3834,7 @@ mod tests {
                     overlap_seconds: Some(0.0),
                     joins_json: Some(joins),
                     auto_retry: false,
+                    keyframes_json: None,
                 })
                 .unwrap();
             // Shot 2 is COMPLETED (a successful shot), not Failed.
@@ -3206,6 +3856,8 @@ mod tests {
             overlap_seconds: None,
             shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
 
         // Below floor → the guard does NOT refuse (it may fail later at submit,
@@ -3248,6 +3900,12 @@ mod tests {
             dv: Some(1.0),
             pass: Some(false),
             attempt: 0,
+            end_ssim: None,
+            end_psnr: None,
+            end_dy: None,
+            end_du: None,
+            end_dv: None,
+            end_pass: None,
         };
         let make_state = |status: hickeyfield_core::JobStatus| {
             let state = test_state();
@@ -3266,6 +3924,7 @@ mod tests {
                     overlap_seconds: Some(0.0),
                     joins_json: Some(joins),
                     auto_retry: false,
+                    keyframes_json: None,
                 })
                 .unwrap();
             let mut job = blank_job("inflight-2");
@@ -3285,6 +3944,8 @@ mod tests {
             overlap_seconds: None,
             shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
 
         // Queued in flight → refused with "still in flight" (never admitted).
@@ -3360,6 +4021,7 @@ mod tests {
                 overlap_seconds: None,
                 joins_json: None,
                 auto_retry: false,
+                keyframes_json: None,
             })
             .unwrap();
         let mut job = blank_job("first-2");
@@ -3379,6 +4041,8 @@ mod tests {
             // Plan clamped shot 2 to 5s, but this submits 30s.
             shots: vec![kling_shot(30.0, None)],
             auto_retry: false,
+            keyframe_mode: false,
+            still_model_id: None,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("clamped it to 5"), "got: {err}");

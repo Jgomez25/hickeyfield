@@ -40,6 +40,43 @@ function joinSummary(joins: JoinRecord[] | undefined) {
   );
 }
 
+/**
+ * S17: the set's end-frame-adherence badge — how tightly each clip's actual last
+ * frame matched its planned still (keyframe mode). Reads the scored ends only
+ * (an unscored end is `null`, never 0, so it shows "end —" and never flags a
+ * paid regenerate). Returns null for a non-keyframe set (no end scores at all).
+ */
+function endAdherenceSummary(joins: JoinRecord[] | undefined) {
+  const all = joins ?? [];
+  // A keyframe set has end-* fields present (even if unscored → null); a
+  // non-keyframe set omits them entirely (undefined) → no badge.
+  const hasEndField = all.some((j) => j.endSsim !== undefined);
+  if (!hasEndField) return null;
+  const scored = all.filter((j) => j.endSsim != null);
+  if (scored.length === 0) {
+    return (
+      <span className="storyboard-end" data-pass="unscored" title="End-frame adherence not yet scored">
+        end —
+      </span>
+    );
+  }
+  const min = scored.reduce(
+    (lo, j) => (j.endSsim != null && j.endSsim < lo ? j.endSsim : lo),
+    1,
+  );
+  const anyBelow = scored.some((j) => j.endPass === false);
+  return (
+    <span
+      className="storyboard-end"
+      data-pass={anyBelow ? "false" : "true"}
+      title="Lowest end-frame-adherence score across the set"
+    >
+      end {min.toFixed(2)}
+      {anyBelow ? " — drift" : " — anchored"}
+    </span>
+  );
+}
+
 function isDone(job: JobSet): boolean {
   return (
     job.status === "completed" &&
@@ -101,6 +138,7 @@ export function Library({
   renderProgress = {},
   onRender,
   onOpenResult,
+  onRegenerateStill,
 }: {
   jobs: JobSet[];
   selectedId: string | null;
@@ -123,6 +161,9 @@ export function Library({
   onRender?: (storyboardId: string) => void;
   /** S15: open a finished render in the OS. */
   onOpenResult?: (path: string) => void;
+  /** S17: regenerate a keyframe boundary's still. Absent → the Regenerate-still
+   * button is hidden. */
+  onRegenerateStill?: (storyboardId: string, index: number) => void;
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const shown = useMemo(
@@ -213,7 +254,13 @@ export function Library({
                   {g.jobs.length} shot{g.jobs.length === 1 ? "" : "s"}
                 </span>
                 {joinSummary(g.storyboard.joins)}
+                {endAdherenceSummary(g.storyboard.joins)}
               </h2>
+              {keyframeStills(
+                g.storyboard,
+                g.jobs,
+                onRegenerateStill,
+              )}
               <div className="library-grid">
                 {g.jobs.map((job) =>
                   tile(job, selectedId, onSelect, onOpenLightbox),

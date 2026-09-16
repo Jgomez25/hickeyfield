@@ -14,6 +14,7 @@ import type {
   JobResult,
   JobSet,
   JoinRecord,
+  KeyframeRecord,
   LocalModel,
   MediaRef,
   Model,
@@ -738,6 +739,11 @@ export async function generateStoryboard(input: {
   /** S16 D9: opt into bounded auto-retry of a below-floor continuity join (at
    * most 2 regenerations, each priced first). Off by default. */
   autoRetry?: boolean;
+  /** S17: generate in keyframe-anchored mode — render one still per shot
+   * boundary and anchor every shot on both ends. Off by default. */
+  keyframeMode?: boolean;
+  /** S17: the image model that renders the stills (defaults to qwen_image_3). */
+  stillModelId?: string;
 }): Promise<StoryboardResult> {
   try {
     return await invoke<StoryboardResult>("generate_storyboard", {
@@ -820,6 +826,8 @@ export async function listStoryboards(): Promise<Storyboard[]> {
         joinsJson?: string | null;
         auto_retry?: boolean;
         autoRetry?: boolean;
+        keyframes_json?: string | null;
+        keyframesJson?: string | null;
       }[]
     >("list_storyboards");
     return raw.map((s) => {
@@ -832,6 +840,15 @@ export async function listStoryboards(): Promise<Storyboard[]> {
           joins = [];
         }
       }
+      const keyframesJson = s.keyframes_json ?? s.keyframesJson ?? null;
+      let keyframes: KeyframeRecord[] = [];
+      if (keyframesJson) {
+        try {
+          keyframes = parseKeyframeRecords(keyframesJson);
+        } catch {
+          keyframes = [];
+        }
+      }
       return {
         id: s.id,
         brief: s.brief,
@@ -840,11 +857,48 @@ export async function listStoryboards(): Promise<Storyboard[]> {
         createdAt: s.created_at ?? s.createdAt ?? 0,
         joins,
         autoRetry: s.auto_retry ?? s.autoRetry ?? false,
+        keyframes,
       };
     });
   } catch {
     return [];
   }
+}
+
+/** Parse a set's `keyframes_json` (snake-case from Rust) into camelCase records. */
+export function parseKeyframeRecords(json: string): KeyframeRecord[] {
+  const raw = JSON.parse(json) as {
+    index: number;
+    job_set_id?: string | null;
+    jobSetId?: string | null;
+    local_path?: string | null;
+    localPath?: string | null;
+    estimated_usd?: number | null;
+    estimatedUsd?: number | null;
+    attempt?: number;
+  }[];
+  return raw.map((k) => ({
+    index: k.index,
+    jobSetId: k.job_set_id ?? k.jobSetId ?? null,
+    localPath: k.local_path ?? k.localPath ?? null,
+    estimatedUsd: k.estimated_usd ?? k.estimatedUsd ?? null,
+    attempt: k.attempt ?? 0,
+  }));
+}
+
+/**
+ * S17: regenerate one keyframe still. Re-derives the still prompt from the
+ * stored plan, prices it before it spends, and re-parks the set until the new
+ * still settles. Returns the new still job id.
+ */
+export async function regenerateKeyframeStill(
+  storyboardId: string,
+  index: number,
+): Promise<string> {
+  return await invoke<string>("regenerate_keyframe_still", {
+    storyboardId,
+    index,
+  } as unknown as Record<string, unknown>);
 }
 
 export async function listJobs(): Promise<JobSet[]> {

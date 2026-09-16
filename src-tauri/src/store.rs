@@ -35,6 +35,25 @@ pub struct JoinRecord {
     pub pass: Option<bool>,
     /// How many regenerations this join has had. Bounds the auto-retry loop.
     pub attempt: u32,
+    // ── S17: end-frame adherence (keyframe mode, D4) ─────────────────────────
+    // The SSIM (+ colour drift) between this shot's ACTUAL last frame and its
+    // planned still `K_{index+1}`. All `Option` and `#[serde(default)]` so a
+    // pre-S17 row (or an unmeasured end) deserialises with `None` — purely
+    // additive, no migration. A `None` end reads as "not failing", never 0.
+    #[serde(default)]
+    pub end_ssim: Option<f64>,
+    #[serde(default)]
+    pub end_psnr: Option<f64>,
+    #[serde(default)]
+    pub end_dy: Option<f64>,
+    #[serde(default)]
+    pub end_du: Option<f64>,
+    #[serde(default)]
+    pub end_dv: Option<f64>,
+    /// `Some(true/false)` once the end adherence is scored against the IDEAL
+    /// tier (0.90/6/3 — keyframe mode is the 99% path); `None` when unscored.
+    #[serde(default)]
+    pub end_pass: Option<bool>,
 }
 
 /// Parse the join records from a set's `joins_json`, or an empty list.
@@ -52,6 +71,45 @@ pub fn upsert_join(joins: &mut Vec<JoinRecord>, rec: JoinRecord) {
         None => joins.push(rec),
     }
     joins.sort_by_key(|j| j.index);
+}
+
+/// One keyframe still boundary of a keyframe-anchored set (S17, D2), serialised
+/// into [`Storyboard::keyframes_json`]. `index` is the boundary `k` in `0..=N`.
+/// This is the crash-safe record of "which still job renders this boundary, and
+/// where its PNG landed" — the shot payloads bind a still by a concrete path,
+/// which does not exist until the still job settles and downloads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeyframeRecord {
+    pub index: usize,
+    /// The still image job's id, once submitted (`None` before submit).
+    pub job_set_id: Option<String>,
+    /// The downloaded still PNG, once the still job settles (`None` while it is
+    /// still queued/running, or if it failed → the set is parked).
+    pub local_path: Option<String>,
+    /// Priced at submit through `submit_one` (may be `None` → unpriced, e.g. a
+    /// GPT still tier; never summed as $0).
+    pub estimated_usd: Option<f64>,
+    /// How many times this still has been regenerated. Bounds the STILL
+    /// auto-retry loop, separate from a shot join's `JoinRecord.attempt` (D4).
+    #[serde(default)]
+    pub attempt: u32,
+}
+
+/// Parse the keyframe records from a set's `keyframes_json`, or an empty list.
+pub fn parse_keyframes(keyframes_json: Option<&str>) -> Vec<KeyframeRecord> {
+    keyframes_json
+        .and_then(|s| serde_json::from_str::<Vec<KeyframeRecord>>(s).ok())
+        .unwrap_or_default()
+}
+
+/// Insert or replace the record for its `index`, keeping the list ordered — a
+/// still regenerate or a settle rewrites its boundary record.
+pub fn upsert_keyframe(keyframes: &mut Vec<KeyframeRecord>, rec: KeyframeRecord) {
+    match keyframes.iter_mut().find(|k| k.index == rec.index) {
+        Some(existing) => *existing = rec,
+        None => keyframes.push(rec),
+    }
+    keyframes.sort_by_key(|k| k.index);
 }
 
 pub struct SqliteStore {
@@ -88,6 +146,10 @@ pub struct Storyboard {
     /// every set generated before this slice — the safe default that spends
     /// nothing without an explicit opt-in.
     pub auto_retry: bool,
+    /// S17 (D2): a serialised `Vec<KeyframeRecord>` for a keyframe-anchored set
+    /// (one still per shot boundary, `N+1`). `None` for a non-keyframe set — the
+    /// honest value every pre-S17 set reads. Migration 11 adds the column.
+    pub keyframes_json: Option<String>,
 }
 
 /// S15: one finished, stitched ad for a storyboard set. Re-rendering overwrites
@@ -330,6 +392,21 @@ impl SqliteStore {
             )
             .map_err(map_err)?;
         }
+
+        if version < 11 {
+            // S17: keyframe-anchored sets. One additive nullable column holding
+            // the serialised `Vec<KeyframeRecord>` (the N+1 still boundaries).
+            // NULL for every pre-S17 (non-keyframe) set — the honest value. The
+            // end-frame-adherence numbers ride on `joins_json` (additive Option
+            // fields on `JoinRecord`), so no separate migration is needed there.
+            conn.execute_batch(
+                r#"
+                ALTER TABLE storyboards ADD COLUMN keyframes_json TEXT;
+                PRAGMA user_version = 11;
+                "#,
+            )
+            .map_err(map_err)?;
+        }
         Ok(())
     }
 
@@ -352,8 +429,9 @@ impl SqliteStore {
                 r#"
                 INSERT INTO storyboards
                     (id, brief, target_seconds, plan_json, created_at,
-                     chained, shots_json, overlap_seconds, joins_json, auto_retry)
-                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                     chained, shots_json, overlap_seconds, joins_json, auto_retry,
+                     keyframes_json)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
                 ON CONFLICT(id) DO UPDATE SET
                     brief           = excluded.brief,
                     target_seconds  = excluded.target_seconds,
@@ -362,7 +440,8 @@ impl SqliteStore {
                     shots_json      = excluded.shots_json,
                     overlap_seconds = excluded.overlap_seconds,
                     joins_json      = excluded.joins_json,
-                    auto_retry      = excluded.auto_retry
+                    auto_retry      = excluded.auto_retry,
+                    keyframes_json  = excluded.keyframes_json
                 "#,
                 params![
                     s.id,
@@ -375,6 +454,7 @@ impl SqliteStore {
                     s.overlap_seconds,
                     s.joins_json,
                     s.auto_retry as i64,
+                    s.keyframes_json,
                 ],
             )
             .map(|_| ())
@@ -455,7 +535,7 @@ impl SqliteStore {
             .unwrap()
             .query_row(
                 "SELECT id, brief, target_seconds, plan_json, created_at, \
-                        chained, shots_json, overlap_seconds, joins_json, auto_retry \
+                        chained, shots_json, overlap_seconds, joins_json, auto_retry, keyframes_json \
                  FROM storyboards WHERE id = ?1",
                 params![id],
                 row_to_storyboard,
@@ -470,7 +550,7 @@ impl SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, brief, target_seconds, plan_json, created_at, \
-                        chained, shots_json, overlap_seconds, joins_json, auto_retry \
+                        chained, shots_json, overlap_seconds, joins_json, auto_retry, keyframes_json \
                  FROM storyboards ORDER BY created_at DESC",
             )
             .map_err(map_err)?;
@@ -520,6 +600,10 @@ fn row_to_storyboard(row: &rusqlite::Row<'_>) -> rusqlite::Result<Storyboard> {
         overlap_seconds: row.get::<_, Option<f64>>("overlap_seconds").unwrap_or(None),
         joins_json: row.get::<_, Option<String>>("joins_json").unwrap_or(None),
         auto_retry: row.get::<_, i64>("auto_retry").unwrap_or(0) != 0,
+        // Pre-v11 rows have no keyframes column; they read `None` (non-keyframe).
+        keyframes_json: row
+            .get::<_, Option<String>>("keyframes_json")
+            .unwrap_or(None),
     })
 }
 
@@ -791,7 +875,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 10, "in_memory must migrate to the latest schema");
+        assert_eq!(v, 11, "in_memory must migrate to the latest schema");
 
         let mut j = job("p", JobStatus::Completed);
         j.priced_from = Some(PriceProvenance::Feed);
@@ -841,6 +925,7 @@ mod tests {
             overlap_seconds: None,
             joins_json: None,
             auto_retry: false,
+            keyframes_json: None,
         };
         s.upsert_storyboard(&sb).unwrap();
         assert_eq!(s.storyboard("sb1").unwrap().unwrap(), sb);
@@ -890,6 +975,7 @@ mod tests {
             overlap_seconds: None,
             joins_json: None,
             auto_retry: false,
+            keyframes_json: None,
         })
         .unwrap();
         // Insert out of order; the query must return shot_index order.
@@ -930,6 +1016,7 @@ mod tests {
             overlap_seconds: Some(0.0),
             joins_json: None,
             auto_retry: false,
+            keyframes_json: None,
         };
         s.upsert_storyboard(&sb).unwrap();
         assert_eq!(s.storyboard("chain").unwrap().unwrap(), sb);
@@ -959,7 +1046,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 10, "migrations up to 10 must have run");
+        assert_eq!(version, 11, "migrations up to 11 must have run");
     }
 
     #[test]
@@ -981,6 +1068,12 @@ mod tests {
                 dv: Some(1.0),
                 pass: Some(true),
                 attempt: 0,
+                end_ssim: None,
+                end_psnr: None,
+                end_dy: None,
+                end_du: None,
+                end_dv: None,
+                end_pass: None,
             },
         );
         // A scoring failure records None, never 0 — and upsert replaces by index.
@@ -997,6 +1090,12 @@ mod tests {
                 dv: None,
                 pass: None,
                 attempt: 1,
+                end_ssim: None,
+                end_psnr: None,
+                end_dy: None,
+                end_du: None,
+                end_dv: None,
+                end_pass: None,
             },
         );
         assert_eq!(joins.len(), 1, "upsert replaces by index");
@@ -1013,6 +1112,7 @@ mod tests {
             overlap_seconds: Some(0.0),
             joins_json: Some(serde_json::to_string(&joins).unwrap()),
             auto_retry: true,
+            keyframes_json: None,
         };
         s.upsert_storyboard(&sb).unwrap();
         let got = s.storyboard("sc").unwrap().unwrap();
@@ -1020,6 +1120,106 @@ mod tests {
         assert!(got.auto_retry);
         let parsed = parse_joins(got.joins_json.as_deref());
         assert_eq!(parsed[0].ssim, None, "unscored stays None, never 0");
+    }
+
+    #[test]
+    fn migration_11_adds_keyframes_json_and_roundtrips() {
+        // S17: `user_version` is 11, and a keyframe set's records round-trip;
+        // a non-keyframe set reads `keyframes_json: None`.
+        let s = SqliteStore::in_memory().unwrap();
+        let version: i64 = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 11, "migrations up to 11 must have run");
+
+        let mut kfs = Vec::new();
+        upsert_keyframe(
+            &mut kfs,
+            KeyframeRecord {
+                index: 1,
+                job_set_id: Some("still-1".into()),
+                local_path: None,
+                estimated_usd: Some(0.04),
+                attempt: 0,
+            },
+        );
+        upsert_keyframe(
+            &mut kfs,
+            KeyframeRecord {
+                index: 0,
+                job_set_id: Some("still-0".into()),
+                local_path: Some("/lib/k0.png".into()),
+                estimated_usd: Some(0.04),
+                attempt: 0,
+            },
+        );
+        // upsert keeps the list ordered by index.
+        assert_eq!(kfs.iter().map(|k| k.index).collect::<Vec<_>>(), vec![0, 1]);
+        // A regenerate rewrites its boundary (latest write wins).
+        upsert_keyframe(
+            &mut kfs,
+            KeyframeRecord {
+                index: 1,
+                job_set_id: Some("still-1b".into()),
+                local_path: Some("/lib/k1.png".into()),
+                estimated_usd: Some(0.04),
+                attempt: 1,
+            },
+        );
+        assert_eq!(kfs.len(), 2, "upsert replaces by index");
+        assert_eq!(kfs[1].attempt, 1);
+
+        let kf_sb = Storyboard {
+            id: "kf".into(),
+            brief: "a 30s keyframe ad".into(),
+            target_seconds: 30.0,
+            plan_json: "{}".into(),
+            created_at: 3,
+            chained: true,
+            shots_json: None,
+            overlap_seconds: Some(0.0),
+            joins_json: None,
+            auto_retry: false,
+            keyframes_json: Some(serde_json::to_string(&kfs).unwrap()),
+        };
+        s.upsert_storyboard(&kf_sb).unwrap();
+        let got = s.storyboard("kf").unwrap().unwrap();
+        assert_eq!(got, kf_sb, "keyframes_json round-trips");
+        let parsed = parse_keyframes(got.keyframes_json.as_deref());
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[1].job_set_id.as_deref(), Some("still-1b"));
+
+        // A non-keyframe set reads None.
+        let plain = Storyboard {
+            id: "plain".into(),
+            brief: "b".into(),
+            target_seconds: 30.0,
+            plan_json: "{}".into(),
+            created_at: 4,
+            chained: false,
+            shots_json: None,
+            overlap_seconds: None,
+            joins_json: None,
+            auto_retry: false,
+            keyframes_json: None,
+        };
+        s.upsert_storyboard(&plain).unwrap();
+        assert_eq!(s.storyboard("plain").unwrap().unwrap().keyframes_json, None);
+    }
+
+    #[test]
+    fn a_pre_s17_join_record_deserialises_with_absent_end_fields() {
+        // A joins_json written before S17 has no end-* keys; it must parse with
+        // the end fields `None` (additive, no migration).
+        let old = r#"[{"index":1,"kind":"continuity","applied":true,"ssim":0.93,"psnr":34.0,"dy":2.0,"du":1.0,"dv":1.0,"pass":true,"attempt":0}]"#;
+        let parsed = parse_joins(Some(old));
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].end_ssim, None);
+        assert_eq!(parsed[0].end_pass, None);
+        assert_eq!(parsed[0].ssim, Some(0.93));
     }
 
     #[test]

@@ -731,8 +731,22 @@ export function mockGenerateStoryboard(input: {
   shots: SubmitInput[];
   shotIndices?: number[];
   storyboardId?: string;
+  keyframeMode?: boolean;
 }): StoryboardResult {
   const storyboardId = input.storyboardId ?? `sb-mock-${Date.now()}`;
+  // S17: in keyframe mode the stills go first and every shot is held pending
+  // until the stills-ready barrier submits shot 0.
+  if (input.keyframeMode) {
+    return {
+      storyboardId,
+      shots: input.shots.map((_, i) => ({
+        shotIndex: input.shotIndices?.[i] ?? i,
+        jobSetId: null,
+        error: null,
+        pending: true,
+      })),
+    };
+  }
   const shots = input.shots.map((shot, i) => {
     const shotIndex = input.shotIndices?.[i] ?? i;
     try {
