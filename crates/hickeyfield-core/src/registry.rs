@@ -2221,15 +2221,18 @@ mod tests {
                 reg.contains_key(id)
             );
         }
-        // 55 catalogue models minus 2 exclusions, plus 13 hand-authored from
-        // Higgsfield's picker, plus 2 fal-native video editors the catalogue
+        // Catalogue models minus the exclusions, plus the hand-authored
+        // picker-only specs, plus 2 fal-native video editors the catalogue
         // never had because Higgsfield runs its editing surfaces in-house,
-        // plus the 13 fal frontier models imported on 2026-09-16 from fal's
-        // own index — none of which Higgsfield sells, so none of which any
-        // vendored document describes.
+        // plus the 10 fal frontier models ADDED on 2026-09-16 from fal's own
+        // index (`IMPORTED_2026_09` lists 11 — `seedance_2_5` was promoted in
+        // place, not added). Three probed-but-unrunnable imports (`ltx_2_5`,
+        // `ltx_2_5_animate`, `veo3_1_extend`) were removed again before
+        // release, hence +27 rather than +30. None of these are sold by
+        // Higgsfield, so none are described by any vendored document.
         assert_eq!(
             reg.len(),
-            cat.len() - EXCLUSIONS.len() + 30,
+            cat.len() - EXCLUSIONS.len() + 27,
             "registry size"
         );
     }
