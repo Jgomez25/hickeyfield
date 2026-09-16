@@ -252,3 +252,12 @@ mandatory slice; tracked here for prioritization.
 - **S14 minors (non-blocking):** `examples/audit_fal.rs` ~:230-260 doc comment now sits above the wrong
   function (`pin_conflicts` undocumented); H3 Max / Turbo routes are PROSE in `prices::audit` (hand-verified
   2026-09-16; promotional rates — re-check when fal ends the promotion). Constant-fields item CLOSED.
+
+- **S15 follow-ups:** per-join continuity score (SSIM + Y/U/V deltas via the sidecar; `joins_json`
+  reserved; floor 0.80/12/6, ideal 0.90/6/3; badge + "regenerate shot N+1 from the same frame") and the
+  planner world block / hold endings / validator variants / fill-to-ceiling → S16; keyframe-anchored mode
+  (`end_image_url`) → S17; partially-chained fallback join renders as a hard cut until joins are per-join;
+  minors: render.rs:104 comment vs code; ffmpeg::render blocking progress read can outlive the deadline;
+  chain.rs `chainable_model` uses coarse `use_case::supports`; `a_failed_shot_stops_the_chain` phase-guard
+  assertion vacuous (clip guard + hook gate still stop it); chain::advance TOCTOU → UNIQUE(storyboard_id,
+  shot_index); `apply_overrides` allow-list when no schema cached.
