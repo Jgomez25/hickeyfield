@@ -189,3 +189,138 @@ the happy/partial-failure fan-out (using unknown-model or a fake submit so no mo
 spent), and re-review.
 
 VERDICT: FAIL
+
+---
+
+## RE-REVIEW (HEAD 64f29b9)
+
+Read-only re-review of the repair-1 delta (`git show 64f29b9`) against the prior
+findings, plus the whole slice diff for regressions. No source, docs, or backlog
+changed. The full gate was re-run locally (below); counts are measured.
+
+### Gate re-run (measured, dummy `hickeyfield_FAL_KEY=x FAL_KEY=x`, Node 24)
+- `cargo fmt --all --check`: clean (exit 0).
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean (0 warnings).
+- `cargo test --workspace`: **848 passed, 0 failed**, 1+ ignored (≥ 841 floor). No network.
+- `cd ui && pnpm test`: **285 passed** (23 files, ≥ 281 floor). Matches implement.md.
+- `tauri build` not re-run (no native/tooling change this round — Rust + TS + CSS only);
+  no verdict rests on it. No hosted/fal call, no money.
+
+### Prior findings — verdicts
+
+- **B1 (job-id collision) — FIXED, verified.** `mint_job_id` = `{secs}-{model}-{seq}`
+  off a process-wide `static ID_SEQ: AtomicU64` (`commands.rs` top). `fetch_add(…, Relaxed)`
+  is an atomic RMW, so every caller — any thread, the generate-all loop, or the single-job
+  path — gets a distinct seq; uniqueness holds regardless of clock granularity (Relaxed is
+  correct here: we need atomicity of the increment, not cross-variable ordering). `submit_one`
+  mints through it (single-job path benefits too). Id-shape change is safe for every consumer:
+  grepped the whole tree — **no code parses a job id** (the only `-`/`:` splits are
+  `browser.ts categoryLabel`, `catalog.rs`, `clients.rs` path/ext, `enhance.rs`, none touching
+  a job id; runner/engine use `job.id` as an opaque key: `runner.rs:113,130,743`,
+  `watching.insert`/map key). UI React keys stay unique. Tests
+  `minted_job_ids_do_not_collide_within_one_second` (200 distinct + two immediate mints differ)
+  and `same_model_shots_survive_as_distinct_rows_in_the_store` (3 same-model rows, dense
+  `shot_index [0,1,2]`, no `ON CONFLICT` clobber) drive the real production `mint_job_id` + real
+  store. Relaunch: the counter resets to 0 but the id also carries `now_secs()`; a cross-run
+  collision needs a relaunch inside the same wall-clock second *and* the same model submitted in
+  that second — infeasible for an app restart, and strictly better than the pre-S13
+  `{secs}-{model}` id (zero disambiguation). Acceptable residual, no action.
+
+- **M1 (per-shot failures swallowed) — SURFACING FIXED; RETRY BROKEN (see M2 below).**
+  The surfacing half is fixed and verified: `generate()` inspects `result.shots`, keeps the
+  result on partial failure (does NOT hand off), and renders `.storyboard-outcome`
+  (`role="alert"`) naming each failed `shot_index+1` and its `error`, with a retry total shown
+  before any resubmit. `App.tsx:558 onStoryboardGenerated` is now only reached on full success,
+  so its switch-to-Library is correct. That satisfies M1's minimum ("surface which shots
+  failed"). The retry-only-failed half, however, is broken in production — new **M2**.
+
+- **m1 (storyboard-id collision) — FIXED.** `mint_storyboard_id()` = `sb-{secs}-{seq}` off the
+  same counter; asserted distinct in `minted_job_ids_do_not_collide_within_one_second`.
+- **m2 (stale preview on reorder) — FIXED.** `closePreview()` resets `previewShot`/`preview`/
+  `previewText` and is called from `moveShot`, `removeShot`, and `draft`; vitest
+  `reordering closes an open prompt preview` proves the panel is gone after a move.
+- **m3 (cleared target) — FIXED.** `targetInvalid = !(targetSeconds > 0)` renders
+  `.storyboard-target-invalid` (`role="alert"`) and disables Draft; vitest covers it.
+
+### Server-side re-validation (question c) — correct in isolation, but see M2
+`generate_storyboard_inner` now, before minting: caps `brief` (4 KiB) and `plan_json` (64 KiB),
+rejects empty / `> MAX_SHOTS (8)` shot lists, and — when `plan_json` is present — parses it,
+resolves `plan.use_case`, re-runs the **same** `hickeyfield_core::storyboard::validate(&plan.shots,
+plan.target_seconds, uc)` the draft path uses, then requires the submitted list to match the plan
+by length and per-index `model_id`. It deliberately does NOT compare prompt/seconds, so a user's
+legitimate prompt/duration edits are allowed (the plan_json is rebuilt from the current shots, so
+the match check mainly defends a direct/tampered caller) — not brittle. Caps are typed `Err(String)`
+and tested (`generate_rejects_a_brief_over_the_size_cap`, `…plan_json_over_the_size_cap`,
+`…more_than_eight_shots`, `…a_plan_with_a_bad_model` asserting nothing was written,
+`…shots_that_do_not_match_the_plan`). L1/L2/L3 all addressed. **But** `validate` also enforces the
+`3..=8` shot-count bound and the ±10% duration-sum gate — and that is exactly what breaks retry:
+
+### NEW — M2 (Major): retry-failed is rejected by the same-commit server re-validation
+`ui/src/components/Storyboard.tsx` `retryFailed`/`submitBatch` (lines ~223–320) vs
+`src-tauri/src/commands.rs` `generate_storyboard_inner` (the new `plan_json` re-validation block).
+
+`retryFailed()` resubmits only the failed shots via `submitBatch(failedIndices)`. `submitBatch`
+always builds `planJson = JSON.stringify({ brief, targetSeconds, useCase, shots: batch })` where
+`batch` is just the failed subset, and `targetSeconds` is the **full** target (e.g. 30).
+`generateStoryboard` (`api.ts:716`) `invoke`s `generate_storyboard`; a Rust `Err` rejects the
+promise, which `submitBatch`'s `await` throws and `retryFailed`'s `catch` turns into `setError`.
+
+On retry, the server sees `plan_json` present and runs `validate(&plan.shots /* 1–2 shots */,
+30.0, uc)`:
+- `!(3..=8).contains(&len)` → `PlanError::ShotCount` whenever fewer than 3 shots failed — the
+  dominant partial-failure case (e.g. the repair's own test: 1 of 4 shots refused);
+- even with 3+ failed shots, their seconds-sum is essentially never within ±10% of the full
+  30s target → `PlanError::DurationSum`.
+
+So a "Retry N failed" click is rejected server-side with a confusing, unrelated error
+("a storyboard has at most…"/"…3..8…"/duration-sum) and **no shot is resubmitted**. The
+retry-only-failed feature — the explicit remedy the repair advertised for M1, and the thing
+question (b) asks me to judge — does not work in production for the common case. Standard
+violated: correctness / feature does what its comment and its test claim it does. It is an
+AI-code tell that the two repairs in one commit contradict each other and the gap is
+masked by a mock. No money is lost (validation is pre-loop, so nothing double-submits), so this
+is a Major, not a Blocker — but it is on the AC6 retry path and is untested against reality.
+
+Why the gate misses it: `Storyboard.test.tsx` "a partial failure shows the failed shots and
+retry submits only those" stubs `onGenerate` with a `vi.fn` that ignores `planJson`/`targetSeconds`
+and returns success for a 1-shot retry. The mock cannot see the real `generate_storyboard`
+re-validation, so the test passes while the integrated path fails. There is no test that runs the
+retry `plan_json` through the real `validate`.
+
+Concrete fix (pick one, implementer's call): on the retry path, either omit `plan_json` (so the
+server skips plan re-validation for a partial resubmit), or scope the server re-validation so a
+strict subset of an already-validated plan is not re-count/re-sum-gated (e.g. carry a
+storyboard/set id and validate against the stored plan, submitting only the named indices), or
+send the full plan with a `retryIndices` field the server uses to submit just those. Then add a
+Storyboard test whose `onGenerate` actually applies the same count/sum rule (or an integration
+test) so a sub-3-shot retry is proven to succeed.
+
+### Other checks (silence is not clearance)
+- **No double-submit / state cleanup (b):** on partial failure `generate` does not call
+  `onGenerated`; retry submits only `failedIndices`; `merged` replaces failed entries by index;
+  full success clears `outcome` and hands off once. The "retry forms a new storyboard group"
+  gap is real and documented — acceptable in isolation, but moot while M2 stands (retry can't
+  reach the group at all).
+- **Money-gate reuse:** `submit_one` body still byte-for-byte the old `submit_job` (re-diffed);
+  both generate and retry go through it, so per-shot estimate + S6 guard + S7 verbatim prompt are
+  unchanged. `retryTotal` = `totalCostCaption(failedIndices.map(i => estimates[i]))` — correct
+  original-index estimates, shown before the retry button.
+- **New constants / dead code / stale counts:** `MAX_BRIEF_BYTES`/`MAX_PLAN_JSON_BYTES`/`MAX_SHOTS`
+  all referenced; `#[derive(Debug)]` added to `ShotOutcome`/`StoryboardResult` is used by the new
+  `unwrap_err` tests, no secret in either. `implement.md`'s "848" and "285" match the measured
+  gate. No CHANGELOG/README change in this delta; no comment rot except M2's contradiction.
+- **Regression scan of the full slice diff:** the pre-existing
+  `generate_records_the_set_even_when_shots_fail` was correctly switched to `plan_json: None`
+  (it exercises per-shot continue-on-failure, now distinct from pre-loop re-validation) — a
+  legitimate adjustment, not a weakened test.
+
+### Blocking findings (must clear before merge)
+- **M2 (Major, AC6 retry path)** — retry-failed is rejected by the same-commit `generate_storyboard`
+  plan re-validation (`3..=8` count + ±10% sum) because `submitBatch` sends a subset `plan_json`
+  with the full target; the feature is non-functional for the common partial-failure case and the
+  contradiction is masked by a mocked test.
+
+B1, m1, m2, m3, and the L1–L3 hardening are genuinely fixed. M1's surfacing is fixed; its retry
+remedy is broken by M2.
+
+VERDICT: FAIL
