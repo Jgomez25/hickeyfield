@@ -27,6 +27,7 @@ pub mod provider;
 pub mod recipe;
 pub mod registry;
 pub mod route;
+pub mod storyboard;
 pub mod use_case;
 
 pub use camera::CameraTemplate;
@@ -45,4 +46,5 @@ pub use provider::ProviderId;
 pub use recipe::{from_provider, Inputs, Recipe, RecipeError, RECIPE_VERSION};
 pub use registry::{launch_models, registry, Model};
 pub use route::{Route, RouteError, RoutePolicy};
+pub use storyboard::{Continuity, PlanError, Shot, ShotRole, StoryboardPlan};
 pub use use_case::UseCase;

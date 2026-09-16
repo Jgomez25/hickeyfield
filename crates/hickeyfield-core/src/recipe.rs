@@ -1188,6 +1188,8 @@ mod tests {
             media: vec![url(MediaRole::Start, "https://cdn/first.png")],
             poll_cycles: 0,
             stalled: false,
+            storyboard_id: None,
+            shot_index: None,
         };
         let r = Recipe::from_job(&job);
         assert_eq!(r.media, job.media);
@@ -1236,6 +1238,8 @@ mod tests {
             media: vec![],
             poll_cycles: 0,
             stalled: false,
+            storyboard_id: None,
+            shot_index: None,
         };
         job.settings = Value::Null;
         let r = Recipe::from_job(&job);

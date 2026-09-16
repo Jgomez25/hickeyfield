@@ -968,7 +968,24 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
     let model = reg
         .get(&input.model_id)
         .ok_or_else(|| format!("unknown model: {}", input.model_id))?;
+    // A standalone generation: `submit_one(.., None, None)` is byte-for-byte the
+    // old `submit_job` body, so single-job behaviour is unchanged.
+    submit_one(&state, model, &input, None, None)
+}
 
+/// Submit one generation. The whole of the former `submit_job` body, lifted so a
+/// storyboard's shots can reuse it verbatim — each shot runs the identical
+/// compile→guard→estimate→route→upsert→submit→watch path, tagged with its set
+/// membership. `storyboard_id`/`shot_index` are `None` for a standalone job,
+/// which is exactly the standalone case, so nothing about single-job submit
+/// changes.
+fn submit_one(
+    state: &AppState,
+    model: &hickeyfield_core::Model,
+    input: &SubmitInput,
+    storyboard_id: Option<&str>,
+    shot_index: Option<u32>,
+) -> Result<String, String> {
     let available: Vec<ProviderId> = configured_providers()
         .iter()
         .filter_map(|s| ProviderId::from_slug(s))
@@ -976,7 +993,7 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
 
     // The wire prompt: either the exact text the user previewed (sent verbatim,
     // never re-compiled) or, on the quick path, a fresh enhance+compile.
-    let compiled = compiled_for_submit(model, &input)?;
+    let compiled = compiled_for_submit(model, input)?;
 
     let billable = Billable::from(&input.settings);
     let route = hickeyfield_core::route::resolve(
@@ -1031,6 +1048,9 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
         // A fresh job has timed out zero times and is not stalled.
         poll_cycles: 0,
         stalled: false,
+        // Set membership, when this is a storyboard shot. Write-once in the store.
+        storyboard_id: storyboard_id.map(str::to_string),
+        shot_index,
     };
     state.store.upsert(&job).map_err(|e| e.to_string())?;
 
@@ -1050,6 +1070,230 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
             Err(e.to_string())
         }
     }
+}
+
+// ── Storyboard ───────────────────────────────────────────────────────────────
+
+/// Turn the UI's (optional) enhancer choice plus what is actually reachable into
+/// a concrete [`hickeyfield_core::enhancer::ChatBackend`], or an honest note when
+/// nothing can run. The `ChatBackend` analogue of [`select_rewriter`], sharing
+/// the exact same priority and the same NOTE_* prose, so drafting a plan is
+/// available under precisely the conditions the enhancer is. Pure in its inputs,
+/// so it is unit-testable without a Tauri `State`.
+fn chat_backend_for(
+    choice: Option<&RewriterChoice>,
+    openai_key: Option<&str>,
+    ollama_up: bool,
+    ollama_models: &[hickeyfield_core::enhancer::LocalModel],
+) -> Result<hickeyfield_core::enhancer::ChatBackend, String> {
+    use hickeyfield_core::enhancer::{ChatBackend, HostedBackend};
+
+    match choice {
+        Some(c) if c.backend == "openai" => {
+            let model = c.model.as_deref().filter(|m| !m.trim().is_empty());
+            match (openai_key, model) {
+                (Some(key), Some(model)) => {
+                    Ok(ChatBackend::hosted(HostedBackend::OpenAi, key, model))
+                }
+                (None, _) => Err(NOTE_OPENAI_NO_KEY.to_string()),
+                (Some(_), None) => Err(NOTE_NO_MODEL_CHOSEN.to_string()),
+            }
+        }
+        Some(c) if c.backend == "ollama" => {
+            if !ollama_up {
+                return Err(NOTE_NOTHING_AVAILABLE.to_string());
+            }
+            match c.model.as_deref().filter(|m| !m.trim().is_empty()) {
+                Some(model) if ollama_models.iter().any(|m| m.name == model) => {
+                    Ok(ChatBackend::ollama(model))
+                }
+                Some(_) if ollama_models.is_empty() => Err(NOTE_OLLAMA_NO_MODELS.to_string()),
+                Some(_) => Err(NOTE_NO_MODEL_CHOSEN.to_string()),
+                None if ollama_models.is_empty() => Err(NOTE_OLLAMA_NO_MODELS.to_string()),
+                None => Err(NOTE_NO_MODEL_CHOSEN.to_string()),
+            }
+        }
+        // Auto, and any unrecognised backend string. A running Ollama with an
+        // installed model wins (needs no key, no explicit id); otherwise an
+        // honest note, exactly as `select_rewriter`.
+        _ => match ollama_models.first() {
+            Some(first) if ollama_up => Ok(ChatBackend::ollama(first.name.clone())),
+            _ if openai_key.is_some() => Err(NOTE_NO_MODEL_CHOSEN.to_string()),
+            _ if ollama_up => Err(NOTE_OLLAMA_NO_MODELS.to_string()),
+            _ => Err(NOTE_NOTHING_AVAILABLE.to_string()),
+        },
+    }
+}
+
+/// Draft a model-aware shot list from one brief.
+///
+/// Takes NO `State`: like `preview_prompt`, with no handle to the store, prices
+/// or fal it structurally cannot bill a generation. It reads the hosted key the
+/// same way `probe_enhancer_env` does, selects a chat backend (an unavailable
+/// one is an honest `Err`), and runs the offline validator + clamp in
+/// `storyboard::plan`. Drafting spends nothing on fal; on a hosted backend it is
+/// the one short enhancer completion the user already configured (documented).
+#[tauri::command]
+pub fn plan_storyboard(
+    brief: String,
+    target_seconds: f64,
+    use_case: String,
+    model_prefs: Vec<String>,
+    rewriter: Option<RewriterChoice>,
+) -> Result<hickeyfield_core::StoryboardPlan, String> {
+    let uc = hickeyfield_core::UseCase::from_slug(&use_case)
+        .ok_or_else(|| format!("unknown use case: {use_case}"))?;
+    // Drafting always needs a rewriter, so probe as if enhancement is on.
+    let (openai_key, ollama_up, ollama_models) = probe_enhancer_env(true);
+    let backend = chat_backend_for(
+        rewriter.as_ref(),
+        openai_key.as_deref(),
+        ollama_up,
+        &ollama_models,
+    )?;
+    hickeyfield_core::storyboard::plan(
+        &backend,
+        hickeyfield_core::corpus::STORYBOARD_SYSTEM,
+        &brief,
+        target_seconds,
+        uc,
+        &model_prefs,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Everything `generate_storyboard` needs: the brief and target (for the group
+/// row), the edited plan JSON (stored verbatim for S14 — carries roles and
+/// recorded continuity), and one [`SubmitInput`] per shot. Each shot is a plain
+/// submit payload, reused verbatim so every existing invariant (S6 guard, S7
+/// verbatim `final_prompt`, S10 pricing) holds per shot.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryboardGenerateInput {
+    pub brief: String,
+    pub target_seconds: f64,
+    /// The serialised `StoryboardPlan` the UI holds, stored for S14. Optional so
+    /// a caller that only has shots still records a group.
+    #[serde(default)]
+    pub plan_json: Option<String>,
+    pub shots: Vec<SubmitInput>,
+}
+
+/// One shot's fate in a generate-all batch. A shot that failed (a refusal, a
+/// missing key, a submit error) carries `error`; a shot that started carries the
+/// `job_set_id` the Library watches.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShotOutcome {
+    pub shot_index: u32,
+    pub job_set_id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// The result of a generate-all: the minted storyboard id and a per-shot outcome.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryboardResult {
+    pub storyboard_id: String,
+    pub shots: Vec<ShotOutcome>,
+}
+
+/// Generate every shot as one linked set.
+///
+/// The group row is written **first**, so the set survives even if a shot fails.
+/// Each shot then goes through `submit_one` — the identical money path a single
+/// submit uses (compile + S6 guard + S7 verbatim prompt + S10 estimate + route
+/// + submit + watch), tagged with its set id and index. A shot that fails is
+/// recorded as an outcome carrying its error and the batch **continues**: a
+/// refusal on shot 3 must not discard shots 1–2 the user already paid to start.
+#[tauri::command]
+pub fn generate_storyboard(
+    state: State<'_, AppState>,
+    input: StoryboardGenerateInput,
+) -> Result<StoryboardResult, String> {
+    generate_storyboard_inner(&state, input)
+}
+
+/// The body of [`generate_storyboard`], taking a plain `&AppState` so it is
+/// testable with an in-memory store and no Tauri `State` extractor.
+fn generate_storyboard_inner(
+    state: &AppState,
+    input: StoryboardGenerateInput,
+) -> Result<StoryboardResult, String> {
+    let sid = format!("sb-{}-{}", now_secs(), input.shots.len());
+    let storyboard = crate::store::Storyboard {
+        id: sid.clone(),
+        brief: input.brief.clone(),
+        target_seconds: input.target_seconds,
+        // Fall back to a minimal object so a group is always readable, but the
+        // UI normally sends the full edited plan (roles + continuity) for S14.
+        plan_json: input.plan_json.clone().unwrap_or_else(|| "{}".to_string()),
+        created_at: now_secs(),
+    };
+    state
+        .store
+        .upsert_storyboard(&storyboard)
+        .map_err(|e| e.to_string())?;
+
+    let reg = registry();
+    let mut outcomes = Vec::with_capacity(input.shots.len());
+    for (i, shot) in input.shots.iter().enumerate() {
+        let idx = i as u32;
+        let outcome = match reg.get(&shot.model_id) {
+            None => ShotOutcome {
+                shot_index: idx,
+                job_set_id: None,
+                error: Some(format!("unknown model: {}", shot.model_id)),
+            },
+            Some(model) => match submit_one(state, model, shot, Some(&sid), Some(idx)) {
+                Ok(job_set_id) => ShotOutcome {
+                    shot_index: idx,
+                    job_set_id: Some(job_set_id),
+                    error: None,
+                },
+                Err(e) => ShotOutcome {
+                    shot_index: idx,
+                    job_set_id: None,
+                    error: Some(e),
+                },
+            },
+        };
+        outcomes.push(outcome);
+    }
+
+    Ok(StoryboardResult {
+        storyboard_id: sid,
+        shots: outcomes,
+    })
+}
+
+/// The stored storyboards, for the Library's group headers. Serialised camelCase
+/// for the bridge; `plan_json` rides along as a raw string the UI may parse.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryboardDto {
+    pub id: String,
+    pub brief: String,
+    pub target_seconds: f64,
+    pub plan_json: String,
+    pub created_at: i64,
+}
+
+#[tauri::command]
+pub fn list_storyboards(state: State<'_, AppState>) -> Result<Vec<StoryboardDto>, String> {
+    Ok(state
+        .store
+        .storyboards()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|s| StoryboardDto {
+            id: s.id,
+            brief: s.brief,
+            target_seconds: s.target_seconds,
+            plan_json: s.plan_json,
+            created_at: s.created_at,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -1777,5 +2021,161 @@ mod tests {
             !local_ok,
             "the Local-only route is the one that must be unavailable"
         );
+    }
+
+    // ---- Storyboard: chat-backend selection + generate (AC1/AC4/AC6) -------
+
+    use hickeyfield_core::enhancer::ChatBackend;
+
+    fn backend_kind(b: &ChatBackend) -> &'static str {
+        match b {
+            ChatBackend::Ollama { .. } => "ollama",
+            ChatBackend::Hosted { .. } => "hosted",
+        }
+    }
+
+    #[test]
+    fn chat_backend_prefers_a_running_ollama_in_auto() {
+        // AC1/AC6: auto drafting runs the top-ranked local model when one is
+        // installed — no key, no explicit id needed, the same rule the enhancer
+        // uses. Mirrors `auto_picks_the_top_ranked_model`.
+        let installed = models(&["llama3.2:3b"]);
+        let got = chat_backend_for(None, None, true, &installed).expect("a runnable backend");
+        assert_eq!(backend_kind(&got), "ollama");
+    }
+
+    #[test]
+    fn chat_backend_with_nothing_available_is_an_honest_note() {
+        // AC1: "on an unavailable backend returns an honest error." The Err is
+        // the NOTE the UI surfaces; drafting never silently invents a backend.
+        // `ChatBackend` deliberately derives no Debug (it holds an api key), so
+        // match rather than `unwrap_err`.
+        let note = match chat_backend_for(None, None, false, &[]) {
+            Err(n) => n,
+            Ok(_) => panic!("expected an honest note, got a backend"),
+        };
+        assert!(note.contains("no OpenAI key is stored"), "got: {note}");
+        assert!(note.contains("Ollama isn't running"), "got: {note}");
+    }
+
+    #[test]
+    fn chat_backend_explicit_openai_needs_a_key_and_model() {
+        let c = choice("openai", Some("gpt-5"));
+        match chat_backend_for(Some(&c), Some("sk-live"), false, &[]) {
+            Ok(b) => assert_eq!(backend_kind(&b), "hosted"),
+            Err(e) => panic!("expected hosted, got note: {e}"),
+        }
+        let no_key = match chat_backend_for(Some(&c), None, false, &[]) {
+            Err(n) => n,
+            Ok(_) => panic!("expected an honest note, got a backend"),
+        };
+        assert!(no_key.contains("no OpenAI key is stored"), "got: {no_key}");
+    }
+
+    /// A minimal `AppState` for testing the generate path with no network: an
+    /// in-memory store, a client factory that hands back nothing, and the
+    /// bundled prices. Nothing here reaches a provider.
+    fn test_state() -> AppState {
+        use crate::library::Library;
+        use crate::pricing::Prices;
+        use crate::runner::Runner;
+        use hickeyfield_core::engine::JobStore;
+        use std::sync::Arc;
+
+        let store = Arc::new(crate::store::SqliteStore::in_memory().unwrap());
+        let library = Arc::new(Library::new(
+            std::env::temp_dir().join(format!("hickeyfield-sb-test-{}", std::process::id())),
+        ));
+        let prices = Arc::new(Prices::bundled());
+        let runner = Runner::new(
+            Arc::clone(&store) as Arc<dyn JobStore>,
+            Arc::new(|_| None),
+            Arc::new(|_| {}),
+            Arc::clone(&library),
+            Arc::clone(&prices),
+        );
+        AppState {
+            store,
+            runner,
+            library,
+            prices,
+        }
+    }
+
+    fn shot_input(model_id: &str) -> SubmitInput {
+        SubmitInput {
+            model_id: model_id.into(),
+            route_id: None,
+            prompt: "a shot".into(),
+            preset_id: None,
+            settings: SettingsDto {
+                enhance: false,
+                ..Default::default()
+            },
+            media: Vec::new(),
+            rewriter: None,
+            final_prompt: Some("a shot, wide.".into()),
+        }
+    }
+
+    #[test]
+    fn generate_records_the_set_even_when_shots_fail() {
+        // AC4/AC6. Every shot here names a model that is not in the registry, so
+        // each fails at the registry lookup *before* `submit_one` — no route
+        // resolves, nothing reaches a provider, and this gate can never spend a
+        // cent even on a machine that happens to hold a real key. The batch must
+        // still: mint and persist the storyboard row, return one outcome per
+        // shot, carry a per-shot error, and NOT stop at the first failure.
+        //
+        // The *successful* submit path (a real model → a live provider → a
+        // job_set_id) is deliberately NOT exercised here: doing so would require
+        // a network call to a paid provider, which agents never make. That path
+        // is `submit_one`, byte-for-byte the audited single-job body — see the
+        // diff in implement.md — and is covered by the live run.
+        let state = test_state();
+        let input = StoryboardGenerateInput {
+            brief: "a 30s ad".into(),
+            target_seconds: 30.0,
+            plan_json: Some(r#"{"shots":[]}"#.into()),
+            shots: vec![shot_input("no-such-model-a"), shot_input("no-such-model-b")],
+        };
+        // Call the inner logic directly with a plain &AppState (the #[command]
+        // wrapper only adds the State extractor).
+        let out = generate_storyboard_inner(&state, input).expect("generate returns a result");
+
+        assert_eq!(
+            out.shots.len(),
+            2,
+            "one outcome per shot — the batch continued"
+        );
+        for outcome in &out.shots {
+            assert!(outcome.error.is_some(), "an unknown model is an error");
+            assert!(outcome.job_set_id.is_none(), "a failed shot has no job id");
+        }
+
+        // The storyboard row persists regardless of shot fates.
+        let sb = state.store.storyboard(&out.storyboard_id).unwrap();
+        assert!(sb.is_some(), "the group row survives failing shots");
+        assert_eq!(sb.unwrap().brief, "a 30s ad");
+    }
+
+    #[test]
+    fn generate_numbers_outcomes_densely_from_zero() {
+        // AC4: the outcome indices are dense and 0-based, so the Library can
+        // order the set. All-unknown models keeps this strictly offline.
+        let state = test_state();
+        let input = StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 24.0,
+            plan_json: None,
+            shots: vec![
+                shot_input("nope-a"),
+                shot_input("nope-b"),
+                shot_input("nope-c"),
+            ],
+        };
+        let out = generate_storyboard_inner(&state, input).unwrap();
+        let indices: Vec<u32> = out.shots.iter().map(|s| s.shot_index).collect();
+        assert_eq!(indices, vec![0, 1, 2]);
     }
 }

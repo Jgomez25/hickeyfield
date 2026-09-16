@@ -47,6 +47,18 @@ const EDIT: &str = include_str!("../../../prompts/operative/edit.v1.md");
 /// Identifies the corpus in a recipe. Bump with the files.
 pub const CORPUS_ID: &str = "enhancer.v1";
 
+/// The storyboard planner's system prompt.
+///
+/// A second `Chat` caller (see [`crate::enhancer::Chat`]) sends this instead of
+/// the rewrite corpus above. It instructs the model to draft an ordered shot
+/// list as one JSON object; the per-draft context — the target length, the
+/// allowed model ids and the allowed camera slugs — is assembled into the *user*
+/// message by [`crate::storyboard::plan`], not baked in here, so this stays
+/// short and the allowed lists cannot go stale against the registry. Embedded
+/// with `include_str!` for the same reason the enhancer corpus is: a missing
+/// resource file is a compile error, never a silent runtime blank.
+pub const STORYBOARD_SYSTEM: &str = include_str!("../../../prompts/storyboard.v1.md");
+
 /// The reference text for one mode. Never sent; see [`REFERENCE_BASE`].
 pub fn reference(mode: Mode) -> &'static str {
     match mode {
@@ -163,5 +175,33 @@ mod tests {
         let p = system_prompt_for(Mode::Video).unwrap();
         assert!(p.contains(BASE.trim_end()));
         assert!(p.contains(VIDEO.trim_start()));
+    }
+
+    #[test]
+    fn the_storyboard_prompt_is_present_and_within_budget() {
+        // Same regression as the enhancer corpus: a system prompt that grows
+        // into an essay pays attention tax and does not fit a small local
+        // model's window. The allowed model/camera lists are assembled into the
+        // *user* message per draft, so this stays short. Bytes/4 is a rough
+        // token estimate; the ceiling is generous enough that it cannot matter.
+        assert!(
+            STORYBOARD_SYSTEM.len() > 300,
+            "the storyboard prompt is missing or too thin"
+        );
+        let est = STORYBOARD_SYSTEM.len() / 4;
+        assert!(
+            est < 900,
+            "the storyboard prompt is ~{est} tokens — too long"
+        );
+    }
+
+    #[test]
+    fn the_storyboard_prompt_asks_for_one_json_object_of_shots() {
+        // The whole plan contract is that the reply is one JSON object keyed by
+        // `shots`; the validator parses exactly that. If the corpus stops asking
+        // for it, every real draft degrades to a `NotJson` error.
+        let low = STORYBOARD_SYSTEM.to_lowercase();
+        assert!(low.contains("json"));
+        assert!(STORYBOARD_SYSTEM.contains("\"shots\""));
     }
 }

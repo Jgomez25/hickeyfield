@@ -816,6 +816,8 @@ mod tests {
             media: Vec::new(),
             poll_cycles: 0,
             stalled: false,
+            storyboard_id: None,
+            shot_index: None,
         }
     }
 

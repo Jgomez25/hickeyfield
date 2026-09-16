@@ -27,6 +27,22 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A Storyboard view turns one brief into a whole shot list you can edit and generate as a
+  set.** Describe what you want ("a 30-second ad for …") and pick a target length; the local
+  or hosted enhancer drafts a model-aware shot list — per shot a title, prompt, duration,
+  camera move, model and continuity role — validated so every model is one that can actually
+  run the job, every camera move is real, and the durations sum to roughly the length you
+  asked for. Each shot's duration is clamped to what its model actually offers, with an
+  advisory when it changes; a single-shot plan on Seedance 2.5 can keep a native 30 seconds.
+  Edit any shot's prompt, seconds, camera or model, reorder, add or delete, and preview each
+  shot's compiled prompt before spending anything. The view shows the summed estimate — a
+  shot with no published price is marked, never counted as free — and Generate all submits
+  every shot as one linked set through the same money path a single generation uses, so
+  nothing is submitted without the total shown. The Library groups a generated set under its
+  brief. Drafting is free on local Ollama and costs one short completion on a hosted key; no
+  clip is generated until you see the total. (Rendering and stitching the set into one film
+  comes in a later release — this slice plans and generates the shots.)
+
 - **Every finished job now records what it actually cost, next to what we quoted.** When
   a generation completes and its file is saved, the app measures the seconds, resolution
   and image count the provider actually produced and prices that at the same rate as the

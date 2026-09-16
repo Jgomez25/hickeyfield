@@ -18,7 +18,11 @@ import type {
   Model,
   PresetFamily,
   PromptPreview,
+  RewriterChoice,
   Route,
+  Storyboard,
+  StoryboardPlan,
+  StoryboardResult,
   SubmitInput,
   UseCase,
 } from "./types";
@@ -27,7 +31,9 @@ import {
   MOCK_PRESETS,
   mockCancel,
   mockEstimate,
+  mockGenerateStoryboard,
   mockListJobs,
+  mockPlanStoryboard,
   mockPreview,
   mockSubmit,
   mockSubscribe,
@@ -398,6 +404,10 @@ interface RawJobSet {
   enhance_note?: string | null;
   advisories?: string[];
   fail_reason?: string | null;
+  storyboard_id?: string | null;
+  storyboardId?: string | null;
+  shot_index?: number | null;
+  shotIndex?: number | null;
 }
 
 const toModel = (r: RawModel): Model => ({
@@ -473,6 +483,8 @@ const toJobSet = (r: RawJobSet): JobSet => ({
   enhanceNote: r.enhance_note ?? null,
   advisories: r.advisories ?? [],
   failReason: r.fail_reason ?? null,
+  storyboardId: r.storyboard_id ?? r.storyboardId ?? null,
+  shotIndex: r.shot_index ?? r.shotIndex ?? null,
 });
 
 // ── Generator bridge ───────────────────────────────────────────────────────
@@ -666,6 +678,81 @@ export async function previewPrompt(input: SubmitInput): Promise<PromptPreview> 
   } catch (e) {
     if (!isDesktop()) return mockPreview(input);
     throw asError(e);
+  }
+}
+
+/**
+ * Draft a model-aware shot list from one brief.
+ *
+ * Runs no route, price or generation — like {@link previewPrompt} it takes no
+ * store handle on the Rust side, so drafting cannot bill a generation. A
+ * rejected draft (unavailable backend, refusal, bad plan) rejects with the
+ * honest reason; the caller shows it rather than fabricating a plan. Off the
+ * desktop it returns a canned plan so the view is usable in a browser.
+ */
+export async function planStoryboard(args: {
+  brief: string;
+  targetSeconds: number;
+  useCase: string;
+  modelPrefs: string[];
+  rewriter?: RewriterChoice | null;
+}): Promise<StoryboardPlan> {
+  try {
+    return await invoke<StoryboardPlan>("plan_storyboard", args);
+  } catch (e) {
+    if (!isDesktop()) return mockPlanStoryboard(args);
+    throw asError(e);
+  }
+}
+
+/**
+ * Generate every shot as one linked set.
+ *
+ * Each shot goes through the same paid submit path a single Generate uses — the
+ * total is shown before this is ever called (the view disables Generate-all
+ * until the summed estimate renders). Returns a per-shot outcome; a failed shot
+ * carries its error and the batch continues.
+ */
+export async function generateStoryboard(input: {
+  brief: string;
+  targetSeconds: number;
+  planJson: string;
+  shots: SubmitInput[];
+}): Promise<StoryboardResult> {
+  try {
+    return await invoke<StoryboardResult>("generate_storyboard", {
+      input,
+    } as unknown as Record<string, unknown>);
+  } catch (e) {
+    if (!isDesktop()) return mockGenerateStoryboard(input);
+    throw asError(e);
+  }
+}
+
+/** The stored storyboards, for the Library's group headers. */
+export async function listStoryboards(): Promise<Storyboard[]> {
+  try {
+    const raw = await invoke<
+      {
+        id: string;
+        brief: string;
+        target_seconds?: number;
+        targetSeconds?: number;
+        plan_json?: string;
+        planJson?: string;
+        created_at?: number;
+        createdAt?: number;
+      }[]
+    >("list_storyboards");
+    return raw.map((s) => ({
+      id: s.id,
+      brief: s.brief,
+      targetSeconds: s.target_seconds ?? s.targetSeconds ?? 0,
+      planJson: s.plan_json ?? s.planJson ?? "{}",
+      createdAt: s.created_at ?? s.createdAt ?? 0,
+    }));
+  } catch {
+    return [];
   }
 }
 

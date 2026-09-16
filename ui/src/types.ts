@@ -190,6 +190,57 @@ export interface GenSettings {
   steps?: number | null;
 }
 
+/** A shot's place in the sequence — `start`/`end` bracket the story. */
+export type ShotRole = "start" | "middle" | "end";
+
+/** A recorded continuity intent (not applied in S13): chain from shot N. */
+export interface Continuity {
+  lastFrameOf: number;
+}
+
+/** One shot in a storyboard plan. Mirrors the Rust `Shot` (serde camelCase). */
+export interface Shot {
+  title: string;
+  prompt: string;
+  seconds: number;
+  camera: string | null;
+  modelId: string;
+  role: ShotRole;
+  continuity?: Continuity | null;
+  /** Clamp notes: a shot narrowed toward its model's duration axis says so. */
+  advisories?: string[];
+}
+
+/** A whole storyboard plan, drafted from one brief. Mirrors `StoryboardPlan`. */
+export interface StoryboardPlan {
+  brief: string;
+  targetSeconds: number;
+  useCase: string;
+  shots: Shot[];
+}
+
+/** One shot's fate in a generate-all batch. Mirrors `ShotOutcome`. */
+export interface ShotOutcome {
+  shotIndex: number;
+  jobSetId: string | null;
+  error: string | null;
+}
+
+/** The result of a generate-all. Mirrors `StoryboardResult`. */
+export interface StoryboardResult {
+  storyboardId: string;
+  shots: ShotOutcome[];
+}
+
+/** A stored storyboard grouping row, for Library group headers. */
+export interface Storyboard {
+  id: string;
+  brief: string;
+  targetSeconds: number;
+  planJson: string;
+  createdAt: number;
+}
+
 export interface JobSet {
   id: string;
   modelId: string;
@@ -220,6 +271,10 @@ export interface JobSet {
    */
   advisories?: string[];
   failReason?: string | null;
+  /** The storyboard this job is a shot of, when it was generated as a set. */
+  storyboardId?: string | null;
+  /** This job's 0-based position within its storyboard. */
+  shotIndex?: number | null;
 }
 
 /**

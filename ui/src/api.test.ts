@@ -15,7 +15,13 @@ import type { SubmitInput } from "./types";
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
-import { previewPrompt, submitJob } from "./api";
+import {
+  generateStoryboard,
+  listStoryboards,
+  planStoryboard,
+  previewPrompt,
+  submitJob,
+} from "./api";
 
 const INPUT: SubmitInput = {
   modelId: "kling3_0",
@@ -94,5 +100,62 @@ describe("submitJob", () => {
     expect(invokeMock).toHaveBeenCalledWith("submit_job", {
       input: expect.objectContaining({ finalPrompt: edited }),
     });
+  });
+});
+
+describe("storyboard bridge", () => {
+  it("planStoryboard passes the draft args straight through and returns the plan", async () => {
+    invokeMock.mockResolvedValue({
+      brief: "a 30s ad",
+      targetSeconds: 30,
+      useCase: "text-to-video",
+      shots: [],
+    });
+    const args = {
+      brief: "a 30s ad",
+      targetSeconds: 30,
+      useCase: "text-to-video",
+      modelPrefs: ["kling3_0"],
+      rewriter: null,
+    };
+    const plan = await planStoryboard(args);
+    expect(invokeMock).toHaveBeenCalledWith("plan_storyboard", args);
+    expect(plan.shots).toEqual([]);
+  });
+
+  it("generateStoryboard wraps its input as { input }, like submitJob", async () => {
+    invokeMock.mockResolvedValue({ storyboardId: "sb-1", shots: [] });
+    const input = {
+      brief: "b",
+      targetSeconds: 24,
+      planJson: "{}",
+      shots: [],
+    };
+    const res = await generateStoryboard(input);
+    expect(invokeMock).toHaveBeenCalledWith("generate_storyboard", { input });
+    expect(res.storyboardId).toBe("sb-1");
+  });
+
+  it("listStoryboards maps snake_case rows and degrades to [] on failure", async () => {
+    invokeMock.mockResolvedValueOnce([
+      {
+        id: "sb-1",
+        brief: "b",
+        target_seconds: 30,
+        plan_json: "{}",
+        created_at: 5,
+      },
+    ]);
+    const rows = await listStoryboards();
+    expect(rows[0]).toEqual({
+      id: "sb-1",
+      brief: "b",
+      targetSeconds: 30,
+      planJson: "{}",
+      createdAt: 5,
+    });
+
+    invokeMock.mockRejectedValueOnce(new Error("no command"));
+    expect(await listStoryboards()).toEqual([]);
   });
 });

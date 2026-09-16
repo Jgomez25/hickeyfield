@@ -150,6 +150,20 @@
   grid-template-columns: var(--rail-nav) minmax(0, 1fr) var(--rail-meta);
 }
 
+/* Storyboard = nav · one wide panel (the brief, the shot cards, the total).
+ * A single flexible content track, following the same per-view-template rule. */
+.workspace[data-view="storyboard"] {
+  grid-template-columns: var(--rail-nav) minmax(0, 1fr);
+}
+
+@media (max-width: 1200px) {
+  .workspace[data-view="storyboard"] {
+    grid-template-columns: var(--rail-nav) minmax(0, 1fr);
+    grid-auto-rows: min-content;
+    overflow-y: auto;
+  }
+}
+
 /* The first breakpoint, additive: below 1200px the fixed side track collapses
  * to a single content column — the nav spans every row on the left and the
  * composer/meta stack over the stage/gallery in the one flexible column. The
@@ -643,4 +657,197 @@
 
 .empty-state-error .empty-state-heading {
   color: var(--danger);
+}
+
+/* ── Storyboard view (S13) ─────────────────────────────────────────────────
+ * A single scrolling panel: the brief header, an ordered list of editable shot
+ * cards, and the honest summed total above Generate-all. Reuses the app's tone
+ * tokens; adds no new import. */
+.storyboard {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-300);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-300);
+}
+
+.storyboard-title {
+  font-size: var(--text-500, 1.25rem);
+  letter-spacing: 0.08em;
+  margin: 0;
+}
+
+.storyboard-note {
+  color: var(--text-muted, #9aa);
+  font-size: var(--text-200, 0.8rem);
+  margin: 0;
+}
+
+.storyboard-field,
+.storyboard-target {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-100, 0.25rem);
+}
+
+.storyboard-label {
+  font-size: var(--text-200, 0.8rem);
+  color: var(--text-muted, #9aa);
+}
+
+.storyboard-brief,
+.storyboard-shot-prompt,
+.storyboard-shot-title,
+.storyboard-seconds-input,
+.storyboard-camera-select,
+.storyboard-target-input {
+  background: var(--surface-200, #1a1a1e);
+  color: inherit;
+  border: 1px solid var(--border-200, #333);
+  border-radius: var(--radius-200, 8px);
+  padding: var(--space-150, 0.4rem) var(--space-200, 0.6rem);
+  font: inherit;
+}
+
+.storyboard-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-200);
+}
+
+.storyboard-draft,
+.storyboard-generate,
+.storyboard-add,
+.storyboard-model {
+  background: var(--surface-300, #26262c);
+  color: inherit;
+  border: 1px solid var(--border-200, #333);
+  border-radius: var(--radius-200, 8px);
+  padding: var(--space-150, 0.4rem) var(--space-300, 0.9rem);
+  cursor: pointer;
+}
+
+.storyboard-generate:disabled,
+.storyboard-draft:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.storyboard-shots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-200);
+}
+
+.storyboard-shot {
+  border: 1px solid var(--border-200, #333);
+  border-radius: var(--radius-300, 12px);
+  padding: var(--space-250, 0.7rem);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-150, 0.4rem);
+  background: var(--surface-100, #141418);
+}
+
+.storyboard-shot-head,
+.storyboard-shot-row,
+.storyboard-shot-foot,
+.storyboard-total-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-200);
+}
+
+.storyboard-shot-n {
+  font-weight: 600;
+}
+
+.storyboard-shot-role {
+  font-size: var(--text-200, 0.8rem);
+  color: var(--text-muted, #9aa);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.storyboard-shot-move {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-100, 0.25rem);
+}
+
+.storyboard-move,
+.storyboard-remove {
+  background: transparent;
+  border: 1px solid var(--border-200, #333);
+  border-radius: var(--radius-100, 6px);
+  color: inherit;
+  cursor: pointer;
+  padding: 0 var(--space-150, 0.4rem);
+}
+
+.storyboard-advisory {
+  color: var(--warn, #e6b34d);
+  font-size: var(--text-200, 0.8rem);
+  margin: 0;
+}
+
+.storyboard-error {
+  color: var(--danger, #e2555b);
+  margin: 0;
+}
+
+.storyboard-shot-cost[data-unpriced],
+.storyboard-total[data-unpriced] {
+  color: var(--warn, #e6b34d);
+}
+
+.storyboard-shot-cost {
+  margin-left: auto;
+}
+
+.storyboard-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-300);
+  position: sticky;
+  bottom: 0;
+  background: var(--surface-000, #0f0f12);
+  padding-top: var(--space-200);
+}
+
+.storyboard-total {
+  font-weight: 700;
+  font-size: var(--text-400, 1.1rem);
+}
+
+.storyboard-previewed {
+  color: var(--ok, #5fd08a);
+  font-size: var(--text-200, 0.8rem);
+}
+
+/* Library storyboard grouping (S13) — additive over the S12 gallery. */
+.library-storyboard-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-150, 0.4rem);
+  margin-bottom: var(--space-300);
+}
+
+.library-storyboard-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-200);
+  font-size: var(--text-300, 0.95rem);
+  margin: 0;
+}
+
+.library-storyboard-count {
+  color: var(--text-muted, #9aa);
+  font-size: var(--text-200, 0.8rem);
 }

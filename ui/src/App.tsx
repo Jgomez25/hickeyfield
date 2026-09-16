@@ -18,6 +18,9 @@ import {
   modelCapabilities,
   deleteJob,
   subscribeJobs,
+  planStoryboard,
+  generateStoryboard,
+  listStoryboards,
   type KeyState,
 } from "./api";
 import type {
@@ -32,6 +35,9 @@ import type {
   PresetFamily,
   PromptPreview,
   RewriterChoice,
+  Shot,
+  Storyboard as StoryboardRow,
+  StoryboardResult,
   UseCase,
   WorkspaceTab,
 } from "./types";
@@ -54,6 +60,7 @@ import {
 import { SettingsRail } from "./components/SettingsRail";
 import { Stage } from "./components/Stage";
 import { Library } from "./components/Library";
+import { Storyboard } from "./components/Storyboard";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { MetaRail } from "./components/MetaRail";
 import { PresetPicker } from "./components/PresetPicker";
@@ -133,7 +140,12 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Studio (compose + stage) vs Library (gallery + meta). A separate axis from
   // the use-case `tab`; a two-value state, not a router (there is no URL).
-  const [view, setView] = useState<"studio" | "library">("studio");
+  const [view, setView] = useState<"studio" | "library" | "storyboard">(
+    "studio",
+  );
+  // Stored storyboards, for the Library group headers. Refreshed after a
+  // generate-all so the new set has its brief to head the group with.
+  const [storyboards, setStoryboards] = useState<StoryboardRow[]>([]);
   // The Library lightbox: the job whose result is shown large, or null.
   const [lightboxId, setLightboxId] = useState<string | null>(null);
 
@@ -501,6 +513,61 @@ export default function App() {
     }
   }, [send, previewText]);
 
+  // Storyboard bridge wrappers. Passed to the Storyboard view so the component
+  // stays testable with fakes; here they close over the live tab, models,
+  // settings and enhancer choice.
+  const storyPlan = useCallback(
+    (args: {
+      brief: string;
+      targetSeconds: number;
+      useCase: string;
+      modelPrefs: string[];
+      rewriter?: RewriterChoice | null;
+    }) => planStoryboard(args),
+    [],
+  );
+  const storyEstimate = useCallback(
+    (shot: Shot): Promise<CostEstimate | null> =>
+      estimateCost({
+        modelId: shot.modelId,
+        routeId:
+          models.find((m) => m.id === shot.modelId)?.routes.find(
+            (r) => r.available !== false,
+          )?.id ??
+          models.find((m) => m.id === shot.modelId)?.routes[0]?.id ??
+          "",
+        settings: { ...settings, duration: shot.seconds },
+      }),
+    [models, settings],
+  );
+  const storyPreview = useCallback(
+    (shot: Shot): Promise<PromptPreview> =>
+      previewPrompt({
+        modelId: shot.modelId,
+        routeId:
+          models.find((m) => m.id === shot.modelId)?.routes[0]?.id ?? "",
+        prompt: shot.prompt,
+        presetId: shot.camera,
+        settings: { ...settings, duration: shot.seconds },
+        media: [],
+        rewriter: enhancer,
+        finalPrompt: null,
+      }),
+    [models, settings, enhancer],
+  );
+  const onStoryboardGenerated = useCallback((_result: StoryboardResult) => {
+    // The new set's jobs stream in over the existing subscription; refresh the
+    // job list and the storyboard headers, then watch the set run in Library.
+    void listJobs().then(setJobs);
+    void listStoryboards().then(setStoryboards);
+    setView("library");
+  }, []);
+
+  // Load the storyboard group headers once, and whenever we land on Library.
+  useEffect(() => {
+    if (view === "library") void listStoryboards().then(setStoryboards);
+  }, [view]);
+
   const onRerun = useCallback(
     (job: JobSet) => {
       // Reload the job's exact inputs into the rail rather than resubmitting
@@ -645,6 +712,14 @@ export default function App() {
             <button
               type="button"
               className="view-switch-tab"
+              aria-pressed={view === "storyboard"}
+              onClick={() => setView("storyboard")}
+            >
+              Storyboard
+            </button>
+            <button
+              type="button"
+              className="view-switch-tab"
               aria-pressed={view === "library"}
               onClick={() => setView("library")}
             >
@@ -683,7 +758,20 @@ export default function App() {
           </button>
         </nav>
 
-        {view === "studio" ? (
+        {view === "storyboard" ? (
+          <Storyboard
+            tab={tab}
+            models={models}
+            cameraPresets={cameraPresets}
+            settings={settings}
+            enhancer={enhancer}
+            onPlan={storyPlan}
+            onEstimate={storyEstimate}
+            onPreview={storyPreview}
+            onGenerate={generateStoryboard}
+            onGenerated={onStoryboardGenerated}
+          />
+        ) : view === "studio" ? (
           <>
             <SettingsRail
               useCases={useCases}
@@ -744,6 +832,7 @@ export default function App() {
               selectedId={selectedId}
               onSelect={setSelectedId}
               onOpenLightbox={setLightboxId}
+              storyboards={storyboards}
             />
 
             <MetaRail

@@ -18,6 +18,18 @@ pub struct SqliteStore {
     conn: Mutex<Connection>,
 }
 
+/// One storyboard grouping row. `plan_json` is a serialised
+/// `hickeyfield_core::StoryboardPlan`, kept verbatim so S14 can read the shot
+/// list (roles + recorded continuity) back without a lossy re-derivation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Storyboard {
+    pub id: String,
+    pub brief: String,
+    pub target_seconds: f64,
+    pub plan_json: String,
+    pub created_at: i64,
+}
+
 fn map_err(e: impl std::fmt::Display) -> JobError {
     // Storage failures are not the provider's fault and retrying the *network*
     // will not help, so they are permanent from the engine's point of view.
@@ -174,6 +186,32 @@ impl SqliteStore {
             )
             .map_err(map_err)?;
         }
+
+        if version < 8 {
+            // Storyboards. A `storyboards` grouping row holds the plan JSON; two
+            // columns on the existing jobs table (`job_sets`) tag each generated
+            // shot to its set and record its order. The grouping table is
+            // deliberately NOT called `job_sets` — that name is already the jobs
+            // table (see the `version < 1` block). `storyboard_id`/`shot_index`
+            // are NULL for every standalone job, and write-once (absent from the
+            // upsert's UPDATE set, like `estimated_usd`): a job's set membership
+            // is fixed at submit and never re-tagged.
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS storyboards (
+                    id             TEXT PRIMARY KEY,
+                    brief          TEXT NOT NULL,
+                    target_seconds REAL NOT NULL,
+                    plan_json      TEXT NOT NULL,
+                    created_at     INTEGER NOT NULL
+                );
+                ALTER TABLE job_sets ADD COLUMN storyboard_id TEXT;
+                ALTER TABLE job_sets ADD COLUMN shot_index    INTEGER;
+                PRAGMA user_version = 8;
+                "#,
+            )
+            .map_err(map_err)?;
+        }
         Ok(())
     }
 
@@ -184,6 +222,95 @@ impl SqliteStore {
             .execute("DELETE FROM job_sets WHERE id = ?1", params![id])
             .map(|_| ())
             .map_err(map_err)
+    }
+
+    /// Persist a storyboard grouping row. Called once, before any of its shots
+    /// are submitted, so the group survives even if a shot fails.
+    pub fn upsert_storyboard(&self, s: &Storyboard) -> Result<(), JobError> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                r#"
+                INSERT INTO storyboards (id, brief, target_seconds, plan_json, created_at)
+                VALUES (?1,?2,?3,?4,?5)
+                ON CONFLICT(id) DO UPDATE SET
+                    brief          = excluded.brief,
+                    target_seconds = excluded.target_seconds,
+                    plan_json      = excluded.plan_json
+                "#,
+                params![s.id, s.brief, s.target_seconds, s.plan_json, s.created_at],
+            )
+            .map(|_| ())
+            .map_err(map_err)
+    }
+
+    /// One storyboard by id, or `None`. Part of the store surface S14 (render)
+    /// and the migration-8 test read; the Library groups client-side and the
+    /// header list uses `storyboards()`, so nothing in S13 production calls this
+    /// singular reader yet.
+    #[allow(dead_code)]
+    pub fn storyboard(&self, id: &str) -> Result<Option<Storyboard>, JobError> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id, brief, target_seconds, plan_json, created_at \
+                 FROM storyboards WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(Storyboard {
+                        id: row.get(0)?,
+                        brief: row.get(1)?,
+                        target_seconds: row.get(2)?,
+                        plan_json: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(map_err)
+    }
+
+    /// Every storyboard, newest first — for the Library group headers.
+    pub fn storyboards(&self) -> Result<Vec<Storyboard>, JobError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, brief, target_seconds, plan_json, created_at \
+                 FROM storyboards ORDER BY created_at DESC",
+            )
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(Storyboard {
+                    id: row.get(0)?,
+                    brief: row.get(1)?,
+                    target_seconds: row.get(2)?,
+                    plan_json: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    /// The jobs tagged to one storyboard, ordered by `shot_index`. S14 (render)
+    /// consumes this to chain the set; S13's Library groups client-side off
+    /// `list_jobs`, so it is exercised by the store test rather than production.
+    #[allow(dead_code)]
+    pub fn jobs_in_storyboard(&self, storyboard_id: &str) -> Result<Vec<JobSet>, JobError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM job_sets WHERE storyboard_id = ?1 \
+                 ORDER BY shot_index ASC, created_at ASC",
+            )
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map(params![storyboard_id], row_to_job)
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     }
 
     #[cfg(test)]
@@ -258,6 +385,16 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobSet> {
             .map(|n| n.max(0) as u32)
             .unwrap_or(0),
         stalled: row.get::<_, i64>("stalled").unwrap_or(0) != 0,
+        // Pre-v8 rows have neither column; they load as standalone (None),
+        // which is the honest value rather than a guessed set membership.
+        storyboard_id: row
+            .get::<_, Option<String>>("storyboard_id")
+            .unwrap_or(None),
+        shot_index: row
+            .get::<_, Option<i64>>("shot_index")
+            .ok()
+            .flatten()
+            .map(|n| n.max(0) as u32),
     })
 }
 
@@ -295,8 +432,9 @@ impl JobStore for SqliteStore {
                     enhanced_prompt, preset_id, created_at, updated_at,
                     results, estimated_usd, actual_usd, fail_reason, settings,
                     media, endpoint, enhancer_version, enhance_note, advisories,
-                    poll_cycles, stalled, priced_from, priced_at, actual_source
-                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
+                    poll_cycles, stalled, priced_from, priced_at, actual_source,
+                    storyboard_id, shot_index
+                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)
                 ON CONFLICT(id) DO UPDATE SET
                     status          = excluded.status,
                     enhanced_prompt = excluded.enhanced_prompt,
@@ -313,6 +451,9 @@ impl JobStore for SqliteStore {
                     -- `priced_from`/`priced_at` are write-once: deliberately
                     -- absent here, mirroring `estimated_usd`. `actual_source`
                     -- tracks `actual_usd` and so updates with it.
+                    -- `storyboard_id`/`shot_index` are likewise write-once: a
+                    -- job's set membership is fixed at submit, so they too are
+                    -- absent here — a rerun-poll must never re-tag a shot.
                     actual_source   = excluded.actual_source
                 "#,
                 params![
@@ -341,6 +482,8 @@ impl JobStore for SqliteStore {
                     priced_from,
                     j.priced_at,
                     actual_source,
+                    j.storyboard_id,
+                    j.shot_index,
                 ],
             )
             .map(|_| ())
@@ -403,6 +546,8 @@ mod tests {
             media: Vec::new(),
             poll_cycles: 0,
             stalled: false,
+            storyboard_id: None,
+            shot_index: None,
         }
     }
 
@@ -432,7 +577,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 7, "in_memory must migrate to the latest schema");
+        assert_eq!(v, 8, "in_memory must migrate to the latest schema");
 
         let mut j = job("p", JobStatus::Completed);
         j.priced_from = Some(PriceProvenance::Feed);
@@ -463,6 +608,86 @@ mod tests {
             "actual_source updates"
         );
         assert_eq!(got.actual_usd, Some(0.5));
+    }
+
+    #[test]
+    fn migration_8_adds_storyboards_and_columns_and_roundtrips() {
+        let s = SqliteStore::in_memory().unwrap();
+
+        // A storyboard row (plan JSON) round-trips.
+        let sb = Storyboard {
+            id: "sb1".into(),
+            brief: "a 30s ad for a cold-brew can".into(),
+            target_seconds: 30.0,
+            plan_json: r#"{"brief":"x","targetSeconds":30.0,"useCase":"text-to-video","shots":[]}"#
+                .into(),
+            created_at: 42,
+        };
+        s.upsert_storyboard(&sb).unwrap();
+        assert_eq!(s.storyboard("sb1").unwrap().unwrap(), sb);
+
+        // A job tagged to the storyboard round-trips its set membership.
+        let mut j = job("shot-0", JobStatus::Queued);
+        j.storyboard_id = Some("sb1".into());
+        j.shot_index = Some(0);
+        s.upsert(&j).unwrap();
+        let back = s.get("shot-0").unwrap().unwrap();
+        assert_eq!(back.storyboard_id.as_deref(), Some("sb1"));
+        assert_eq!(back.shot_index, Some(0));
+
+        // A standalone job has no set membership.
+        s.upsert(&job("solo", JobStatus::Queued)).unwrap();
+        let solo = s.get("solo").unwrap().unwrap();
+        assert_eq!(solo.storyboard_id, None);
+        assert_eq!(solo.shot_index, None);
+
+        // Write-once: a later upsert must NOT re-tag a shot to a different set.
+        let mut retag = back.clone();
+        retag.storyboard_id = Some("sb-other".into());
+        retag.shot_index = Some(5);
+        retag.status = JobStatus::Completed;
+        s.upsert(&retag).unwrap();
+        let after = s.get("shot-0").unwrap().unwrap();
+        assert_eq!(
+            after.storyboard_id.as_deref(),
+            Some("sb1"),
+            "storyboard_id is write-once"
+        );
+        assert_eq!(after.shot_index, Some(0), "shot_index is write-once");
+        assert_eq!(after.status, JobStatus::Completed, "status still updates");
+    }
+
+    #[test]
+    fn jobs_in_a_storyboard_are_ordered_by_shot_index() {
+        let s = SqliteStore::in_memory().unwrap();
+        s.upsert_storyboard(&Storyboard {
+            id: "set".into(),
+            brief: "b".into(),
+            target_seconds: 24.0,
+            plan_json: "{}".into(),
+            created_at: 1,
+        })
+        .unwrap();
+        // Insert out of order; the query must return shot_index order.
+        for (id, idx) in [("c", 2u32), ("a", 0), ("b", 1)] {
+            let mut j = job(id, JobStatus::Completed);
+            j.storyboard_id = Some("set".into());
+            j.shot_index = Some(idx);
+            s.upsert(&j).unwrap();
+        }
+        // A job in a different set must not appear.
+        let mut other = job("x", JobStatus::Completed);
+        other.storyboard_id = Some("elsewhere".into());
+        other.shot_index = Some(0);
+        s.upsert(&other).unwrap();
+
+        let ids: Vec<_> = s
+            .jobs_in_storyboard("set")
+            .unwrap()
+            .into_iter()
+            .map(|j| j.id)
+            .collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -610,7 +835,10 @@ mod tests {
                  ALTER TABLE job_sets DROP COLUMN stalled; \
                  ALTER TABLE job_sets DROP COLUMN priced_from; \
                  ALTER TABLE job_sets DROP COLUMN priced_at; \
-                 ALTER TABLE job_sets DROP COLUMN actual_source;",
+                 ALTER TABLE job_sets DROP COLUMN actual_source; \
+                 ALTER TABLE job_sets DROP COLUMN storyboard_id; \
+                 ALTER TABLE job_sets DROP COLUMN shot_index; \
+                 DROP TABLE IF EXISTS storyboards;",
             )
             .unwrap();
         }

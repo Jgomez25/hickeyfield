@@ -1531,6 +1531,149 @@ impl Enhancer for HostedEnhancer {
     }
 }
 
+// ---------------------------------------------------------------------------
+// A plain system+user chat seam, reusing the wire plumbing above
+// ---------------------------------------------------------------------------
+
+/// One system+user chat round trip, returning the raw assistant text.
+///
+/// The [`Enhancer`] trait is the wrong shape for anything but a prompt rewrite:
+/// its [`Enhancer::rewrite`] bakes in the [`EnhanceRequest`]→[`user_message`]
+/// framing, a fixed system prompt, the notes-sentinel split and a recompile
+/// step. A structured caller — the storyboard planner in
+/// [`crate::storyboard`] — needs none of that; it needs to send its own system
+/// prompt and its own user message and read the reply back verbatim. This is
+/// that seam, deliberately minimal so any future structured caller can share
+/// the same backend plumbing without growing the rewrite path.
+///
+/// `Send + Sync` for the same reason [`Enhancer`] is: it runs off the UI thread.
+pub trait Chat: Send + Sync {
+    /// Send `system` and `user` as one chat turn and return the reply text, or
+    /// an error a caller can surface. Implementations reuse the existing wire
+    /// functions, so provider error text is passed through unflattened.
+    fn complete(&self, system: &str, user: &str) -> Result<String, JobError>;
+}
+
+/// A concrete backend selection implementing [`Chat`] by reusing the *existing*
+/// wire functions (`ollama_body`/`openai_body`/`anthropic_body` + their text
+/// readers + [`client`]/[`send_json`]). No new HTTP client, no new request
+/// shape: the storyboard planner speaks to a provider through exactly the code
+/// the enhancer already speaks through.
+///
+/// `base_url` is overridable on both variants so a test stub can point either
+/// backend at a local server, mirroring [`LocalEnhancer::with_base_url`] and
+/// [`HostedEnhancer::with_base_url`]. Nothing here stores a system prompt: a
+/// `Chat` is a transport, and the prompt is passed per call.
+pub enum ChatBackend {
+    /// Local Ollama. Free, private, no key.
+    Ollama { model: String, base_url: String },
+    /// The user's own hosted key. `base_url` `None` means the provider's own
+    /// host, so behaviour matches [`HostedEnhancer`] exactly.
+    Hosted {
+        backend: HostedBackend,
+        api_key: String,
+        model: String,
+        base_url: Option<String>,
+    },
+}
+
+impl ChatBackend {
+    /// A local Ollama chat backend pointed at the default daemon.
+    pub fn ollama(model: impl Into<String>) -> Self {
+        ChatBackend::Ollama {
+            model: model.into(),
+            base_url: OLLAMA_URL.to_string(),
+        }
+    }
+
+    /// A hosted chat backend on the user's own key.
+    pub fn hosted(
+        backend: HostedBackend,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        ChatBackend::Hosted {
+            backend,
+            api_key: api_key.into(),
+            model: model.into(),
+            base_url: None,
+        }
+    }
+
+    /// Point this backend at a base URL other than the provider's own host,
+    /// mirroring the enhancers' own overrides. Used by tests.
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        let url = url.into();
+        match &mut self {
+            ChatBackend::Ollama { base_url, .. } => *base_url = url,
+            ChatBackend::Hosted { base_url, .. } => *base_url = Some(url),
+        }
+        self
+    }
+}
+
+/// Map a wire error string into a [`JobError`]. The wire helpers already keep
+/// the provider's own actionable text (`send_json`), so this only has to choose
+/// a kind. Permanent: a bad plan draft is not worth an automatic retry, and the
+/// storyboard planner surfaces the message to the user rather than looping.
+fn chat_err(msg: String) -> JobError {
+    JobError::Permanent(msg)
+}
+
+impl Chat for ChatBackend {
+    fn complete(&self, system: &str, user: &str) -> Result<String, JobError> {
+        match self {
+            ChatBackend::Ollama { model, base_url } => {
+                let c = client(LOCAL_TIMEOUT).map_err(chat_err)?;
+                let v = send_json(
+                    c.post(format!("{base_url}{OLLAMA_CHAT_PATH}"))
+                        .json(&ollama_body(model, system, user)),
+                )
+                .map_err(chat_err)?;
+                check_ollama_read_everything(&v, system.len() + user.len()).map_err(chat_err)?;
+                ollama_text(&v).map_err(chat_err)
+            }
+            ChatBackend::Hosted {
+                backend,
+                api_key,
+                model,
+                base_url,
+            } => {
+                let c = client(HOSTED_TIMEOUT).map_err(chat_err)?;
+                match backend {
+                    HostedBackend::OpenAi => {
+                        let url = match base_url {
+                            Some(b) => format!("{b}{OPENAI_CHAT_PATH}"),
+                            None => OPENAI_CHAT_URL.to_string(),
+                        };
+                        let v = send_json(
+                            c.post(url)
+                                .header("Authorization", format!("Bearer {api_key}"))
+                                .json(&openai_body(model, system, user)),
+                        )
+                        .map_err(chat_err)?;
+                        openai_text(&v).map_err(chat_err)
+                    }
+                    HostedBackend::Anthropic => {
+                        let url = match base_url {
+                            Some(b) => format!("{b}{ANTHROPIC_MESSAGES_PATH}"),
+                            None => ANTHROPIC_MESSAGES_URL.to_string(),
+                        };
+                        let v = send_json(
+                            c.post(url)
+                                .header("x-api-key", api_key)
+                                .header("anthropic-version", ANTHROPIC_VERSION)
+                                .json(&anthropic_body(model, system, user)),
+                        )
+                        .map_err(chat_err)?;
+                        anthropic_text(&v).map_err(chat_err)
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

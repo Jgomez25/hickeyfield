@@ -11,6 +11,7 @@ import {
   formatUsd,
   hasPrice,
   stageCostCaption,
+  totalCostCaption,
   totalSpend,
   UNKNOWN_COST_LABEL,
 } from "../cost";
@@ -226,5 +227,33 @@ describe("stageCostCaption", () => {
     const c = stageCostCaption({ estimatedUsd: null, actualUsd: undefined });
     expect(c.text).toBe("unpriced");
     expect(c.tone).toBe("unpriced");
+  });
+});
+
+describe("totalCostCaption (storyboard total)", () => {
+  const e = (usd: number) => ({ usd, basis: "" });
+
+  it("sums the priced shots", () => {
+    const t = totalCostCaption([e(0.4), e(0.6), e(1.0)]);
+    expect(t.usd).toBeCloseTo(2.0);
+    expect(t.text).toBe("$2.00");
+    expect(t.tone).toBe("normal");
+    expect(t.unpricedCount).toBe(0);
+  });
+
+  it("marks the total when a shot is unpriced, never summing it as $0", () => {
+    const t = totalCostCaption([e(0.4), null, e(0.6)]);
+    expect(t.usd).toBeCloseTo(1.0);
+    expect(t.unpricedCount).toBe(1);
+    expect(t.tone).toBe("unpriced");
+    expect(t.text).toContain("$1.00");
+    expect(t.text).toContain("1 unpriced");
+    expect(t.text).not.toContain("$0.00");
+  });
+
+  it("is 'unpriced' when no shot has a price", () => {
+    const t = totalCostCaption([null, undefined]);
+    expect(t.text).toBe("unpriced");
+    expect(t.tone).toBe("unpriced");
   });
 });

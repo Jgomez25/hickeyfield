@@ -60,6 +60,14 @@ attached one and pressed Generate.
 - **Edit Video** · change something in footage you already have
 - **New Image** · text to image
 
+There is also a **Storyboard** view: from one brief and a target length, the local or
+hosted enhancer drafts a model-aware shot list — per shot a prompt, duration, camera move,
+model and continuity role — which you edit, preview and then generate as one linked set.
+Drafting is free on local Ollama and costs one short completion on a hosted key; no clip is
+generated until the summed total is shown, and a shot with no published price is marked
+rather than counted as free. (Rendering the set into a single stitched film is a later
+step; this view plans and generates the individual shots.)
+
 Everything a request depends on is checked against the provider's own published
 schema before anything is sent: which inputs the endpoint accepts, which values
 it enumerates, and what shape the result will be. A setting the endpoint does

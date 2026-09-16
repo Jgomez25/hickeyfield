@@ -102,6 +102,18 @@ pub struct JobSet {
     /// across the bridge. `default` so pre-v6 rows load as not-stalled.
     #[serde(default)]
     pub stalled: bool,
+    /// The storyboard this job belongs to, when it was generated as one shot of
+    /// a set. `None` for a standalone generation. Write-once: a job's set
+    /// membership is fixed at submit and never re-tagged (absent from the
+    /// upsert's UPDATE set, like `estimated_usd`). `default` so pre-v8 rows load
+    /// as standalone.
+    #[serde(default)]
+    pub storyboard_id: Option<String>,
+    /// This job's position within its storyboard, 0-based. `None` for a
+    /// standalone job. Write-once alongside `storyboard_id`. `default` for
+    /// pre-v8 rows.
+    #[serde(default)]
+    pub shot_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -511,6 +523,8 @@ mod tests {
             media: Vec::new(),
             poll_cycles: 0,
             stalled: false,
+            storyboard_id: None,
+            shot_index: None,
         }
     }
 

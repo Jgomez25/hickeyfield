@@ -584,6 +584,8 @@ mod tests {
             media: vec![],
             poll_cycles: 0,
             stalled: false,
+            storyboard_id: None,
+            shot_index: None,
         };
         assert!(j.fail_reason.is_none(), "an advisory must not fail the job");
         assert!(j.enhance_note.is_none(), "and must not masquerade as one");

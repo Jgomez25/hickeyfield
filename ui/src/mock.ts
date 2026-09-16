@@ -15,6 +15,8 @@ import type {
   Model,
   PresetFamily,
   PromptPreview,
+  StoryboardPlan,
+  StoryboardResult,
   SubmitInput,
 } from "./types";
 import { gradientDataUri } from "./lib/placeholder";
@@ -682,4 +684,61 @@ export function mockCancel(jobSetId: string): void {
   const job = store.find((j) => j.id === jobSetId);
   if (!job) return;
   emit({ ...job, status: "canceled" });
+}
+
+/**
+ * A canned storyboard plan, so the Storyboard view is usable in a plain
+ * browser. Four shots that sum to the target, on a runnable mock video model.
+ */
+export function mockPlanStoryboard(args: {
+  brief: string;
+  targetSeconds: number;
+  useCase: string;
+}): StoryboardPlan {
+  const model =
+    MOCK_MODELS.find((m) => m.modality === "video")?.id ?? "kling_3_0";
+  const target = args.targetSeconds > 0 ? args.targetSeconds : 30;
+  const each = Math.max(2, Math.round(target / 4));
+  const shots = [
+    { title: "Open", camera: "orbit-360", role: "start" as const },
+    { title: "Build", camera: null, role: "middle" as const },
+    { title: "Turn", camera: "crash-dolly", role: "middle" as const },
+    { title: "Close", camera: null, role: "end" as const },
+  ].map((s, i) => ({
+    title: s.title,
+    prompt: `${args.brief} — beat ${i + 1}`,
+    seconds: i === 3 ? target - each * 3 : each,
+    camera: s.camera,
+    modelId: model,
+    role: s.role,
+    continuity: i === 0 ? null : { lastFrameOf: i - 1 },
+    advisories: [],
+  }));
+  return {
+    brief: args.brief,
+    targetSeconds: target,
+    useCase: args.useCase,
+    shots,
+  };
+}
+
+/** Submit each mock shot as a job and report a per-shot outcome. */
+export function mockGenerateStoryboard(input: {
+  brief: string;
+  shots: SubmitInput[];
+}): StoryboardResult {
+  const storyboardId = `sb-mock-${Date.now()}`;
+  const shots = input.shots.map((shot, i) => {
+    try {
+      const jobSetId = mockSubmit(shot);
+      return { shotIndex: i, jobSetId, error: null };
+    } catch (e) {
+      return {
+        shotIndex: i,
+        jobSetId: null,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
+  });
+  return { storyboardId, shots };
 }

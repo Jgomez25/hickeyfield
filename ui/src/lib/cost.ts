@@ -187,6 +187,46 @@ function usable(v: number | null | undefined): number | null {
 }
 
 /**
+ * The summed cost of a storyboard's shots, and how honest that sum is.
+ *
+ * The same refusal the rest of the cost surface makes: a shot whose provider
+ * publishes no price is NOT summed as $0 — it is counted separately and named,
+ * so the total reads "$3.60 + 1 unpriced" rather than a confidently wrong
+ * number. With no priced shot at all the total is "unpriced" (tone amber), never
+ * "$0.00". Built on the same `usable`/`formatUsd` primitives `stageCostCaption`
+ * uses, so a storyboard total cannot disagree with a single job's caption.
+ */
+export function totalCostCaption(
+  estimates: Array<CostEstimate | null | undefined>,
+): {
+  text: string;
+  usd: number;
+  unpricedCount: number;
+  tone: "normal" | "unpriced";
+} {
+  let usd = 0;
+  let unpricedCount = 0;
+  for (const e of estimates) {
+    const v = e ? usable(e.usd) : null;
+    if (v === null) unpricedCount += 1;
+    else usd += v;
+  }
+  const pricedCount = estimates.length - unpricedCount;
+  if (pricedCount === 0) {
+    return { text: "unpriced", usd: 0, unpricedCount, tone: "unpriced" };
+  }
+  const base = formatUsd(usd);
+  const text =
+    unpricedCount > 0 ? `${base} + ${unpricedCount} unpriced` : base;
+  return {
+    text,
+    usd,
+    unpricedCount,
+    tone: unpricedCount > 0 ? "unpriced" : "normal",
+  };
+}
+
+/**
  * The cost line on the Studio stage caption and the Library gallery tile.
  *
  * The estimate and the actual are two different claims, so the caption never
