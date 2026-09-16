@@ -18,6 +18,15 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Every finished job now records what it actually cost, next to what we quoted.** When
+  a generation completes and its file is saved, the app measures the seconds, resolution
+  and image count the provider actually produced and prices that at the same rate as the
+  estimate, so each card shows estimated cost, actual cost, and the difference between
+  them. The session spend meter shows where its prices came from — a live feed with its
+  age, or the bundled snapshot, never implied to be current. A new keyless price audit
+  checks every fal route's built-in price against fal's own published figure and fails
+  the build if a hand-typed number ever drifts from it.
+
 - **fal's newest models are in the picker, and a 30-second clip is now possible.**
   Seedance 2.5 moved from a placeholder to a real, priced model and offers every
   length fal takes, up to a native 30 seconds — the longest single clip the app has
@@ -44,6 +53,13 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as written.
 
 ### Fixed
+
+- **An unknown price no longer reads as $0.00, and the provider-minimum machinery is
+  wired.** Two per-second billing shapes quoted a paid generation as free when the clip
+  length or resolution was not yet known; they now say the price is unavailable, the
+  same honest unknown the rest of the app uses. The 15-second billing floor some
+  providers charge is now applied to any route that declares one (no current route does,
+  so no short clip is over-quoted) rather than being dead code.
 
 - **Four generation paths that could never run are now available, and a whole class
   of silent rejection is gone.** Some providers fix a setting for you — an endpoint

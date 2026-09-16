@@ -96,6 +96,20 @@ export interface CostEstimate {
 }
 
 /**
+ * Where the prices on screen came from, so the spend meter can say how old they
+ * are and whether they are live — never implying the bundled snapshot is
+ * current.
+ */
+export interface PriceStatus {
+  /** How many routes have a price at all. */
+  routes: number;
+  /** Age of the oldest displayed price, or `null` for the bundled snapshot. */
+  ageSeconds: number | null;
+  /** False when the last fetch failed and some prices are the bundle. */
+  live: boolean;
+}
+
+/**
  * The provider status machine, normalized by Rust.
  *
  * Kept open (`string & {}`) because providers keep inventing intermediate

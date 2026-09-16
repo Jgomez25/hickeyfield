@@ -113,10 +113,40 @@ fal's catalogue. Either they route elsewhere or they should be excluded — the 
    unserved, though fal now serves Hailuo 2.3 and Kling v3 turbo under **tier-qualified**
    paths — `fal-ai/minimax/hailuo-2.3/pro/…`, `fal-ai/kling-video/v3/turbo/pro/…` — which are
    different endpoints with a different parameter surface, not the pinned slugs.)*
-3. **Cost accuracy is still unverified.** The run never reached a completed generation, so the
-   estimator has still never been checked against a real charge. That remains open.
+3. **Cost accuracy is still unverified against a live charge.** The run never reached a
+   completed generation, so the estimator has still never been checked against a real
+   invoice. Two things now narrow the gap without spending money:
+   - a **keyless, hermetic price audit** (`cargo run -p hickeyfield-core --example price_check`)
+     compares every fal route's built-in price against fal's own published figure in the
+     vendored index snapshot and fails the build on a mismatch — see "Verifying prices
+     against the live fal API" below for what it can and cannot check;
+   - each completed job now records an **actual cost** measured from the file it produced,
+     shown next to the estimate, so the first real generation will surface any drift on its
+     own card.
+   A live end-to-end charge comparison remains open.
 4. `docs/PARITY.md` §3.3 can drop "no live generation has ever completed" for upload and
    binding, but **not** for the end-to-end path.
+
+## Verifying prices against the live fal API (human-run, spends no money)
+
+The hermetic audit can only compare the handful of fal routes whose price prose reduces to
+a single unconditional rate. The rest are conditional tables (per-resolution, audio-on/off)
+the parser deliberately refuses. To check those, fal exposes a structured price lookup
+(`GET /v1/models/pricing?endpoint_id=…`) that returns `{ unit_price, unit }` per endpoint —
+a lookup, not a generation, so it starts and bills nothing.
+
+An ignored integration test drives it against every fal route and prints a diff table. It
+skips silently when no key is present, so the normal test suite never runs it, and it never
+logs your key:
+
+```sh
+hickeyfield_FAL_KEY=…  cargo test -p hickeyfield-core \
+    --test live_fal_pricing -- --ignored --nocapture
+```
+
+A row flagged `<-- DIFF` means the built-in literal in `registry.rs` disagrees with fal's
+live figure by more than 20%; update the literal (citing fal's number) and re-run the
+hermetic audit. This never runs `first_light` and never submits a job.
 
 ## Still unproven after this run
 

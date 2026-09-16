@@ -42,6 +42,12 @@
   color: var(--warning);
 }
 
+.spend-meter-source {
+  font-family: var(--font-mono);
+  font-size: var(--text-xxs);
+  color: var(--text-tertiary);
+}
+
 .meta-list {
   display: flex;
   flex-direction: column;
@@ -201,6 +207,15 @@
 
 .meta-card-fields dd[data-pending] {
   color: var(--text-tertiary);
+}
+
+/* An overrun reads differently from a saving; a matched estimate stays neutral. */
+.meta-card-delta[data-tone="over"] {
+  color: var(--warning);
+}
+
+.meta-card-delta[data-tone="under"] {
+  color: var(--success, var(--text-secondary));
 }
 
 .meta-card-footer {

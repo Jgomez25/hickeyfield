@@ -988,6 +988,15 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
     )
     .map_err(|e| e.to_string())?;
 
+    // Price once, keeping the provenance, so the meta rail can say whether the
+    // estimate came from the live feed, the bundled snapshot, or a literal.
+    let priced = state
+        .prices
+        .estimate_with_provenance(model, route, &billable);
+    let estimated_usd = priced.as_ref().map(|(e, _)| e.usd);
+    let priced_from = priced.as_ref().map(|(_, p)| *p);
+    let priced_at = priced.as_ref().map(|_| now_secs());
+
     // The id is ours, not the provider's: a submit that fails still leaves a
     // visible row explaining why, rather than vanishing.
     let id = format!("{}-{}", now_secs(), model.id);
@@ -1010,8 +1019,11 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
         created_at: now_secs(),
         updated_at: now_secs(),
         results: vec![],
-        estimated_usd: state.prices.usd(model, route, &billable),
+        estimated_usd,
         actual_usd: None,
+        priced_from,
+        priced_at,
+        actual_source: None,
         fail_reason: None,
         settings: serde_json::to_value(&input.settings).unwrap_or(serde_json::Value::Null),
         // Persisted so Rerun repeats the generation the user actually ran.

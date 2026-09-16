@@ -141,8 +141,12 @@ pub struct Estimate {
 }
 
 impl CostModel {
-    /// Estimate in USD. Returns `None` only for [`CostModel::Unknown`], so the
-    /// caller is forced to handle the unknown case rather than seeing a zero.
+    /// Estimate in USD. Returns `None` for [`CostModel::Unknown`] *and* whenever
+    /// a billable quantity the shape needs is absent — a per-second model with
+    /// no duration, a per-token model with no duration or resolution, a
+    /// per-megapixel model with no size. In every case the caller is forced to
+    /// handle the unknown rather than seeing a zero, which on the Generate
+    /// button would read as "free".
     pub fn estimate(&self, b: &Billable) -> Option<Estimate> {
         let batch = b.batch_factor();
         match self {
@@ -179,7 +183,12 @@ impl CostModel {
             } => {
                 // Providers bill wall-clock *output* seconds: a clip you dislike
                 // still costs its full length. Nothing to do but be honest.
-                let secs = b.seconds.unwrap_or(0.0);
+                //
+                // A missing duration is *unknown*, not zero: `unwrap_or(0.0)`
+                // here quoted a paid per-second model at $0.00 on the Generate
+                // button. Return `None` so the caller renders "unknown", the
+                // same rule `PerSecondTiered` already applies.
+                let secs = b.seconds?;
                 let mult = if b.audio { *audio_multiplier } else { 1.0 };
                 let total = secs * usd * mult * batch;
                 let mut basis = format!("{}s x ${usd:.4}/s", n(secs));
@@ -200,9 +209,14 @@ impl CostModel {
                 usd_per_million,
                 fps,
             } => {
-                let secs = b.seconds.unwrap_or(0.0);
-                let w = b.width.unwrap_or(0) as f64;
-                let h = b.height.unwrap_or(0) as f64;
+                // Tokens are `h * w * fps * seconds`, so all three of duration,
+                // width and height are required — a zero in any of them is a
+                // free-looking quote, not a real one. `fps` alone has a genuine
+                // default (24); the others do not.
+                let (Some(secs), Some(w), Some(h)) = (b.seconds, b.width, b.height) else {
+                    return None;
+                };
+                let (w, h) = (w as f64, h as f64);
                 let f = b.fps.unwrap_or(*fps) as f64;
                 let tokens = (h * w * f * secs) / 1024.0;
                 let total = (tokens / 1_000_000.0) * usd_per_million * batch;
@@ -257,6 +271,32 @@ impl CostModel {
         }
     }
 
+    /// The effective per-second rate for this request, when the shape is billed
+    /// per second — the audio-adjusted rate for [`CostModel::PerSecond`] and the
+    /// height-selected tier for [`CostModel::PerSecondTiered`]. `None` for every
+    /// other shape. Used to floor a short clip at a route's billing minimum
+    /// without re-deriving the rate at the call site.
+    pub fn per_second_rate(&self, b: &Billable) -> Option<f64> {
+        match self {
+            CostModel::PerSecond {
+                usd,
+                audio_multiplier,
+            } => {
+                let mult = if b.audio { *audio_multiplier } else { 1.0 };
+                Some(usd * mult)
+            }
+            CostModel::PerSecondTiered { tiers } => {
+                let height = b.height?;
+                tiers
+                    .iter()
+                    .find(|(max_h, _)| height <= *max_h)
+                    .or_else(|| tiers.last())
+                    .map(|(_, usd)| *usd)
+            }
+            _ => None,
+        }
+    }
+
     /// Apply a provider's billing floor. fal charges a 15-second minimum on
     /// Hummingbird regardless of clip length, which silently triples the cost
     /// of a 5-second test.
@@ -281,6 +321,31 @@ impl CostModel {
             )),
         }
     }
+}
+
+/// Where a job's *estimate* came from, recorded at submit so a surprising
+/// number is traceable to its source without a re-price.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PriceProvenance {
+    /// A hand-transcribed figure in `registry.rs::priced_routes`.
+    Literal,
+    /// A live price feed fetched this session.
+    Feed,
+    /// The bundled `prices-snapshot.json`, i.e. a feed quote read offline.
+    Snapshot,
+}
+
+/// How a job's *actual* cost was measured, recorded when it is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ActualSource {
+    /// Probed from the downloaded file with `ffmpeg -i`.
+    Probe,
+    /// Counted from the number of settled image outputs.
+    OutputCount,
+    /// Reported by the provider on a poll.
+    Provider,
 }
 
 /// Sum a set of estimates, propagating "unknown" rather than dropping it — a
@@ -340,6 +405,51 @@ mod tests {
     fn unknown_price_is_none_never_zero() {
         // A zero here would tell the user a paid generation is free.
         assert!(CostModel::Unknown.estimate(&Billable::image(1)).is_none());
+    }
+
+    #[test]
+    fn unknown_duration_is_none_not_zero_per_second() {
+        // The bug: `seconds.unwrap_or(0.0)` quoted a paid per-second model at
+        // $0.00 when duration was unknown. It must be `None`.
+        let m = CostModel::PerSecond {
+            usd: 0.084,
+            audio_multiplier: 1.0,
+        };
+        let b = Billable {
+            seconds: None,
+            batch: 1,
+            ..Default::default()
+        };
+        assert!(m.estimate(&b).is_none());
+        // A real duration still prices.
+        assert!(m.estimate(&Billable::video(5.0, 1280, 720)).is_some());
+    }
+
+    #[test]
+    fn unknown_duration_is_none_not_zero_per_token() {
+        // PerToken needs duration and both dimensions; any missing one is None.
+        let m = CostModel::PerToken {
+            usd_per_million: 7.0,
+            fps: 24,
+        };
+        let no_secs = Billable {
+            seconds: None,
+            width: Some(1280),
+            height: Some(720),
+            batch: 1,
+            ..Default::default()
+        };
+        assert!(m.estimate(&no_secs).is_none());
+        let no_dims = Billable {
+            seconds: Some(5.0),
+            width: None,
+            height: None,
+            batch: 1,
+            ..Default::default()
+        };
+        assert!(m.estimate(&no_dims).is_none());
+        // Fully specified still prices.
+        assert!(m.estimate(&Billable::video(5.0, 1280, 720)).is_some());
     }
 
     #[test]

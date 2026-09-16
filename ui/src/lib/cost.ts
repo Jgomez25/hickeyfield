@@ -71,6 +71,65 @@ export function formatActual(actualUsd: number | null | undefined): string {
 }
 
 /**
+ * The signed difference between what a job cost and what we quoted, or `null`
+ * when either side is unusable (no delta to show unless both are real numbers).
+ *
+ * `sign` is carried separately so the UI can tone an overrun differently from a
+ * saving without re-deriving it from the (possibly rounded) figure.
+ */
+export function costDelta(
+  estimatedUsd: number | null | undefined,
+  actualUsd: number | null | undefined,
+): { usd: number; sign: "over" | "under" | "same" } | null {
+  const est = usable(estimatedUsd);
+  const act = usable(actualUsd);
+  if (est === null || act === null) return null;
+  const diff = act - est;
+  // Below a hundredth of a cent the two figures are the same claim; do not
+  // typeset float noise as a "+$0.0000" overrun.
+  const sign = Math.abs(diff) < 0.00005 ? "same" : diff > 0 ? "over" : "under";
+  return { usd: diff, sign };
+}
+
+/** A signed USD delta, e.g. `+$0.20`, `−$0.05`, `$0.00`. */
+export function formatDelta(delta: { usd: number; sign: string }): string {
+  if (delta.sign === "same") return "$0.00";
+  const magnitude = formatUsd(Math.abs(delta.usd));
+  return delta.sign === "over" ? `+${magnitude}` : `−${magnitude}`;
+}
+
+/** Whole-unit age, coarsened for a one-line note: "2 days", "3 hours". */
+function humanAge(seconds: number): string {
+  const units: Array<[number, string]> = [
+    [86_400, "day"],
+    [3_600, "hour"],
+    [60, "minute"],
+  ];
+  for (const [size, name] of units) {
+    if (seconds >= size) {
+      const n = Math.floor(seconds / size);
+      return `${n} ${name}${n === 1 ? "" : "s"}`;
+    }
+  }
+  return "under a minute";
+}
+
+/**
+ * How the spend meter should describe where its prices came from — the feed's
+ * age and whether it is live or the bundled snapshot. Never implies "$0.00" or
+ * "current" for the bundled file.
+ */
+export function priceStatusNote(
+  status: { ageSeconds: number | null; live: boolean } | null | undefined,
+): string | null {
+  if (!status) return null;
+  // No age means nothing carries a timestamp — the compiled-in snapshot.
+  if (status.ageSeconds === null) return "prices: bundled";
+  const age = humanAge(status.ageSeconds);
+  return status.live ? `prices ${age} old · live` : `prices ${age} old · snapshot`;
+}
+
+/**
  * What the session has cost, and how much of that is a guess.
  *
  * Providers mostly do not report what they charged — fal's status payload

@@ -117,17 +117,20 @@ impl AppState {
 
         let clients: ClientFactory = Arc::new(client_for);
         let library = Arc::new(Library::new(library_root(app)));
+
+        // Seeded from the compiled-in snapshot so the first paint has numbers,
+        // then refreshed from the live feeds off-thread. Built before the runner
+        // because the runner prices each finished job's settled output with it.
+        let prices = Arc::new(Prices::bundled());
+        prices.start_refresh();
+
         let runner = Runner::new(
             Arc::clone(&store) as Arc<dyn JobStore>,
             clients,
             on_update,
             Arc::clone(&library),
+            Arc::clone(&prices),
         );
-
-        // Seeded from the compiled-in snapshot so the first paint has numbers,
-        // then refreshed from the live feeds off-thread.
-        let prices = Arc::new(Prices::bundled());
-        prices.start_refresh();
 
         Ok(AppState {
             store,
@@ -573,6 +576,9 @@ mod tests {
             results: vec![],
             estimated_usd: None,
             actual_usd: None,
+            priced_from: None,
+            priced_at: None,
+            actual_source: None,
             fail_reason: None,
             settings: serde_json::Value::Null,
             media: vec![],

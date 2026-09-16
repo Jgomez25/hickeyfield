@@ -66,6 +66,9 @@ pub struct Runner {
     /// Caps simultaneous provider polls per provider at the provider's own
     /// in-flight limit, so six queued fal jobs no longer 429 each other.
     limiter: Arc<ConcurrencyLimiter>,
+    /// Prices the settled output at the same rate the estimate used, so each
+    /// finished job records an `actual_usd` measured from what fal produced.
+    prices: Arc<crate::pricing::Prices>,
 }
 
 impl Runner {
@@ -74,6 +77,7 @@ impl Runner {
         clients: ClientFactory,
         on_update: OnUpdate,
         library: Arc<Library>,
+        prices: Arc<crate::pricing::Prices>,
     ) -> Self {
         Runner {
             store,
@@ -83,6 +87,7 @@ impl Runner {
             watching: Arc::new(Mutex::new(HashSet::new())),
             abandoned: Arc::new(Mutex::new(HashSet::new())),
             limiter: Arc::new(ConcurrencyLimiter::new()),
+            prices,
         }
     }
 
@@ -117,6 +122,7 @@ impl Runner {
         let abandoned = Arc::clone(&self.abandoned);
         let library = Arc::clone(&self.library);
         let limiter = Arc::clone(&self.limiter);
+        let prices = Arc::clone(&self.prices);
         // Sized once, off the loop, from the job's own settings (AC1).
         let budget = timeout_budget(&job.route_id, &job.settings);
 
@@ -131,6 +137,7 @@ impl Runner {
                 Arc::clone(&abandoned),
                 library,
                 limiter,
+                prices,
             );
             watching.lock().unwrap().remove(&id);
             abandoned.lock().unwrap().remove(&id);
@@ -178,6 +185,7 @@ fn download_outputs(
     store: Arc<dyn JobStore>,
     on_update: OnUpdate,
     library: Arc<Library>,
+    prices: Arc<crate::pricing::Prices>,
 ) {
     if job.status.phase() != hickeyfield_core::Phase::Completed || job.results.is_empty() {
         return;
@@ -202,10 +210,174 @@ fn download_outputs(
         }
     }
 
+    // Now the bytes are local, measure what fal actually produced and price it.
+    // Only the first time an actual is written — a re-poll of an already-priced
+    // job must not re-probe. The dims come from the sidecar `ffmpeg -i` probe;
+    // if the sidecar is absent (dev without a fetched binary) the dims are all
+    // `None`, which prices to an unknown cost, never to zero.
+    if job.actual_usd.is_none() {
+        let dims = probe_first_local(&job);
+        let (actual_usd, actual_source) = compute_actual(&job, &prices, dims);
+        if actual_usd.is_some() {
+            job.actual_usd = actual_usd;
+            job.actual_source = actual_source;
+            changed = true;
+        }
+        // AC4: an advisory when the settled quantity differs from what was asked.
+        if let Some(adv) = quantity_advisory(&job, dims) {
+            if !job.advisories.contains(&adv) {
+                job.advisories.push(adv);
+                changed = true;
+            }
+        }
+    }
+
     if changed {
         job.updated_at = now_secs();
         let _ = store.upsert(&job);
         on_update(&job);
+    }
+}
+
+/// Probe the first downloaded output with the bundled sidecar.
+///
+/// The sidecar sits next to the running executable (Tauri places `externalBin`
+/// there); in a dev build without a fetched binary, `locate` fails and every
+/// dim is `None` — the honest "we could not measure it" that prices to unknown.
+fn probe_first_local(job: &JobSet) -> hickeyfield_core::ffmpeg::MediaDims {
+    let none = hickeyfield_core::ffmpeg::MediaDims {
+        seconds: None,
+        width: None,
+        height: None,
+    };
+    let Some(path) = job
+        .results
+        .iter()
+        .find_map(|o| o.local_path.as_ref())
+        .map(std::path::PathBuf::from)
+    else {
+        return none;
+    };
+    let dir = match std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        Some(d) => d,
+        None => return none,
+    };
+    match hickeyfield_core::ffmpeg::locate(&dir) {
+        Ok(bin) => hickeyfield_core::ffmpeg::probe_file(&bin, &path).unwrap_or(none),
+        Err(e) => {
+            tracing::warn!("no ffmpeg sidecar to probe actual cost: {e}");
+            none
+        }
+    }
+}
+
+/// Price the settled output at the same route rate the estimate used.
+///
+/// The quantity is the *settled* one — the seconds and resolution fal actually
+/// produced (probed), and the count of image outputs — while the rate modifiers
+/// that are a request choice, not a measurement (audio, batch, fps), come from
+/// the stored settings. An output that cannot be measured yields `None`, never
+/// `0` (`CostModel::estimate` returns `None` for a per-second model with no
+/// duration).
+fn compute_actual(
+    job: &JobSet,
+    prices: &crate::pricing::Prices,
+    dims: hickeyfield_core::ffmpeg::MediaDims,
+) -> (Option<f64>, Option<hickeyfield_core::cost::ActualSource>) {
+    use hickeyfield_core::cost::ActualSource;
+
+    let reg = hickeyfield_core::registry::registry();
+    let Some(model) = reg.get(&job.model_id) else {
+        return (None, None);
+    };
+    let Some(route) = model.route(&job.route_id) else {
+        return (None, None);
+    };
+
+    let settled = settled_billable(job, dims);
+    let Some(est) = prices.estimate(model, route, &settled) else {
+        return (None, None);
+    };
+    // If any dimension was probed off the file, the measurement is a probe;
+    // otherwise the number rests on the settled image count.
+    let source = if dims.seconds.is_some() || dims.width.is_some() {
+        ActualSource::Probe
+    } else {
+        ActualSource::OutputCount
+    };
+    (Some(est.usd), Some(source))
+}
+
+/// Build the billable for the settled output: probed quantity, requested
+/// modifiers.
+fn settled_billable(job: &JobSet, dims: hickeyfield_core::ffmpeg::MediaDims) -> Billable {
+    // Start from the request so audio/batch/fps (choices, not measurements) are
+    // right, then overwrite the *quantity* with what was actually produced.
+    let mut b = serde_json::from_value::<crate::commands::SettingsDto>(job.settings.clone())
+        .ok()
+        .map(|s| Billable::from(&s))
+        .unwrap_or_default();
+    // Settled duration/resolution — `None` when unmeasurable, which is the whole
+    // point: a per-second model with no probed duration prices to unknown.
+    b.seconds = dims.seconds;
+    b.width = dims.width;
+    b.height = dims.height;
+    b.megapixels = match (dims.width, dims.height) {
+        (Some(w), Some(h)) => Some((w as f64 * h as f64) / 1_000_000.0),
+        _ => None,
+    };
+    // The count of image outputs fal actually returned.
+    let images = job
+        .results
+        .iter()
+        .filter(|o| o.kind == hickeyfield_core::engine::OutputKind::Image)
+        .count() as u32;
+    if images > 0 {
+        b.images = Some(images);
+    }
+    b
+}
+
+/// AC4: when the settled duration/resolution differs from the request by more
+/// than a rounding epsilon, one advisory naming both. `None` when they agree
+/// (the common case) or when nothing was measured.
+fn quantity_advisory(job: &JobSet, dims: hickeyfield_core::ffmpeg::MediaDims) -> Option<String> {
+    let requested = serde_json::from_value::<crate::commands::SettingsDto>(job.settings.clone())
+        .ok()
+        .map(|s| Billable::from(&s))?;
+    let mut parts = Vec::new();
+    if let (Some(got), Some(asked)) = (dims.seconds, requested.seconds) {
+        if (got - asked).abs() > 0.5 {
+            parts.push(format!(
+                "{}s (you asked for {}s)",
+                trim_f(got),
+                trim_f(asked)
+            ));
+        }
+    }
+    if let (Some(gh), Some(ah)) = (dims.height, requested.height) {
+        if gh != ah {
+            parts.push(format!("{gh}p (you asked for {ah}p)"));
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "billed for {} — the provider adjusted your request",
+        parts.join(" at ")
+    ))
+}
+
+/// A float without a trailing `.0`, for advisory prose.
+fn trim_f(v: f64) -> String {
+    if v.fract() == 0.0 {
+        format!("{v:.0}")
+    } else {
+        format!("{v}")
     }
 }
 
@@ -395,6 +567,7 @@ fn run_watched(
     abandoned: Arc<Mutex<HashSet<String>>>,
     library: Arc<Library>,
     limiter: Arc<ConcurrencyLimiter>,
+    prices: Arc<crate::pricing::Prices>,
 ) {
     let id = job.id.clone();
     // Checked before acquiring a permit, so a job the user deleted while it was
@@ -428,7 +601,7 @@ fn run_watched(
     // Check once more before writing the outputs: a job deleted during its final
     // poll would otherwise reappear complete.
     if !abandoned.lock().unwrap().contains(&id) {
-        download_outputs(finished, store, on_update, library);
+        download_outputs(finished, store, on_update, library, prices);
     }
 }
 
@@ -620,6 +793,9 @@ mod tests {
             results: vec![],
             estimated_usd: None,
             actual_usd: None,
+            priced_from: None,
+            priced_at: None,
+            actual_source: None,
             fail_reason: None,
             settings: serde_json::json!({}),
             media: Vec::new(),
@@ -635,6 +811,99 @@ mod tests {
             fail_reason: None,
             actual_usd: None,
         })
+    }
+
+    // -- actual cost from the settled output (AC3/AC4) -------------------
+
+    use hickeyfield_core::cost::ActualSource;
+    use hickeyfield_core::ffmpeg::MediaDims;
+    use hickeyfield_core::registry::registry;
+
+    fn priced_video_job() -> JobSet {
+        // A real per-second fal route so `compute_actual` prices it.
+        let mut j = job("a");
+        j.model_id = "gemini_omni".into();
+        j.route_id = "fal:google/gemini-omni-flash".into();
+        j.status = JobStatus::Completed;
+        j.settings = serde_json::json!({"duration": 5.0, "resolution": "720p"});
+        j.results = vec![Output {
+            url: "https://a/x.mp4".into(),
+            kind: OutputKind::Video,
+            local_path: Some("/lib/x.mp4".into()),
+        }];
+        j
+    }
+
+    #[test]
+    fn actual_is_priced_from_the_settled_quantity() {
+        let prices = crate::pricing::Prices::bundled();
+        let j = priced_video_job();
+
+        let dims10 = MediaDims {
+            seconds: Some(10.0),
+            width: Some(1280),
+            height: Some(720),
+        };
+        let (a10, src) = compute_actual(&j, &prices, dims10);
+        assert!(a10.unwrap() > 0.0, "{a10:?}");
+        assert_eq!(src, Some(ActualSource::Probe));
+
+        // Priced from the settled quantity: a 10s clip is exactly twice a 5s one.
+        let dims5 = MediaDims {
+            seconds: Some(5.0),
+            width: Some(1280),
+            height: Some(720),
+        };
+        let (a5, _) = compute_actual(&j, &prices, dims5);
+        assert!((a10.unwrap() - 2.0 * a5.unwrap()).abs() < 1e-9);
+
+        // And it matches what the estimator quotes for that settled billable.
+        let reg = registry();
+        let m = reg.get("gemini_omni").unwrap();
+        let r = m.route("fal:google/gemini-omni-flash").unwrap();
+        let settled = settled_billable(&j, dims10);
+        assert_eq!(a10, Some(prices.estimate(m, r, &settled).unwrap().usd));
+    }
+
+    #[test]
+    fn an_unmeasurable_output_gets_none_not_zero() {
+        let prices = crate::pricing::Prices::bundled();
+        let j = priced_video_job();
+        let none = MediaDims {
+            seconds: None,
+            width: None,
+            height: None,
+        };
+        let (actual, src) = compute_actual(&j, &prices, none);
+        assert_eq!(
+            actual, None,
+            "a per-second job with no probed duration is unknown, not 0"
+        );
+        assert_eq!(src, None);
+    }
+
+    #[test]
+    fn a_settled_quantity_that_differs_carries_an_advisory() {
+        let j = priced_video_job(); // requested 5s @ 720p
+                                    // Provider produced 7s at 1080p.
+        let adjusted = MediaDims {
+            seconds: Some(7.0),
+            width: Some(1920),
+            height: Some(1080),
+        };
+        let adv =
+            quantity_advisory(&j, adjusted).expect("a differing quantity carries an advisory");
+        assert!(adv.contains("7"), "{adv}");
+        assert!(adv.contains("5"), "{adv}");
+        assert!(adv.contains("1080"), "{adv}");
+
+        // Exactly the requested quantity carries none.
+        let same = MediaDims {
+            seconds: Some(5.0),
+            width: Some(1280),
+            height: Some(720),
+        };
+        assert_eq!(quantity_advisory(&j, same), None);
     }
 
     fn run(script: Vec<Result<PollResult, JobError>>) -> (Arc<MemStore>, usize) {
@@ -1293,6 +1562,7 @@ mod tests {
             Arc::new(Mutex::new(HashSet::new())),
             library,
             Arc::new(ConcurrencyLimiter::new()),
+            Arc::new(crate::pricing::Prices::bundled()),
         );
 
         assert_eq!(

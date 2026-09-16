@@ -157,6 +157,23 @@ impl SqliteStore {
             )
             .map_err(map_err)?;
         }
+
+        if version < 7 {
+            // Price provenance. `priced_from`/`priced_at` are write-once (set at
+            // submit beside `estimated_usd`, absent from the upsert's UPDATE
+            // set); `actual_source` updates alongside `actual_usd` when the
+            // downloaded output is measured. All nullable — old rows have no
+            // provenance, which is the honest value, not a guessed one.
+            conn.execute_batch(
+                r#"
+                ALTER TABLE job_sets ADD COLUMN priced_from   TEXT;
+                ALTER TABLE job_sets ADD COLUMN priced_at     INTEGER;
+                ALTER TABLE job_sets ADD COLUMN actual_source TEXT;
+                PRAGMA user_version = 7;
+                "#,
+            )
+            .map_err(map_err)?;
+        }
         Ok(())
     }
 
@@ -207,6 +224,21 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobSet> {
         results: serde_json::from_str(&results).unwrap_or_default(),
         estimated_usd: row.get("estimated_usd")?,
         actual_usd: row.get("actual_usd")?,
+        // Pre-v7 rows have no provenance columns; they load as None, the honest
+        // value. Stored as the serde kebab-case string, parsed back the same
+        // way `status` is (a value we cannot parse degrades to None, not a
+        // dropped row).
+        priced_from: row
+            .get::<_, Option<String>>("priced_from")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&format!("\"{s}\"")).ok()),
+        priced_at: row.get::<_, Option<i64>>("priced_at").unwrap_or(None),
+        actual_source: row
+            .get::<_, Option<String>>("actual_source")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&format!("\"{s}\"")).ok()),
         fail_reason: row.get("fail_reason")?,
         settings: serde_json::from_str(&settings).unwrap_or(serde_json::Value::Null),
         // Pre-v3 rows have '', which the runner reads as "fall back to the
@@ -240,6 +272,18 @@ impl JobStore for SqliteStore {
         let media = serde_json::to_string(&j.media).map_err(map_err)?;
         let endpoint = j.endpoint.clone();
         let advisories = serde_json::to_string(&j.advisories).map_err(map_err)?;
+        // Enum provenance stored as its serde kebab string, quotes trimmed —
+        // the same shape `status` uses. `None` stays SQL NULL.
+        let priced_from = j
+            .priced_from
+            .map(|p| serde_json::to_string(&p).map(|s| s.trim_matches('"').to_string()))
+            .transpose()
+            .map_err(map_err)?;
+        let actual_source = j
+            .actual_source
+            .map(|a| serde_json::to_string(&a).map(|s| s.trim_matches('"').to_string()))
+            .transpose()
+            .map_err(map_err)?;
 
         self.conn
             .lock()
@@ -251,8 +295,8 @@ impl JobStore for SqliteStore {
                     enhanced_prompt, preset_id, created_at, updated_at,
                     results, estimated_usd, actual_usd, fail_reason, settings,
                     media, endpoint, enhancer_version, enhance_note, advisories,
-                    poll_cycles, stalled
-                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
+                    poll_cycles, stalled, priced_from, priced_at, actual_source
+                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
                 ON CONFLICT(id) DO UPDATE SET
                     status          = excluded.status,
                     enhanced_prompt = excluded.enhanced_prompt,
@@ -265,7 +309,11 @@ impl JobStore for SqliteStore {
                     fail_reason     = excluded.fail_reason,
                     endpoint        = excluded.endpoint,
                     poll_cycles     = excluded.poll_cycles,
-                    stalled         = excluded.stalled
+                    stalled         = excluded.stalled,
+                    -- `priced_from`/`priced_at` are write-once: deliberately
+                    -- absent here, mirroring `estimated_usd`. `actual_source`
+                    -- tracks `actual_usd` and so updates with it.
+                    actual_source   = excluded.actual_source
                 "#,
                 params![
                     j.id,
@@ -290,6 +338,9 @@ impl JobStore for SqliteStore {
                     advisories,
                     j.poll_cycles,
                     j.stalled as i64,
+                    priced_from,
+                    j.priced_at,
+                    actual_source,
                 ],
             )
             .map(|_| ())
@@ -344,6 +395,9 @@ mod tests {
             results: vec![],
             estimated_usd: Some(0.67),
             actual_usd: None,
+            priced_from: None,
+            priced_at: None,
+            actual_source: None,
             fail_reason: None,
             settings: serde_json::json!({"duration": 8}),
             media: Vec::new(),
@@ -365,6 +419,50 @@ mod tests {
         j.actual_usd = Some(0.71);
         s.upsert(&j).unwrap();
         assert_eq!(s.get("a").unwrap().unwrap(), j);
+    }
+
+    #[test]
+    fn migration_7_adds_provenance_columns_and_roundtrips() {
+        use hickeyfield_core::cost::{ActualSource, PriceProvenance};
+        let s = SqliteStore::in_memory().unwrap();
+        // in_memory() runs every migration; the schema is at the latest version.
+        let v: i64 = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 7, "in_memory must migrate to the latest schema");
+
+        let mut j = job("p", JobStatus::Completed);
+        j.priced_from = Some(PriceProvenance::Feed);
+        j.priced_at = Some(1234);
+        j.actual_source = None;
+        s.upsert(&j).unwrap();
+        assert_eq!(s.get("p").unwrap().unwrap(), j);
+
+        // Write-once: a later upsert must NOT change priced_from/priced_at, but
+        // must update actual_source alongside actual_usd.
+        let mut update = s.get("p").unwrap().unwrap();
+        update.priced_from = Some(PriceProvenance::Literal);
+        update.priced_at = Some(9999);
+        update.actual_usd = Some(0.5);
+        update.actual_source = Some(ActualSource::Probe);
+        s.upsert(&update).unwrap();
+
+        let got = s.get("p").unwrap().unwrap();
+        assert_eq!(
+            got.priced_from,
+            Some(PriceProvenance::Feed),
+            "priced_from is write-once"
+        );
+        assert_eq!(got.priced_at, Some(1234), "priced_at is write-once");
+        assert_eq!(
+            got.actual_source,
+            Some(ActualSource::Probe),
+            "actual_source updates"
+        );
+        assert_eq!(got.actual_usd, Some(0.5));
     }
 
     #[test]
@@ -509,7 +607,10 @@ mod tests {
                  ALTER TABLE job_sets DROP COLUMN enhance_note; \
                  ALTER TABLE job_sets DROP COLUMN advisories; \
                  ALTER TABLE job_sets DROP COLUMN poll_cycles; \
-                 ALTER TABLE job_sets DROP COLUMN stalled;",
+                 ALTER TABLE job_sets DROP COLUMN stalled; \
+                 ALTER TABLE job_sets DROP COLUMN priced_from; \
+                 ALTER TABLE job_sets DROP COLUMN priced_at; \
+                 ALTER TABLE job_sets DROP COLUMN actual_source;",
             )
             .unwrap();
         }

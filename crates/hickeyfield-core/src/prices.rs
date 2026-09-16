@@ -43,8 +43,20 @@
 //! a route the feeds do not price unambiguously simply has no [`Quote`].
 //! [`PriceFeed::cost_model`] returns `None` in that case. There is no code path
 //! here that can turn "we do not know" into `$0.00`.
+//!
+//! # The hermetic audit
+//!
+//! [`audit`] compares every fal route's hand-transcribed `CostModel` literal
+//! against fal's *own* published rate in the vendored index snapshot, keyless
+//! and offline. Its teeth are limited on purpose: fal writes almost every rate
+//! as a conditional table that [`crate::fal_catalogue::parse_pricing`] refuses,
+//! so those rows are reported as prose for a human and the live seam
+//! (`tests/live_fal_pricing.rs`) rather than machine-compared. The rows fal
+//! states as a single unconditional rate — and the regular audio-off/on and
+//! per-image-base shapes the feed parser can recover — are hard-compared, and a
+//! literal that drifts past [`AUDIT_TOLERANCE`] fails the build.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -1394,6 +1406,248 @@ mod vaig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Hermetic price audit (AC1)
+// ---------------------------------------------------------------------------
+
+/// How far a registry literal may drift from fal's own published rate before it
+/// is a build-failing mismatch, as a ratio `max(fal/lit, lit/fal)`.
+///
+/// 1.2× (20%), not the coarse 10× the snapshot-feed test uses: this audit
+/// compares a hand-typed literal against fal's *own number* for the same
+/// endpoint, so the two should agree to the cent. 20% absorbs fal's rounding
+/// and a genuine minor drift while still catching a transcription slip (a
+/// misplaced decimal is 10×; a fat-fingered `0.084` vs `0.84` is 10×).
+pub const AUDIT_TOLERANCE: f64 = 1.2;
+
+/// The outcome of comparing one fal endpoint's literal `CostModel` against
+/// fal's own published rate for it.
+///
+/// Only [`AuditRow::Mismatch`] fails the build. The others are reported and
+/// counted so "0 mismatches" cannot mean "nothing was checked".
+#[derive(Debug, Clone, PartialEq)]
+pub enum AuditRow {
+    /// fal publishes a single modellable rate and the literal is within tolerance.
+    Ok {
+        endpoint: String,
+        unit: crate::fal_catalogue::PriceUnit,
+        fal_usd: f64,
+        literal_usd: f64,
+    },
+    /// fal publishes a single modellable rate the literal contradicts beyond
+    /// tolerance. The only build-failing variant.
+    Mismatch {
+        endpoint: String,
+        unit: crate::fal_catalogue::PriceUnit,
+        fal_usd: f64,
+        literal_usd: f64,
+        ratio: f64,
+    },
+    /// fal publishes a rate in a unit `CostModel` cannot express (tokens,
+    /// characters, compute-second), or the literal is `Unknown`/tiered and has
+    /// no single scalar to compare. Reported, never failed.
+    UnmodellableUnit {
+        endpoint: String,
+        unit: crate::fal_catalogue::PriceUnit,
+        fal_usd: f64,
+    },
+    /// fal's prose did not reduce to a rate (tiered/conditional/multi-figure).
+    /// The sentence is carried so a human can read it.
+    Prose { endpoint: String, prose: String },
+    /// fal published nothing for this endpoint; the literal has no fal backing.
+    Unpublished { endpoint: String },
+    /// The route resolved to an endpoint the snapshot does not contain.
+    NoSnapshot { endpoint: String },
+}
+
+impl AuditRow {
+    pub fn endpoint(&self) -> &str {
+        match self {
+            AuditRow::Ok { endpoint, .. }
+            | AuditRow::Mismatch { endpoint, .. }
+            | AuditRow::UnmodellableUnit { endpoint, .. }
+            | AuditRow::Prose { endpoint, .. }
+            | AuditRow::Unpublished { endpoint }
+            | AuditRow::NoSnapshot { endpoint } => endpoint,
+        }
+    }
+}
+
+/// Reduce a literal `CostModel` to the single scalar comparable against a fal
+/// rate in `unit`, when the two shapes line up.
+///
+/// `None` means the literal cannot be reduced to one figure in that unit — an
+/// `Unknown` literal, a tiered table against a single-figure fal rate, or a
+/// unit `CostModel` does not model. The caller renders those as
+/// `UnmodellableUnit`, never as a mismatch.
+fn comparable_literal(cost: &CostModel, unit: crate::fal_catalogue::PriceUnit) -> Option<f64> {
+    use crate::fal_catalogue::PriceUnit;
+    match (unit, cost) {
+        (PriceUnit::VideoSecond | PriceUnit::AudioSecond, CostModel::PerSecond { usd, .. }) => {
+            Some(*usd)
+        }
+        (PriceUnit::Image, CostModel::PerImage { usd, .. }) => Some(*usd),
+        // Compare the per-additional-MP rate fal states against our `usd`; the
+        // first-MP figure is a separate rate the audit does not machine-check.
+        (PriceUnit::Megapixel, CostModel::PerMegapixel { usd, .. }) => Some(*usd),
+        (PriceUnit::Generation, CostModel::Flat { usd }) => Some(*usd),
+        _ => None,
+    }
+}
+
+/// Recover fal's base rate from prose the *strict* catalogue parser refused,
+/// using the more lenient feed parser [`fal::parse_prose`].
+///
+/// `fal_catalogue::parse_pricing` reduces a rate only when the prose states
+/// exactly one unconditional figure, which is true for **none** of the ~57
+/// registry fal endpoints (they are audio-off/on pairs, per-image bases with a
+/// 4K multiplier, and resolution tables). The feed parser already models the
+/// regular ones — the audio-off/on template and the `$X per image`/`per second`
+/// base with the illustration trimmed — and it is the number `registry.rs`
+/// transcribed by hand. Reusing it here (rather than loosening the strict
+/// catalogue parser, which governs the whole 1,491-model UI surface and its
+/// `193`-rate contract) lets the audit compare a real fal figure for those
+/// regular shapes without inventing one for the conditional tables it still
+/// refuses. Both numbers are fal's own.
+fn fal_rate_from_prose(prose: &str) -> Option<(f64, crate::fal_catalogue::PriceUnit)> {
+    use crate::fal_catalogue::PriceUnit;
+    match fal::parse_prose(Some(prose))? {
+        // A recovered per-second base — VideoSecond is the modellable-unit key
+        // `comparable_literal` matches (it treats VideoSecond/AudioSecond
+        // identically, reading `PerSecond.usd`).
+        CostModel::PerSecond { usd, .. } => Some((usd, PriceUnit::VideoSecond)),
+        CostModel::PerImage { usd, .. } => Some((usd, PriceUnit::Image)),
+        CostModel::PerMegapixel { usd, .. } => Some((usd, PriceUnit::Megapixel)),
+        CostModel::Flat { usd } => Some((usd, PriceUnit::Generation)),
+        _ => None,
+    }
+}
+
+/// Build an `Ok`/`Mismatch` row from a fal figure and the endpoint's literal,
+/// or `None` when the literal cannot be reduced to a comparable scalar in that
+/// unit (an `Unknown` or tiered literal — reported as prose/unmodellable, not
+/// failed).
+fn compare(
+    endpoint: &str,
+    cost: &CostModel,
+    fal_usd: f64,
+    unit: crate::fal_catalogue::PriceUnit,
+) -> Option<AuditRow> {
+    let literal_usd = comparable_literal(cost, unit)?;
+    if literal_usd <= 0.0 {
+        return None;
+    }
+    let ratio = (fal_usd / literal_usd).max(literal_usd / fal_usd);
+    Some(if ratio > AUDIT_TOLERANCE {
+        AuditRow::Mismatch {
+            endpoint: endpoint.to_string(),
+            unit,
+            fal_usd,
+            literal_usd,
+            ratio,
+        }
+    } else {
+        AuditRow::Ok {
+            endpoint: endpoint.to_string(),
+            unit,
+            fal_usd,
+            literal_usd,
+        }
+    })
+}
+
+/// Compare one endpoint's literal against fal's published rate.
+fn classify_endpoint(
+    endpoint: &str,
+    cost: &CostModel,
+    model: Option<&crate::fal_catalogue::Model>,
+) -> AuditRow {
+    use crate::fal_catalogue::Pricing;
+    let Some(model) = model else {
+        return AuditRow::NoSnapshot {
+            endpoint: endpoint.to_string(),
+        };
+    };
+    match model.pricing() {
+        Pricing::Unpublished => AuditRow::Unpublished {
+            endpoint: endpoint.to_string(),
+        },
+        // The strict parser refused this prose. Try the lenient feed parser for
+        // the regular shapes; keep it as prose if even that will not reduce it.
+        Pricing::Unparsed { prose } => match fal_rate_from_prose(&prose) {
+            Some((fal_usd, unit)) => {
+                compare(endpoint, cost, fal_usd, unit).unwrap_or(AuditRow::Prose {
+                    endpoint: endpoint.to_string(),
+                    prose,
+                })
+            }
+            None => AuditRow::Prose {
+                endpoint: endpoint.to_string(),
+                prose,
+            },
+        },
+        Pricing::Rate { usd, unit, .. } => match comparable_literal(cost, unit) {
+            Some(literal_usd) if literal_usd > 0.0 => {
+                compare(endpoint, cost, usd, unit).expect("literal_usd checked > 0")
+            }
+            _ => AuditRow::UnmodellableUnit {
+                endpoint: endpoint.to_string(),
+                unit,
+                fal_usd: usd,
+            },
+        },
+    }
+}
+
+/// Compare every fal route's literal `CostModel` against the vendored fal index
+/// (`fal_catalogue::Catalogue::bundled`).
+///
+/// Hermetic: reads only the bundled snapshot and the registry — no network, no
+/// key. Each registry fal route's family-root slug is expanded to concrete
+/// endpoint ids exactly as `examples/fal_diff.rs` and `examples/audit_fal.rs`
+/// do, so the three tools cannot disagree about what the registry covers. An
+/// endpoint reached by more than one route/mode is audited once.
+///
+/// # Limitation
+///
+/// fal writes almost every video/image rate as a conditional table
+/// (`$0.12/s 720p or $0.17/s 1080p`), which [`crate::fal_catalogue::parse_pricing`]
+/// deliberately refuses — those become [`AuditRow::Prose`] and are verifiable
+/// only against the live fal pricing API (the AC6 seam), not hermetically. The
+/// audit's teeth are therefore a regression guard on the handful of rows fal
+/// states as a single unconditional rate, plus a coverage report for the rest.
+pub fn audit() -> Vec<AuditRow> {
+    let catalogue = crate::fal_catalogue::Catalogue::bundled();
+    let reg = crate::registry::registry();
+    let mut rows = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+
+    for m in reg.values() {
+        let produces_video = format!("{}", m.modality) == "video";
+        for route in m.routes.iter().filter(|r| r.provider == ProviderId::Fal) {
+            let Some(cost) = m.cost_model(route) else {
+                continue;
+            };
+            for mode in [
+                crate::media::InputMode::Text,
+                crate::media::InputMode::Image,
+                crate::media::InputMode::Video,
+            ] {
+                let Ok(ep) = crate::media::resolve_endpoint(&route.slug, mode, produces_video)
+                else {
+                    continue;
+                };
+                if !seen.insert(ep.clone()) {
+                    continue;
+                }
+                rows.push(classify_endpoint(&ep, cost, catalogue.get(&ep)));
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.endpoint().cmp(b.endpoint()));
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2326,5 +2580,95 @@ mod tests {
             .filter(|r| vaig::parse_pricing(r.pricing.as_ref()).is_some())
             .count();
         assert!(priced > 20, "only {priced} models carried usable pricing");
+    }
+
+    // -- the hermetic price audit (AC1) ---------------------------------
+
+    #[test]
+    fn the_audit_is_hermetic_and_finds_no_literal_beyond_tolerance() {
+        // The AC1 hard-fail surface: no registry fal literal may contradict
+        // fal's own published figure by more than the tolerance. Runs with no
+        // network and no key — `audit()` reads only the bundled snapshot.
+        let rows = audit();
+        let mismatches: Vec<&AuditRow> = rows
+            .iter()
+            .filter(|r| matches!(r, AuditRow::Mismatch { .. }))
+            .collect();
+        assert!(
+            mismatches.is_empty(),
+            "literals contradict fal beyond {AUDIT_TOLERANCE}x: {mismatches:#?}"
+        );
+    }
+
+    #[test]
+    fn the_audit_actually_compares_something() {
+        // Non-vacuity guard (§12 riskiest part): "0 mismatches" must not be
+        // able to mean "0 checked". The audit must resolve real fal endpoints
+        // and reduce a non-trivial number of them to a comparable fal rate.
+        let rows = audit();
+        let compared = rows
+            .iter()
+            .filter(|r| matches!(r, AuditRow::Ok { .. } | AuditRow::Mismatch { .. }))
+            .count();
+        let prose = rows
+            .iter()
+            .filter(|r| matches!(r, AuditRow::Prose { .. }))
+            .count();
+        assert!(rows.len() >= 40, "only {} endpoints resolved", rows.len());
+        assert!(
+            compared >= 5,
+            "the audit reduced only {compared} endpoints to a comparable fal rate"
+        );
+        assert!(prose >= 1, "expected some conditional prose rows");
+    }
+
+    #[test]
+    fn a_wrong_literal_is_caught() {
+        // Mutation guard: a literal contradicting a fal rate by > tolerance is a
+        // Mismatch, and one within tolerance is Ok. Uses `compare` directly with
+        // a synthetic fal figure so it does not depend on the live snapshot.
+        let cost = CostModel::PerSecond {
+            usd: 0.084,
+            audio_multiplier: 1.0,
+        };
+        // fal says $0.084/s, literal says $0.084/s — agree.
+        let ok = compare(
+            "ep",
+            &cost,
+            0.084,
+            crate::fal_catalogue::PriceUnit::VideoSecond,
+        );
+        assert!(matches!(ok, Some(AuditRow::Ok { .. })), "{ok:?}");
+        // fal says $0.84/s (a decimal slip), literal still $0.084 — 10x, caught.
+        let bad = compare(
+            "ep",
+            &cost,
+            0.84,
+            crate::fal_catalogue::PriceUnit::VideoSecond,
+        );
+        assert!(matches!(bad, Some(AuditRow::Mismatch { .. })), "{bad:?}");
+    }
+
+    #[test]
+    fn an_unmodellable_unit_is_reported_not_failed() {
+        // A fal rate in a unit CostModel cannot express (per-1000-characters)
+        // against an `Unknown` literal is UnmodellableUnit, never a Mismatch.
+        let row = classify_endpoint(
+            "ep",
+            &CostModel::Unknown,
+            None, // NoSnapshot path is separate; exercise the unit mapping below
+        );
+        assert!(matches!(row, AuditRow::NoSnapshot { .. }));
+        // comparable_literal refuses a ThousandCharacters unit for any shape.
+        assert_eq!(
+            comparable_literal(
+                &CostModel::PerImage {
+                    usd: 0.01,
+                    usd_per_extra_input: 0.0
+                },
+                crate::fal_catalogue::PriceUnit::ThousandCharacters
+            ),
+            None
+        );
     }
 }

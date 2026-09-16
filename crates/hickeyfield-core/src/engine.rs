@@ -63,6 +63,19 @@ pub struct JobSet {
     pub results: Vec<Output>,
     pub estimated_usd: Option<f64>,
     pub actual_usd: Option<f64>,
+    /// Where `estimated_usd` came from (literal / feed / snapshot). Write-once,
+    /// set at submit beside the estimate. `default` so pre-migration-7 rows
+    /// load with no provenance rather than a guessed one.
+    #[serde(default)]
+    pub priced_from: Option<crate::cost::PriceProvenance>,
+    /// Unix seconds at which the estimate was priced. Write-once, like
+    /// `estimated_usd` itself.
+    #[serde(default)]
+    pub priced_at: Option<i64>,
+    /// How `actual_usd` was measured (probe / output-count / provider).
+    /// Updates alongside `actual_usd`. `default` for pre-migration-7 rows.
+    #[serde(default)]
+    pub actual_source: Option<crate::cost::ActualSource>,
     pub fail_reason: Option<String>,
     /// The generation settings, kept verbatim so Rerun and recipe export can
     /// reconstruct the request exactly.
@@ -421,7 +434,12 @@ impl Default for TimeoutPolicy {
 pub fn apply_poll(job: &mut JobSet, poll: PollResult, now: i64) -> bool {
     let changed = job.status != poll.status
         || job.results != poll.outputs
-        || job.fail_reason != poll.fail_reason;
+        || job.fail_reason != poll.fail_reason
+        // A provider that reports its charge on a poll whose status/outputs
+        // already match would otherwise be dropped here, leaving the
+        // `PollResult.actual_usd` channel a silent trap. (Inert for fal, which
+        // reports no cost — the actual is computed at download instead.)
+        || (poll.actual_usd.is_some() && job.actual_usd != poll.actual_usd);
     if !changed {
         return false;
     }
@@ -485,6 +503,9 @@ mod tests {
             results: vec![],
             estimated_usd: Some(0.67),
             actual_usd: None,
+            priced_from: None,
+            priced_at: None,
+            actual_source: None,
             fail_reason: None,
             settings: serde_json::json!({}),
             media: Vec::new(),
@@ -515,6 +536,36 @@ mod tests {
         fn all(&self) -> Result<Vec<JobSet>, JobError> {
             Ok(self.0.lock().unwrap().values().cloned().collect())
         }
+    }
+
+    #[test]
+    fn apply_poll_persists_a_cost_only_delta() {
+        // A poll whose status and outputs already match, carrying only a new
+        // actual_usd, must not be dropped by the `changed` gate.
+        let mut j = job(JobStatus::Completed);
+        j.actual_usd = None;
+        let poll = PollResult {
+            status: JobStatus::Completed,
+            outputs: j.results.clone(),
+            fail_reason: None,
+            actual_usd: Some(1.40),
+        };
+        assert!(
+            apply_poll(&mut j, poll, 99),
+            "cost-only delta must count as a change"
+        );
+        assert_eq!(j.actual_usd, Some(1.40));
+        assert_eq!(j.updated_at, 99);
+
+        // And a genuinely identical poll (same cost, same everything) is still
+        // a no-op.
+        let same = PollResult {
+            status: JobStatus::Completed,
+            outputs: j.results.clone(),
+            fail_reason: None,
+            actual_usd: Some(1.40),
+        };
+        assert!(!apply_poll(&mut j, same, 100));
     }
 
     #[test]

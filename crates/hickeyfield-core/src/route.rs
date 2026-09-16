@@ -23,6 +23,19 @@ pub struct Route {
     /// see *why* we picked a route, rather than being told to trust us.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// A provider billing floor in output seconds, when the provider's own
+    /// price prose states one ("billed at least Ns", "minimum of N billable
+    /// seconds"). `None` — the case for every current route — means the
+    /// provider bills linearly and a short clip is not floored.
+    ///
+    /// Data-driven on purpose: fal states a floor on **no** registry route
+    /// today (verified against the vendored index snapshot), so inventing a
+    /// 15-second constant would over-quote every short clip on routes fal bills
+    /// linearly. When a route fal floors is added, set this and
+    /// [`crate::registry::Model::estimate`] applies it; until then the
+    /// mechanism is wired but dormant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_billed_seconds: Option<f64>,
 }
 
 impl Route {
@@ -31,6 +44,7 @@ impl Route {
             provider,
             slug: slug.to_string(),
             note: None,
+            min_billed_seconds: None,
         }
     }
 
@@ -39,6 +53,19 @@ impl Route {
             provider,
             slug: slug.to_string(),
             note: Some(note.to_string()),
+            min_billed_seconds: None,
+        }
+    }
+
+    /// A route the provider bills at a minimum of `min_secs` output seconds,
+    /// regardless of a shorter clip. Only for routes whose provider price prose
+    /// states the floor outright — see [`Route::min_billed_seconds`].
+    pub fn floored(provider: ProviderId, slug: &str, note: &str, min_secs: f64) -> Self {
+        Route {
+            provider,
+            slug: slug.to_string(),
+            note: Some(note.to_string()),
+            min_billed_seconds: Some(min_secs),
         }
     }
 

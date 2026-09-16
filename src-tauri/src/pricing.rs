@@ -13,8 +13,8 @@
 //! thread, and answers "what will this cost" from live data where live data
 //! exists.
 
-use hickeyfield_core::cost::{Billable, Estimate};
-use hickeyfield_core::prices::PriceFeed;
+use hickeyfield_core::cost::{Billable, Estimate, PriceProvenance};
+use hickeyfield_core::prices::{Origin, PriceFeed};
 use hickeyfield_core::{Model, Route};
 use serde::Serialize;
 use std::sync::{Arc, RwLock};
@@ -97,6 +97,30 @@ impl Prices {
         feed.cost_model(&route.id(), b)
             .and_then(|m| m.estimate(b))
             .or_else(|| model.estimate(route, b))
+    }
+
+    /// [`Self::estimate`], plus which source the number came from, so submit can
+    /// record it. Same feed-then-literal precedence: a live feed quote is
+    /// [`PriceProvenance::Feed`], a bundled-snapshot quote is
+    /// [`PriceProvenance::Snapshot`], and the registry fallback is
+    /// [`PriceProvenance::Literal`].
+    pub fn estimate_with_provenance(
+        &self,
+        model: &Model,
+        route: &Route,
+        b: &Billable,
+    ) -> Option<(Estimate, PriceProvenance)> {
+        let feed = self.current();
+        if let Some(est) = feed.cost_model(&route.id(), b).and_then(|m| m.estimate(b)) {
+            let provenance = match feed.quote(&route.id()).map(|q| q.origin) {
+                Some(Origin::Live) => PriceProvenance::Feed,
+                _ => PriceProvenance::Snapshot,
+            };
+            return Some((est, provenance));
+        }
+        model
+            .estimate(route, b)
+            .map(|e| (e, PriceProvenance::Literal))
     }
 
     /// Same answer as [`Self::estimate`], shaped for the route resolver's

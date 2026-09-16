@@ -8,6 +8,7 @@
 
 import type {
   CostEstimate,
+  PriceStatus,
   ModelCapabilities,
   GenSettings,
   JobResult,
@@ -517,6 +518,30 @@ export async function estimateCost(args: {
     // that ran and failed must surface, or the Generate button quotes a price
     // no provider agreed to.
     if (!isDesktop()) return mockEstimate(args.modelId, args.settings);
+    throw asError(e);
+  }
+}
+
+/**
+ * Where the displayed prices came from — feed age and whether it is live. Fed
+ * to the spend meter so the bundled snapshot is never shown as "current".
+ * Falls back to a bundled-looking status off the desktop, matching what the
+ * shell returns before its first live fetch.
+ */
+export async function priceStatus(): Promise<PriceStatus> {
+  try {
+    const raw = await invoke<{
+      routes: number;
+      ageSeconds?: number | null;
+      live: boolean;
+    }>("price_status");
+    return {
+      routes: raw.routes,
+      ageSeconds: raw.ageSeconds ?? null,
+      live: raw.live,
+    };
+  } catch (e) {
+    if (!isDesktop()) return { routes: 0, ageSeconds: null, live: false };
     throw asError(e);
   }
 }

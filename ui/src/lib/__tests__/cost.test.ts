@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   costBasisNote,
+  costDelta,
+  formatDelta,
+  priceStatusNote,
   sessionSpend,
   spendQualifier,
   formatActual,
@@ -10,6 +13,58 @@ import {
   totalSpend,
   UNKNOWN_COST_LABEL,
 } from "../cost";
+
+describe("costDelta", () => {
+  it("is an overrun when the actual exceeds the estimate", () => {
+    const d = costDelta(1.4, 1.6);
+    expect(d).not.toBeNull();
+    expect(d!.sign).toBe("over");
+    expect(formatDelta(d!)).toBe("+$0.20");
+  });
+
+  it("is a saving when the actual is under the estimate", () => {
+    const d = costDelta(1.6, 1.4);
+    expect(d!.sign).toBe("under");
+    expect(formatDelta(d!)).toBe("−$0.20");
+  });
+
+  it("is 'same' within float noise", () => {
+    const d = costDelta(1.4, 1.4);
+    expect(d!.sign).toBe("same");
+    expect(formatDelta(d!)).toBe("$0.00");
+  });
+
+  it("is null when either side is unusable", () => {
+    expect(costDelta(null, 1.4)).toBeNull();
+    expect(costDelta(1.4, null)).toBeNull();
+    expect(costDelta(undefined, undefined)).toBeNull();
+    expect(costDelta(-1, 1.4)).toBeNull();
+  });
+});
+
+describe("priceStatusNote", () => {
+  it("says bundled when there is no age", () => {
+    expect(priceStatusNote({ ageSeconds: null, live: false })).toBe(
+      "prices: bundled",
+    );
+  });
+
+  it("labels a live feed with its age", () => {
+    expect(priceStatusNote({ ageSeconds: 2 * 86400, live: true })).toBe(
+      "prices 2 days old · live",
+    );
+  });
+
+  it("labels a stale snapshot rather than implying it is current", () => {
+    expect(priceStatusNote({ ageSeconds: 3 * 3600, live: false })).toBe(
+      "prices 3 hours old · snapshot",
+    );
+  });
+
+  it("is null when there is no status", () => {
+    expect(priceStatusNote(null)).toBeNull();
+  });
+});
 
 describe("formatUsd", () => {
   it("uses two decimals at and above a dime", () => {

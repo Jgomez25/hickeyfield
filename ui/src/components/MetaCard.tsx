@@ -2,7 +2,13 @@ import { useState } from "react";
 import { previewOf, sourceKey } from "../lib/media-input";
 import { revealResult } from "../api";
 import type { JobSet, Model } from "../types";
-import { formatActual, formatUsd, UNKNOWN_COST_LABEL } from "../lib/cost";
+import {
+  costDelta,
+  formatActual,
+  formatDelta,
+  formatUsd,
+  UNKNOWN_COST_LABEL,
+} from "../lib/cost";
 import { canRerun, isRunning, statusLabel, statusTone } from "../lib/status";
 import { formatCreatedAt, formatDuration } from "../lib/media";
 import { routeLabel } from "../lib/variants";
@@ -46,6 +52,9 @@ export function MetaCard({
   const saved = job.results?.find((r) => r.localPath)?.localPath ?? null;
   const settings = job.settings;
   const refs = job.media ?? [];
+  // Only shown when both figures are real: an estimate-only card has no delta
+  // to draw, and inventing one from a missing actual would be a false claim.
+  const delta = costDelta(job.estimatedUsd, job.actualUsd);
 
   const copyPrompt = async () => {
     try {
@@ -152,6 +161,14 @@ export function MetaCard({
             {isRunning(job.status) ? "Pending" : formatActual(job.actualUsd)}
           </dd>
         </div>
+        {delta ? (
+          <div>
+            <dt>Delta</dt>
+            <dd className="meta-card-delta" data-tone={delta.sign}>
+              {formatDelta(delta)}
+            </dd>
+          </div>
+        ) : null}
         <div>
           <dt>Enhancer</dt>
           {/* Three distinct states, and collapsing them would hide the most

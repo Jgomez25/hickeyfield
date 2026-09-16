@@ -1,7 +1,8 @@
-import { forwardRef } from "react";
-import type { JobSet, Model } from "../types";
-import { sessionSpend, spendQualifier } from "../lib/cost";
+import { forwardRef, useEffect, useState } from "react";
+import type { JobSet, Model, PriceStatus } from "../types";
+import { sessionSpend, spendQualifier, priceStatusNote } from "../lib/cost";
 import { formatUsd } from "../lib/cost";
+import { priceStatus } from "../api";
 import { EmptyState } from "./EmptyState";
 import { MetaCard } from "./MetaCard";
 
@@ -30,6 +31,23 @@ export const MetaRail = forwardRef<
   // approximate one must not be typeset identically.
   const approximate = spend.estimatedCount > 0;
 
+  // Where the prices came from — feed age / source. Fetched once on mount; a
+  // failure leaves the note absent rather than asserting a source it cannot
+  // vouch for.
+  const [status, setStatus] = useState<PriceStatus | null>(null);
+  useEffect(() => {
+    let live = true;
+    priceStatus()
+      .then((s) => {
+        if (live) setStatus(s);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  const sourceNote = priceStatusNote(status);
+
   return (
     <aside className="rail rail-meta" aria-label="Generation details" ref={ref}>
       <div className="spend-meter">
@@ -40,6 +58,9 @@ export const MetaRail = forwardRef<
         </span>
         {qualifier ? (
           <span className="spend-meter-note">{qualifier}</span>
+        ) : null}
+        {sourceNote ? (
+          <span className="spend-meter-source">{sourceNote}</span>
         ) : null}
       </div>
 

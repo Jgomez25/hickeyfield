@@ -575,6 +575,107 @@ fn parse_timecode(tc: &str) -> Option<f64> {
     Some(secs)
 }
 
+// ---------------------------------------------------------------------------
+// Probing a settled output (the actual-cost measurement)
+// ---------------------------------------------------------------------------
+
+/// What a downloaded output actually is, measured from the file rather than the
+/// request. The billed quantity is the settled truth: fal renders (and charges)
+/// the seconds and resolution it produced, which the provider may have rounded
+/// or coerced away from what was asked.
+///
+/// Every field is [`Option`] and **never a zero on failure** — an unmeasurable
+/// output yields `None`, which prices to an unknown cost, never to `$0.00`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MediaDims {
+    pub seconds: Option<f64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+/// Parse the stderr of `ffmpeg -i <file>`.
+///
+/// Pure and unit-testable on a captured string. `ffmpeg -i` with no output file
+/// prints the input's `Duration:` and the first `Video:` stream's `WxH`, then
+/// exits non-zero with `At least one output file must be specified` — which is
+/// normal and carries exactly the information we want.
+///
+/// Reads the `Duration: HH:MM:SS.ss` line (skipping FFmpeg's `N/A` placeholder)
+/// and the first `NNNNxNNNN` on the first video stream line. Anything it cannot
+/// read stays `None`.
+pub fn parse_probe(stderr: &str) -> MediaDims {
+    let mut dims = MediaDims {
+        seconds: None,
+        width: None,
+        height: None,
+    };
+    for line in stderr.lines() {
+        let t = line.trim();
+        if dims.seconds.is_none() {
+            if let Some(idx) = t.find("Duration:") {
+                let tc = t[idx + "Duration:".len()..]
+                    .trim_start()
+                    .split(',')
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if !tc.eq_ignore_ascii_case("N/A") {
+                    dims.seconds = parse_timecode(tc);
+                }
+            }
+        }
+        if dims.width.is_none() && t.contains("Video:") {
+            if let Some((w, h)) = parse_dimensions(t) {
+                dims.width = Some(w);
+                dims.height = Some(h);
+            }
+        }
+    }
+    dims
+}
+
+/// The first `NNNNxNNNN` resolution in a video-stream line.
+///
+/// Scans for an `x` flanked by digits on both sides. Rejects `0x31637661` (the
+/// codec tag, whose left digit is a zero) and `SAR 1:1` / `DAR 16:9` (no `x`),
+/// so the `1280x720` frame size is what it returns.
+fn parse_dimensions(line: &str) -> Option<(u32, u32)> {
+    let b = line.as_bytes();
+    for i in 0..b.len() {
+        if b[i] != b'x' {
+            continue;
+        }
+        let mut l = i;
+        while l > 0 && b[l - 1].is_ascii_digit() {
+            l -= 1;
+        }
+        let mut r = i + 1;
+        while r < b.len() && b[r].is_ascii_digit() {
+            r += 1;
+        }
+        if l == i || r == i + 1 {
+            continue;
+        }
+        match (line[l..i].parse::<u32>(), line[i + 1..r].parse::<u32>()) {
+            (Ok(w), Ok(h)) if w > 0 && h > 0 => return Some((w, h)),
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Probe a downloaded file with the sidecar.
+///
+/// `ffmpeg -i` exits non-zero because it is given no output file; [`run`] reads
+/// its combined output regardless, so that exit code is not an error here. A
+/// genuine spawn failure still surfaces as [`FfmpegError::Spawn`]. Fields that
+/// cannot be read come back `None`, never `0`.
+pub fn probe_file(bin: &Path, file: &Path) -> Result<MediaDims, FfmpegError> {
+    let file = file.to_string_lossy();
+    let out = run(bin, &["-hide_banner", "-i", file.as_ref()])?;
+    Ok(parse_probe(&out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,5 +961,82 @@ Encoders:
         let msg = err.to_string();
         assert!(msg.contains("ffmpeg-"), "{msg}");
         assert!(msg.contains("/nonexistent-hickeyfield-dir"), "{msg}");
+    }
+
+    // Captured verbatim from the bundled sidecar
+    // `ffmpeg-aarch64-apple-darwin -hide_banner -i probe.mp4` on a synthesised
+    // 2s 1280x720 clip (`testsrc=duration=2:size=1280x720:rate=10`).
+    const PROBE_STDERR: &str = "\
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/tmp/probe.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.100
+  Duration: 00:00:02.00, start: 0.000000, bitrate: 87 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High 4:4:4 Predictive) (avc1 / 0x31637661), yuv444p(progressive), 1280x720 [SAR 1:1 DAR 16:9], 82 kb/s, 10 fps, 10 tbr, 10240 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      encoder         : Lavc62.28.100 libx264
+At least one output file must be specified
+";
+
+    #[test]
+    fn parse_probe_reads_duration_and_resolution() {
+        let d = parse_probe(PROBE_STDERR);
+        assert_eq!(d.seconds, Some(2.0), "{d:?}");
+        assert_eq!(d.width, Some(1280), "{d:?}");
+        assert_eq!(d.height, Some(720), "{d:?}");
+    }
+
+    #[test]
+    fn parse_probe_returns_none_fields_never_zero_on_junk() {
+        // A truncated / unreadable probe must yield None, not a confident 0.
+        let d = parse_probe("ffmpeg version 7\nsome banner\nno streams here");
+        assert_eq!(d.seconds, None);
+        assert_eq!(d.width, None);
+        assert_eq!(d.height, None);
+        // FFmpeg's pre-first-frame N/A duration is not read as a number.
+        let na = parse_probe("  Duration: N/A, start: 0.0, bitrate: N/A");
+        assert_eq!(na.seconds, None);
+    }
+
+    #[test]
+    fn parse_dimensions_ignores_the_codec_tag_and_sar() {
+        // The codec tag `0x31637661` and `SAR 1:1 DAR 16:9` must not be read as
+        // a resolution; the frame size is.
+        let (w, h) = parse_dimensions(
+            "Video: h264 (avc1 / 0x31637661), yuv444p, 1920x1080 [SAR 1:1 DAR 16:9]",
+        )
+        .unwrap();
+        assert_eq!((w, h), (1920, 1080));
+    }
+
+    #[test]
+    #[ignore = "spawns the bundled sidecar; run with --ignored"]
+    fn probe_file_reads_a_real_sidecar_output() {
+        // Synthesise a clip with the sidecar, then probe it with the same
+        // binary — the end-to-end check that `parse_probe` tolerates the real
+        // output. Locates the sidecar next to the repo, falling back to PATH.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/binaries");
+        let bin = locate(&dir).expect("bundled sidecar; run scripts/fetch-ffmpeg.sh");
+        let tmp = std::env::temp_dir().join("hickeyfield-probe-test.mp4");
+        let status = Command::new(&bin)
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=2:size=1280x720:rate=10",
+            ])
+            .arg(&tmp)
+            .status()
+            .expect("synthesise clip");
+        assert!(status.success());
+        let d = probe_file(&bin, &tmp).unwrap();
+        assert_eq!(d.seconds, Some(2.0), "{d:?}");
+        assert_eq!(d.width, Some(1280), "{d:?}");
+        assert_eq!(d.height, Some(720), "{d:?}");
+        let _ = std::fs::remove_file(&tmp);
     }
 }

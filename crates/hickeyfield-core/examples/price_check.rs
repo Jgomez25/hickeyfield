@@ -1,87 +1,112 @@
-//! What the live price feeds actually price, right now.
+//! The hermetic price audit: every fal route's literal `CostModel` against
+//! fal's own published rate in the vendored index snapshot.
 //!
 //! Run: `cargo run -p hickeyfield-core --example price_check`
 //!
-//! The question this answers is not "does the fetcher compile" but "how many
-//! of the routes a user can pick come back with a real number, and how many
-//! are still being quoted from a literal someone typed". Coverage is the whole
-//! point of wiring the feed in; a fetch that succeeds and prices four routes
-//! would be a fetch that changed nothing.
+//! Keyless and offline — it reads `vendor/fal-catalogue-snapshot.json` and the
+//! registry, never the network. The question it answers is not "does the
+//! fetcher compile" but "is any hand-typed price literal contradicting fal's
+//! own number". A `MISMATCH` is a wrong literal and fails the AC1 unit test;
+//! the `PROSE`/`UNPUBLISHED`/`UNMODELLABLE` sections are the routes fal states
+//! as conditional prose the parser refuses, printed for a human and the live
+//! seam (see `tests/live_fal_pricing.rs`).
 
-use hickeyfield_core::cost::Billable;
-use hickeyfield_core::prices::PriceFeed;
-use hickeyfield_core::registry::registry;
+use hickeyfield_core::prices::{audit, AuditRow, AUDIT_TOLERANCE};
+
+fn section(title: &str, rows: &[String]) {
+    println!("\n=== {title} ({}) ===", rows.len());
+    for r in rows {
+        println!("  {r}");
+    }
+    if rows.is_empty() {
+        println!("  none");
+    }
+}
 
 fn main() {
-    // A *complete* request. A per-second-tiered model cannot be priced without
-    // a resolution — there is no way to know which tier applies — so probing
-    // with a bare duration reports routes as unpriced that are merely
-    // under-specified, which would send you hunting for a bug that is in the
-    // probe.
-    let b = Billable {
-        seconds: Some(4.0),
-        width: Some(1280),
-        height: Some(720),
-        images: Some(1),
-        batch: 1,
-        ..Default::default()
-    };
+    let rows = audit();
 
-    let bundled = PriceFeed::bundled();
-    println!("bundled snapshot: {} routes", bundled.len());
+    let mut mismatch = Vec::new();
+    let mut ok = Vec::new();
+    let mut prose = Vec::new();
+    let mut unpublished = Vec::new();
+    let mut unmodellable = Vec::new();
+    let mut no_snapshot = Vec::new();
 
-    println!("fetching live feeds…");
-    let live = PriceFeed::fetch();
-    println!("live feed:        {} routes", live.len());
-    match live.age() {
-        Some(age) => println!("oldest price:     {}s old", age.as_secs()),
-        None => println!("oldest price:     unknown"),
-    }
-    for p in live.problems() {
-        println!("  ! {p}");
-    }
-
-    let reg = registry();
-    let (mut from_feed, mut from_literal, mut unpriced) = (0, 0, 0);
-    let mut changed: Vec<String> = Vec::new();
-
-    for model in reg.values() {
-        for route in &model.routes {
-            let feed = live
-                .cost_model(&route.id(), &b)
-                .and_then(|m| m.estimate(&b));
-            let literal = model.estimate(route, &b);
-            match (&feed, &literal) {
-                (Some(f), Some(l)) => {
-                    from_feed += 1;
-                    // A disagreement is the interesting case: it is the exact
-                    // amount by which the hardcoded number was wrong.
-                    if (f.usd - l.usd).abs() > 0.0001 {
-                        changed.push(format!(
-                            "  {:<52} literal ${:.4} → live ${:.4}",
-                            route.id(),
-                            l.usd,
-                            f.usd
-                        ));
-                    }
-                }
-                (Some(_), None) => from_feed += 1,
-                (None, Some(_)) => from_literal += 1,
-                (None, None) => unpriced += 1,
+    for row in &rows {
+        match row {
+            AuditRow::Mismatch {
+                endpoint,
+                unit,
+                fal_usd,
+                literal_usd,
+                ratio,
+            } => mismatch.push(format!(
+                "{endpoint:<52} literal ${literal_usd:.4} vs fal ${fal_usd:.4} {} — {ratio:.2}x",
+                unit.label()
+            )),
+            AuditRow::Ok {
+                endpoint,
+                unit,
+                fal_usd,
+                literal_usd,
+            } => ok.push(format!(
+                "{endpoint:<52} literal ${literal_usd:.4} ~ fal ${fal_usd:.4} {}",
+                unit.label()
+            )),
+            AuditRow::Prose { endpoint, prose: p } => {
+                prose.push(format!("{endpoint:<52} {}", p.replace('\n', " ")))
+            }
+            AuditRow::Unpublished { endpoint } => {
+                unpublished.push(format!("{endpoint:<52} (no fal pricingInfoOverride)"))
+            }
+            AuditRow::UnmodellableUnit {
+                endpoint,
+                unit,
+                fal_usd,
+            } => unmodellable.push(format!(
+                "{endpoint:<52} fal ${fal_usd:.4} {} — CostModel cannot express",
+                unit.label()
+            )),
+            AuditRow::NoSnapshot { endpoint } => {
+                no_snapshot.push(format!("{endpoint:<52} (not in snapshot)"))
             }
         }
     }
 
-    println!("\nroutes priced by the live feed: {from_feed}");
-    println!("routes still on a literal:      {from_literal}");
-    println!("routes with no price at all:    {unpriced}");
+    println!("hermetic fal price audit (tolerance {AUDIT_TOLERANCE}x)");
+    println!("endpoints audited: {}", rows.len());
 
-    if changed.is_empty() {
-        println!("\nno price disagreements.");
-    } else {
-        println!("\n{} route(s) where the literal was wrong:", changed.len());
-        for line in &changed {
-            println!("{line}");
-        }
-    }
+    section("MISMATCH (build-failing)", &mismatch);
+    section("OK (literal within tolerance of fal)", &ok);
+    section(
+        "UNMODELLABLE UNIT (fal rate, CostModel cannot express)",
+        &unmodellable,
+    );
+    section(
+        "PROSE (fal conditional/multi-figure — live-seam only)",
+        &prose,
+    );
+    section("UNPUBLISHED (fal states no price)", &unpublished);
+    section(
+        "NO SNAPSHOT (endpoint absent from vendored index)",
+        &no_snapshot,
+    );
+
+    let with_prose = ok.len() + prose.len() + unmodellable.len() + mismatch.len();
+    println!(
+        "\nMISMATCH {} / OK {} / UNMODELLABLE {} / PROSE {} / UNPUBLISHED {} / NO-SNAPSHOT {}",
+        mismatch.len(),
+        ok.len(),
+        unmodellable.len(),
+        prose.len(),
+        unpublished.len(),
+        no_snapshot.len(),
+    );
+    println!(
+        "coverage: {} endpoints checked / {} with fal prose / {} with null prose",
+        rows.len(),
+        with_prose,
+        unpublished.len(),
+    );
 }

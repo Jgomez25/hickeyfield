@@ -70,7 +70,17 @@ impl Model {
     /// offers. Both cases mean "we cannot quote you", which is the only thing
     /// the caller can act on.
     pub fn estimate(&self, route: &Route, b: &Billable) -> Option<Estimate> {
-        self.cost_model(route)?.estimate(b)
+        let cost = self.cost_model(route)?;
+        let est = cost.estimate(b)?;
+        // Apply the provider's billing floor only when the route declares one
+        // (data-driven — no current route does) and the shape is billed per
+        // second. Guessing a floor is the same harm as guessing a price.
+        if let Some(min_secs) = route.min_billed_seconds {
+            if let Some(rate) = cost.per_second_rate(b) {
+                return Some(CostModel::with_minimum_seconds(est, b, min_secs, rate));
+            }
+        }
+        Some(est)
     }
 
     pub fn route(&self, id: &str) -> Option<&Route> {
@@ -2332,6 +2342,52 @@ mod tests {
 
     fn all() -> Vec<ProviderId> {
         ProviderId::ALL.to_vec()
+    }
+
+    #[test]
+    fn a_floored_route_bills_the_minimum() {
+        use crate::cost::{Billable, CostModel};
+
+        // Borrow a real spec so we do not have to hand-build one; only the
+        // routes and costs matter here. One route floored at 15s, one not.
+        let spec = catalog::catalogue().values().next().unwrap().clone();
+        let floored = Route::floored(ProviderId::Fal, "x/floored", "15s minimum", 15.0);
+        let plain = Route::new(ProviderId::Fal, "x/plain");
+        let mut costs = BTreeMap::new();
+        costs.insert(
+            floored.id(),
+            CostModel::PerSecond {
+                usd: 0.035,
+                audio_multiplier: 1.0,
+            },
+        );
+        costs.insert(
+            plain.id(),
+            CostModel::PerSecond {
+                usd: 0.035,
+                audio_multiplier: 1.0,
+            },
+        );
+        let m = Model {
+            id: "t".into(),
+            display_name: "t".into(),
+            modality: Modality::Video,
+            job_type: JobType::Video,
+            spec,
+            routes: vec![floored.clone(), plain.clone()],
+            costs,
+            launch: false,
+        };
+        let b = Billable::video(5.0, 1280, 720);
+
+        // 15s minimum × $0.035 = $0.525, not the linear 5 × $0.035 = $0.175.
+        let f = m.estimate(&floored, &b).unwrap();
+        assert!((f.usd - 0.525).abs() < 1e-9, "floored was {}", f.usd);
+        assert!(f.minimum_applied.is_some());
+
+        let p = m.estimate(&plain, &b).unwrap();
+        assert!((p.usd - 0.175).abs() < 1e-9, "plain was {}", p.usd);
+        assert!(p.minimum_applied.is_none());
     }
 
     #[test]
