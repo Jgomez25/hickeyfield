@@ -21,6 +21,10 @@ import {
   planStoryboard,
   generateStoryboard,
   listStoryboards,
+  listStoryboardRenders,
+  renderStoryboard,
+  subscribeRenderProgress,
+  openResult,
   type KeyState,
 } from "./api";
 import type {
@@ -35,8 +39,10 @@ import type {
   PresetFamily,
   PromptPreview,
   RewriterChoice,
+  RenderProgress,
   Shot,
   Storyboard as StoryboardRow,
+  StoryboardRender,
   StoryboardResult,
   UseCase,
   WorkspaceTab,
@@ -146,6 +152,11 @@ export default function App() {
   // Stored storyboards, for the Library group headers. Refreshed after a
   // generate-all so the new set has its brief to head the group with.
   const [storyboards, setStoryboards] = useState<StoryboardRow[]>([]);
+  // S15: finished storyboard renders, and live render progress by set id.
+  const [renders, setRenders] = useState<StoryboardRender[]>([]);
+  const [renderProgress, setRenderProgress] = useState<
+    Record<string, RenderProgress>
+  >({});
   // The Library lightbox: the job whose result is shown large, or null.
   const [lightboxId, setLightboxId] = useState<string | null>(null);
 
@@ -565,8 +576,51 @@ export default function App() {
 
   // Load the storyboard group headers once, and whenever we land on Library.
   useEffect(() => {
-    if (view === "library") void listStoryboards().then(setStoryboards);
+    if (view === "library") {
+      void listStoryboards().then(setStoryboards);
+      void listStoryboardRenders().then(setRenders);
+    }
   }, [view]);
+
+  // S15: stream render progress; on `done`, refresh the renders so the set item
+  // shows the finished ad and its Σ actual cost.
+  useEffect(
+    () =>
+      subscribeRenderProgress((p) => {
+        setRenderProgress((prev) => ({ ...prev, [p.storyboardId]: p }));
+        if (p.done) void listStoryboardRenders().then(setRenders);
+      }),
+    [],
+  );
+
+  // S15: start a render. Rendering spends nothing — it runs the bundled ffmpeg
+  // on the already-downloaded clips locally.
+  const onRenderStoryboard = useCallback((storyboardId: string) => {
+    setRenderProgress((prev) => ({
+      ...prev,
+      [storyboardId]: { storyboardId, percent: 0, done: false },
+    }));
+    void renderStoryboard({ storyboardId })
+      .then((r) => {
+        setRenders((prev) => [
+          r,
+          ...prev.filter((x) => x.storyboardId !== storyboardId),
+        ]);
+        setRenderProgress((prev) => ({
+          ...prev,
+          [storyboardId]: { storyboardId, percent: 1, done: true },
+        }));
+      })
+      .catch(() => {
+        // Clear the progress so the Render button returns; the error surfaces
+        // via the standard toast path the invoke throws through.
+        setRenderProgress((prev) => {
+          const next = { ...prev };
+          delete next[storyboardId];
+          return next;
+        });
+      });
+  }, []);
 
   const onRerun = useCallback(
     (job: JobSet) => {
@@ -833,6 +887,10 @@ export default function App() {
               onSelect={setSelectedId}
               onOpenLightbox={setLightboxId}
               storyboards={storyboards}
+              renders={renders}
+              renderProgress={renderProgress}
+              onRender={onRenderStoryboard}
+              onOpenResult={(path) => void openResult(path)}
             />
 
             <MetaRail

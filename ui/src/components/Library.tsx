@@ -1,10 +1,24 @@
 import { useMemo, useState } from "react";
-import type { JobSet, Storyboard } from "../types";
+import type {
+  JobSet,
+  RenderProgress,
+  Storyboard,
+  StoryboardRender,
+} from "../types";
 import { gradientDataUri } from "../lib/placeholder";
 import { posterFor } from "../lib/media";
 import { isFailure } from "../lib/status";
-import { stageCostCaption } from "../lib/cost";
+import { formatUsd, stageCostCaption } from "../lib/cost";
 import { EmptyState } from "./EmptyState";
+
+/** A shot is "done" when it completed and its clip is downloaded locally — the
+ * gate for rendering, since the stitch reads the local files. */
+function isDone(job: JobSet): boolean {
+  return (
+    job.status === "completed" &&
+    (job.results ?? []).some((r) => r.localPath)
+  );
+}
 
 type Filter = "all" | "video" | "image" | "failed";
 
@@ -56,6 +70,10 @@ export function Library({
   onSelect,
   onOpenLightbox,
   storyboards = [],
+  renders = [],
+  renderProgress = {},
+  onRender,
+  onOpenResult,
 }: {
   jobs: JobSet[];
   selectedId: string | null;
@@ -68,6 +86,16 @@ export function Library({
    * that omits it is unchanged.
    */
   storyboards?: Storyboard[];
+  /** S15: finished renders, keyed by storyboard. A set with a render shows its
+   * finished ad tile + Σ actual + Open result; one without shows a Render
+   * button (enabled once every shot is Done). */
+  renders?: StoryboardRender[];
+  /** S15: live render progress, by storyboard id. */
+  renderProgress?: Record<string, RenderProgress>;
+  /** S15: start a render for a set. Absent → the render controls are hidden. */
+  onRender?: (storyboardId: string) => void;
+  /** S15: open a finished render in the OS. */
+  onOpenResult?: (path: string) => void;
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const shown = useMemo(
@@ -163,6 +191,16 @@ export function Library({
                   tile(job, selectedId, onSelect, onOpenLightbox),
                 )}
               </div>
+              {onRender
+                ? renderControls(
+                    g.storyboard.id,
+                    g.jobs,
+                    renders.find((r) => r.storyboardId === g.storyboard.id),
+                    renderProgress[g.storyboard.id],
+                    onRender,
+                    onOpenResult,
+                  )
+                : null}
             </section>
           ))}
           {standalone.length > 0 ? (
@@ -175,6 +213,84 @@ export function Library({
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * S15: the render controls for one storyboard set.
+ *
+ * - A finished render → its ad line with Σ actual cost (never $0 when a member
+ *   is unpriced), its duration, and **Open result**.
+ * - No render yet → a **Render** button, enabled only when every shot is Done
+ *   (completed + downloaded), so a half-finished set cannot be stitched.
+ * - While rendering → a real progress bar (the one honest percentage: the
+ *   duration is known).
+ */
+function renderControls(
+  storyboardId: string,
+  jobs: JobSet[],
+  render: StoryboardRender | undefined,
+  progress: RenderProgress | undefined,
+  onRender: (id: string) => void,
+  onOpenResult?: (path: string) => void,
+) {
+  const allDone = jobs.length > 0 && jobs.every(isDone);
+  const rendering = progress !== undefined && !progress.done;
+  const cost =
+    render == null
+      ? null
+      : render.actualUsd == null
+        ? "unpriced"
+        : formatUsd(render.actualUsd);
+
+  return (
+    <div className="storyboard-render-controls" data-storyboard-render={storyboardId}>
+      {render ? (
+        <div className="storyboard-result">
+          <span className="storyboard-result-cost" data-unpriced={cost === "unpriced" || undefined}>
+            Total actual {cost}
+          </span>
+          {render.seconds != null ? (
+            <span className="storyboard-result-dur">{render.seconds.toFixed(1)}s</span>
+          ) : null}
+          <button
+            type="button"
+            className="storyboard-open-result"
+            onClick={() => onOpenResult?.(render.outputPath)}
+          >
+            Open result
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="storyboard-render"
+          disabled={!allDone || rendering}
+          onClick={() => onRender(storyboardId)}
+        >
+          {rendering
+            ? "Rendering…"
+            : allDone
+              ? "Render the ad"
+              : "Render (all shots must finish)"}
+        </button>
+      )}
+      {rendering ? (
+        <div
+          className="storyboard-render-progress"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round((progress?.percent ?? 0) * 100)}
+        >
+          <span
+            className="storyboard-render-progress-fill"
+            style={{ width: `${Math.round((progress?.percent ?? 0) * 100)}%` }}
+          />
+        </div>
+      ) : null}
+      <span className="storyboard-render-free">Rendering is free — it runs on your machine.</span>
+    </div>
   );
 }
 

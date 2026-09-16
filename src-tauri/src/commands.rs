@@ -13,6 +13,7 @@ use hickeyfield_core::engine::{JobSet, JobStore};
 use hickeyfield_core::{registry, Billable, Estimate, ProviderId, RoutePolicy};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tauri::State;
 
 /// A process-wide monotonic counter, minted once per id.
@@ -583,7 +584,7 @@ pub fn model_capabilities(
 // Serialize is derived rather than hand-written: the previous manual impl
 // listed the field names a second time, which is precisely how it kept
 // serialising `seconds`/`width`/`height` after the struct had moved on.
-#[derive(Deserialize, Serialize, Default)]
+#[derive(Deserialize, Serialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsDto {
     /// Seconds. Absent on models with no duration axis.
@@ -713,7 +714,7 @@ pub fn price_status(state: State<'_, AppState>) -> crate::pricing::PriceStatus {
 
 // ── Jobs ───────────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitInput {
     pub model_id: String,
@@ -740,12 +741,20 @@ pub struct SubmitInput {
     /// whitespace-only falls through to the normal enhance+compile path.
     #[serde(default)]
     pub final_prompt: Option<String>,
+    /// S15 D-C: request-body values the chain scheduler writes for keys the
+    /// endpoint declares but the app has no user control for — e.g.
+    /// `prompt_expansion_mode: "disabled"` and a fixed `seed` on a chained
+    /// shot. Applied before the S14 constant pass (so it can turn "balanced"
+    /// into "disabled") and schema-gated (so it can never inject an arbitrary
+    /// field). `None`/empty for a standalone submit, which keeps S14's default.
+    #[serde(default)]
+    pub constant_overrides: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// The UI's explicit enhancer choice. Structured rather than a bare tag so a
 /// hosted backend (which has no Ollama-style tag) can be named without
 /// overloading one string field.
-#[derive(Deserialize, Default, Debug, Clone)]
+#[derive(Deserialize, Serialize, Default, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RewriterChoice {
     /// `"ollama"` or `"openai"`. An unrecognised value falls back to auto.
@@ -1006,7 +1015,15 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
         .ok_or_else(|| format!("unknown model: {}", input.model_id))?;
     // A standalone generation: `submit_one(.., None, None)` is byte-for-byte the
     // old `submit_job` body, so single-job behaviour is unchanged.
-    submit_one(&state, model, &input, None, None)
+    submit_one(
+        &state.store,
+        &state.prices,
+        &state.runner,
+        model,
+        &input,
+        None,
+        None,
+    )
 }
 
 /// Submit one generation. The whole of the former `submit_job` body, lifted so a
@@ -1015,8 +1032,10 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
 /// membership. `storyboard_id`/`shot_index` are `None` for a standalone job,
 /// which is exactly the standalone case, so nothing about single-job submit
 /// changes.
-fn submit_one(
-    state: &AppState,
+pub(crate) fn submit_one(
+    store: &Arc<crate::store::SqliteStore>,
+    prices: &Arc<crate::pricing::Prices>,
+    runner: &crate::runner::Runner,
     model: &hickeyfield_core::Model,
     input: &SubmitInput,
     storyboard_id: Option<&str>,
@@ -1037,15 +1056,13 @@ fn submit_one(
         &available,
         RoutePolicy::Cheapest,
         input.route_id.as_deref(),
-        |r| state.prices.usd(model, r, &billable),
+        |r| prices.usd(model, r, &billable),
     )
     .map_err(|e| e.to_string())?;
 
     // Price once, keeping the provenance, so the meta rail can say whether the
     // estimate came from the live feed, the bundled snapshot, or a literal.
-    let priced = state
-        .prices
-        .estimate_with_provenance(model, route, &billable);
+    let priced = prices.estimate_with_provenance(model, route, &billable);
     let estimated_usd = priced.as_ref().map(|(e, _)| e.usd);
     let priced_from = priced.as_ref().map(|(_, p)| *p);
     let priced_at = priced.as_ref().map(|_| now_secs());
@@ -1090,21 +1107,33 @@ fn submit_one(
         storyboard_id: storyboard_id.map(str::to_string),
         shot_index,
     };
-    state.store.upsert(&job).map_err(|e| e.to_string())?;
+    store.upsert(&job).map_err(|e| e.to_string())?;
 
-    match crate::app::submit_to_provider(&mut job, model, route, &input.media, &compiled.prompt) {
+    let empty_overrides = serde_json::Map::new();
+    let overrides = input
+        .constant_overrides
+        .as_ref()
+        .unwrap_or(&empty_overrides);
+    match crate::app::submit_to_provider(
+        &mut job,
+        model,
+        route,
+        &input.media,
+        &compiled.prompt,
+        overrides,
+    ) {
         Ok(request_id) => {
             job.request_id = request_id;
             job.updated_at = now_secs();
-            state.store.upsert(&job).map_err(|e| e.to_string())?;
-            state.runner.watch(job);
+            store.upsert(&job).map_err(|e| e.to_string())?;
+            runner.watch(job);
             Ok(id)
         }
         Err(e) => {
             job.status = hickeyfield_core::JobStatus::Failed;
             job.fail_reason = Some(e.to_string());
             job.updated_at = now_secs();
-            let _ = state.store.upsert(&job);
+            let _ = store.upsert(&job);
             Err(e.to_string())
         }
     }
@@ -1231,17 +1260,30 @@ pub struct StoryboardGenerateInput {
     /// separate group.
     #[serde(default)]
     pub storyboard_id: Option<String>,
+    /// S15: submit the shots as a chain (each continues from the previous
+    /// shot's last frame) rather than all at once. Only shot 0 is submitted
+    /// now; the runner's settled hook drives the rest. Default off (S13).
+    #[serde(default)]
+    pub chained: bool,
+    /// S15: the crossfade overlap the plan was reconciled to, stored so the
+    /// render uses the same value the plan was validated against. `None`
+    /// defaults to `DEFAULT_CROSSFADE_SECONDS`.
+    #[serde(default)]
+    pub overlap_seconds: Option<f64>,
 }
 
 /// One shot's fate in a generate-all batch. A shot that failed (a refusal, a
 /// missing key, a submit error) carries `error`; a shot that started carries the
-/// `job_set_id` the Library watches.
+/// `job_set_id` the Library watches; a chained shot not yet submitted is
+/// `pending` (the settled hook will submit it when its predecessor completes).
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ShotOutcome {
     pub shot_index: u32,
     pub job_set_id: Option<String>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub pending: bool,
 }
 
 /// The result of a generate-all: the minted storyboard id and a per-shot outcome.
@@ -1344,8 +1386,13 @@ fn generate_storyboard_inner(
             .map_err(|e| format!("plan is not a valid storyboard: {e}"))?;
         let uc = hickeyfield_core::UseCase::from_slug(&plan.use_case)
             .ok_or_else(|| format!("plan names an unknown use case: {}", plan.use_case))?;
-        hickeyfield_core::storyboard::validate(&plan.shots, plan.target_seconds, uc)
-            .map_err(|e| e.to_string())?;
+        hickeyfield_core::storyboard::validate(
+            &plan.shots,
+            plan.target_seconds,
+            uc,
+            hickeyfield_core::storyboard::DEFAULT_CROSSFADE_SECONDS,
+        )
+        .map_err(|e| e.to_string())?;
         // On the first generate-all (no explicit indices) the submitted list is
         // the whole plan: it must match one-for-one, so no shot is injected
         // beyond the plan the user saw and priced.
@@ -1436,6 +1483,17 @@ fn generate_storyboard_inner(
         }
         None => {
             let sid = mint_storyboard_id();
+            // S15: a chained set stores the full ordered shot payloads so it can
+            // advance itself after a relaunch, and the crossfade it was
+            // reconciled to. On a first generate-all the submitted shots ARE the
+            // whole plan in order, so `input.shots` is the faithful record. A
+            // chain is meaningless without at least two shots.
+            let chained = input.chained && input.shots.len() > 1;
+            let shots_json = if chained {
+                Some(serde_json::to_string(&input.shots).map_err(|e| e.to_string())?)
+            } else {
+                None
+            };
             let storyboard = crate::store::Storyboard {
                 id: sid.clone(),
                 brief: input.brief.clone(),
@@ -1444,6 +1502,22 @@ fn generate_storyboard_inner(
                 // the UI normally sends the full edited plan (roles + continuity).
                 plan_json: input.plan_json.clone().unwrap_or_else(|| "{}".to_string()),
                 created_at: now_secs(),
+                chained,
+                shots_json,
+                // S15 D-B: a chained set's continuity joins are hard cuts
+                // (overlap 0), so the stitched length is the raw sum. A
+                // non-chained set crossfades at the reconciled overlap. The
+                // render decides per-join (from each shot's Start media); this
+                // stored value is the crossfade used for any non-continuity join
+                // and the number `generate`'s re-validate reconciles against.
+                overlap_seconds: Some(if chained {
+                    0.0
+                } else {
+                    input
+                        .overlap_seconds
+                        .unwrap_or(hickeyfield_core::storyboard::DEFAULT_CROSSFADE_SECONDS)
+                }),
+                joins_json: None,
             };
             state
                 .store
@@ -1453,24 +1527,54 @@ fn generate_storyboard_inner(
         }
     };
 
+    // S15: in chained mode only shot 0 is submitted now; the runner's settled
+    // hook (`chain::advance`) extracts its last frame and submits shot 1, and so
+    // on. The later shots are returned as `pending` so the UI can render the
+    // chain state. A retry (an existing set) never re-enters chained mode here —
+    // the hook resumes the chain from the retried shot (§D2.8).
+    let chained_first_generate =
+        input.chained && input.storyboard_id.is_none() && !is_retry_subset && input.shots.len() > 1;
+
     let mut outcomes = Vec::with_capacity(input.shots.len());
-    for (shot, &idx) in input.shots.iter().zip(indices.iter()) {
+    for (pos, (shot, &idx)) in input.shots.iter().zip(indices.iter()).enumerate() {
+        // Chained: submit only the first shot; the rest are pending, driven by
+        // the settled hook as each predecessor completes and downloads.
+        if chained_first_generate && pos > 0 {
+            outcomes.push(ShotOutcome {
+                shot_index: idx,
+                job_set_id: None,
+                error: None,
+                pending: true,
+            });
+            continue;
+        }
         let outcome = match reg.get(&shot.model_id) {
             None => ShotOutcome {
                 shot_index: idx,
                 job_set_id: None,
                 error: Some(format!("unknown model: {}", shot.model_id)),
+                pending: false,
             },
-            Some(model) => match submit_one(state, model, shot, Some(&sid), Some(idx)) {
+            Some(model) => match submit_one(
+                &state.store,
+                &state.prices,
+                &state.runner,
+                model,
+                shot,
+                Some(&sid),
+                Some(idx),
+            ) {
                 Ok(job_set_id) => ShotOutcome {
                     shot_index: idx,
                     job_set_id: Some(job_set_id),
                     error: None,
+                    pending: false,
                 },
                 Err(e) => ShotOutcome {
                     shot_index: idx,
                     job_set_id: None,
                     error: Some(e),
+                    pending: false,
                 },
             },
         };
@@ -2130,6 +2234,7 @@ mod tests {
             media: Vec::new(),
             rewriter: None,
             final_prompt: None,
+            constant_overrides: None,
         }
     }
 
@@ -2320,18 +2425,20 @@ mod tests {
             std::env::temp_dir().join(format!("hickeyfield-sb-test-{}", std::process::id())),
         ));
         let prices = Arc::new(Prices::bundled());
-        let runner = Runner::new(
+        let runner = Arc::new(Runner::new(
             Arc::clone(&store) as Arc<dyn JobStore>,
             Arc::new(|_| None),
             Arc::new(|_| {}),
             Arc::clone(&library),
             Arc::clone(&prices),
-        );
+        ));
         AppState {
             store,
             runner,
             library,
             prices,
+            ffmpeg_dir: std::env::temp_dir().join("hickeyfield-test-nobin"),
+            renders_root: std::env::temp_dir().join("hickeyfield-test-renders"),
         }
     }
 
@@ -2348,6 +2455,7 @@ mod tests {
             media: Vec::new(),
             rewriter: None,
             final_prompt: Some("a shot, wide.".into()),
+            constant_overrides: None,
         }
     }
 
@@ -2376,6 +2484,8 @@ mod tests {
             plan_json: None,
             shot_indices: None,
             storyboard_id: None,
+            chained: false,
+            overlap_seconds: None,
             shots: vec![shot_input("no-such-model-a"), shot_input("no-such-model-b")],
         };
         // Call the inner logic directly with a plain &AppState (the #[command]
@@ -2409,6 +2519,8 @@ mod tests {
             plan_json: None,
             shot_indices: None,
             storyboard_id: None,
+            chained: false,
+            overlap_seconds: None,
             shots: vec![
                 shot_input("nope-a"),
                 shot_input("nope-b"),
@@ -2492,6 +2604,10 @@ mod tests {
                 target_seconds: 24.0,
                 plan_json: "{}".into(),
                 created_at: now_secs(),
+                chained: false,
+                shots_json: None,
+                overlap_seconds: None,
+                joins_json: None,
             })
             .unwrap();
 
@@ -2524,6 +2640,8 @@ mod tests {
             plan_json: None,
             shot_indices: None,
             storyboard_id: None,
+            chained: false,
+            overlap_seconds: None,
             shots: vec![shot_input("nope")],
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
@@ -2540,6 +2658,8 @@ mod tests {
             plan_json: Some("x".repeat(MAX_PLAN_JSON_BYTES + 1)),
             shot_indices: None,
             storyboard_id: None,
+            chained: false,
+            overlap_seconds: None,
             shots: vec![shot_input("nope")],
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
@@ -2557,6 +2677,8 @@ mod tests {
             plan_json: None,
             shot_indices: None,
             storyboard_id: None,
+            chained: false,
+            overlap_seconds: None,
             shots: (0..9).map(|_| shot_input("nope")).collect(),
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
@@ -2580,6 +2702,8 @@ mod tests {
             plan_json: Some(bad_plan.into()),
             shot_indices: None,
             storyboard_id: None,
+            chained: false,
+            overlap_seconds: None,
             shots: vec![
                 shot_input("no-such-model"),
                 shot_input("no-such-model"),
@@ -2627,6 +2751,8 @@ mod tests {
             plan_json: Some(plan),
             shot_indices: None,
             storyboard_id: None,
+            chained: false,
+            overlap_seconds: None,
             shots: (0..4).map(|_| shot_input(&model)).collect(),
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
@@ -2668,19 +2794,20 @@ mod tests {
             media: Vec::new(),
             rewriter: None,
             final_prompt: Some("a shot, wide.".into()),
+            constant_overrides: None,
         }
     }
 
     #[test]
-    fn a_retry_subset_plan_is_rejected_with_a_clear_error() {
-        // M2 (the old bug): repair-1's retry sent a `plan_json` built from ONLY
-        // the failed subset with the full target, so the server re-ran
-        // `storyboard::validate` on a sub-3-shot list and rejected the retry with
-        // an unrelated `ShotCount`/`DurationSum` error. This asserts that a
-        // subset plan (fewer than 3 shots) IS still rejected — the fix's contract
-        // is that the UI must instead send the FULL plan (proven by the next
-        // test), so a subset plan reaching here is a tampered/legacy caller and
-        // the error must be the honest count error, not a silent accept.
+    fn a_single_shot_plan_is_accepted_after_the_floor_dropped_to_one() {
+        // S15 D-G: the shot-count floor is now 1, not 3. A one-shot plan (a
+        // Seedance 30s native, or the smallest retry) is therefore no longer
+        // rejected by count — it validates and is submitted. This is the honest
+        // update of the old M2 "a sub-3-shot plan is rejected" test: that
+        // rejection was a consequence of the 3-shot floor the 2×15 H3 Max chain
+        // required us to lower. The single submit is driven offline via the
+        // pinned Vaig route (no adapter → route::resolve fails, no network POST),
+        // so the outcome is an honest per-shot error, not a count rejection.
         let state = test_state();
         let input = StoryboardGenerateInput {
             brief: "b".into(),
@@ -2688,12 +2815,18 @@ mod tests {
             plan_json: Some(kling_plan_json(1, 5.0)),
             shot_indices: Some(vec![0]),
             storyboard_id: None,
-            shots: vec![kling_shot(5.0, None)],
+            chained: false,
+            overlap_seconds: None,
+            shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
         };
-        let err = generate_storyboard_inner(&state, input).unwrap_err();
-        assert!(err.contains("3 to 8 shots"), "got: {err}");
-        // Offline: rejected before any store write.
-        assert_eq!(state.store.all().unwrap().len(), 0, "nothing was written");
+        let out = generate_storyboard_inner(&state, input)
+            .expect("a one-shot plan validates under the 1..=8 floor");
+        assert_eq!(out.shots.len(), 1);
+        assert!(
+            out.shots[0].error.is_some(),
+            "the one shot failed offline (no adapter), not on the shot count: {:?}",
+            out.shots[0]
+        );
     }
 
     #[test]
@@ -2717,6 +2850,10 @@ mod tests {
                 target_seconds: 20.0,
                 plan_json: kling_plan_json(4, 5.0),
                 created_at: now_secs(),
+                chained: false,
+                shots_json: None,
+                overlap_seconds: None,
+                joins_json: None,
             })
             .unwrap();
         // Seed the first-generate outcome: shots 0/1/3 started (Queued), shot 2
@@ -2739,6 +2876,8 @@ mod tests {
             plan_json: Some(kling_plan_json(4, 5.0)),
             shot_indices: Some(vec![2]),
             storyboard_id: Some(sid.clone()),
+            chained: false,
+            overlap_seconds: None,
             // The pinned Vaig route belongs to `kling3_0` (so the route-pin
             // passes) but has no adapter, so `route::resolve` fails offline.
             shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
@@ -2782,6 +2921,10 @@ mod tests {
                 target_seconds: 20.0,
                 plan_json: kling_plan_json(4, 5.0),
                 created_at: now_secs(),
+                chained: false,
+                shots_json: None,
+                overlap_seconds: None,
+                joins_json: None,
             })
             .unwrap();
         // Shot 2 already STARTED (Queued, not Failed).
@@ -2797,6 +2940,8 @@ mod tests {
             plan_json: Some(kling_plan_json(4, 5.0)),
             shot_indices: Some(vec![2]),
             storyboard_id: Some(sid.clone()),
+            chained: false,
+            overlap_seconds: None,
             shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
@@ -2818,6 +2963,10 @@ mod tests {
                 target_seconds: 20.0,
                 plan_json: kling_plan_json(4, 5.0),
                 created_at: now_secs(),
+                chained: false,
+                shots_json: None,
+                overlap_seconds: None,
+                joins_json: None,
             })
             .unwrap();
         let mut job = blank_job("first-2");
@@ -2832,6 +2981,8 @@ mod tests {
             plan_json: Some(kling_plan_json(4, 5.0)),
             shot_indices: Some(vec![2]),
             storyboard_id: Some(sid.clone()),
+            chained: false,
+            overlap_seconds: None,
             // Plan clamped shot 2 to 5s, but this submits 30s.
             shots: vec![kling_shot(30.0, None)],
         };

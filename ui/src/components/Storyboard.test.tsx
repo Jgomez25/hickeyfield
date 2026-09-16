@@ -352,4 +352,67 @@ describe("Storyboard", () => {
     await flush();
     expect(container.querySelector(".prompt-preview-text")).toBeNull();
   });
+
+  // S15 AC5: the Chain toggle defaults on only when every shot is chainable.
+  async function draftWith(planShots: Shot[]) {
+    const props = base({ onPlan: vi.fn(async () => ({
+      brief: "b",
+      targetSeconds: 30,
+      useCase: "text-to-video",
+      shots: planShots,
+    })) });
+    render(<Storyboard {...props} />);
+    typeInto(
+      container.querySelector<HTMLTextAreaElement>("textarea.storyboard-brief")!,
+      "a chained ad",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-draft")!.click();
+    });
+    await flush();
+    return props;
+  }
+
+  function chainableShots(flags: boolean[]): Shot[] {
+    return flags.map((c, i) => ({
+      title: `Shot ${i + 1}`,
+      prompt: `beat ${i + 1}`,
+      seconds: 15,
+      camera: null,
+      modelId: "kling_3_0",
+      role: i === 0 ? "start" : i === flags.length - 1 ? "end" : "middle",
+      continuity: i === 0 ? null : { lastFrameOf: i - 1 },
+      advisories: [],
+      chainable: c,
+    }));
+  }
+
+  it("the chain toggle defaults on only when every shot is chainable", async () => {
+    await draftWith(chainableShots([true, true]));
+    const toggle = container.querySelector<HTMLInputElement>(
+      ".storyboard-chain-toggle input",
+    )!;
+    expect(toggle.checked).toBe(true);
+    expect(container.querySelector(".storyboard-chain-note")).toBeNull();
+  });
+
+  it("the chain toggle defaults off with a note when a shot is not chainable", async () => {
+    await draftWith(chainableShots([true, false]));
+    const toggle = container.querySelector<HTMLInputElement>(
+      ".storyboard-chain-toggle input",
+    )!;
+    expect(toggle.checked).toBe(false);
+    expect(container.querySelector(".storyboard-chain-note")).not.toBeNull();
+  });
+
+  it("generate-all passes the chained flag as chosen", async () => {
+    const props = await draftWith(chainableShots([true, true]));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-generate")!.click();
+    });
+    await flush();
+    expect(props.onGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({ chained: true }),
+    );
+  });
 });

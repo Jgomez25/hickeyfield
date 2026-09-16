@@ -33,6 +33,19 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A storyboard can now be chained and rendered into one finished ad.** With Chain on
+  (the default when every shot's model can continue from a frame), each shot is generated
+  from the previous shot's true last frame, so the second beat continues the first in
+  pixels rather than being re-drawn from the prompt; a shot whose model has no
+  image-to-video route falls back to the prompt with a note. Once every shot is done, one
+  click stitches the clips through the bundled ffmpeg — a continuity join is a clean cut,
+  any other join a short crossfade — into a single ad that opens from the Library with its
+  total actual cost, behind a real progress bar. Rendering spends nothing: it runs on your
+  own machine, and the app says so. Chaining runs the same per-shot estimate and guard a
+  single generation does, shows the total before anything is submitted, and never submits a
+  shot whose predecessor failed. A storyboard can also be a single shot now, so a
+  one-take 30-second clip or a two-shot 30-second chain are both drafts you can make.
+
 - **MiniMax H3 Max and H3 Max Turbo are in the picker, for text-to-video and
   animate-an-image.** Both render 5-to-15-second clips at 480P, 768P or 1080P, with a choice
   of six aspect ratios when you start from a prompt. They are priced at fal's promotional

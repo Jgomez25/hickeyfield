@@ -884,6 +884,75 @@
   font-size: var(--text-200, 0.8rem);
 }
 
+/* S15 — Chain toggle (Storyboard) and render controls (Library set item). */
+.storyboard-chain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-100, 0.25rem);
+}
+
+.storyboard-chain-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-150, 0.4rem);
+  font-size: var(--text-300, 0.9rem);
+  cursor: pointer;
+}
+
+.storyboard-chain-note {
+  color: var(--muted, #9a9aa5);
+  font-size: var(--text-200, 0.8rem);
+}
+
+.storyboard-render-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-200, 0.6rem);
+  margin-top: var(--space-150, 0.4rem);
+}
+
+.storyboard-render {
+  padding: var(--space-150, 0.4rem) var(--space-300, 0.9rem);
+  border-radius: var(--radius-200, 0.5rem);
+  font-weight: 600;
+}
+
+.storyboard-render:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.storyboard-render-progress {
+  flex: 1 1 8rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-200, #26262c);
+  overflow: hidden;
+}
+
+.storyboard-render-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent, #6ea8fe);
+  transition: width 120ms linear;
+}
+
+.storyboard-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-200, 0.6rem);
+}
+
+.storyboard-result-cost[data-unpriced] {
+  color: var(--muted, #9a9aa5);
+}
+
+.storyboard-render-free {
+  color: var(--muted, #9a9aa5);
+  font-size: var(--text-200, 0.8rem);
+}
+
 /* Library storyboard grouping (S13) — additive over the S12 gallery. */
 .library-storyboard-group {
   display: flex;

@@ -20,8 +20,11 @@ import type {
   PromptPreview,
   RewriterChoice,
   Route,
+  RenderOptions,
+  RenderProgress,
   Storyboard,
   StoryboardPlan,
+  StoryboardRender,
   StoryboardResult,
   SubmitInput,
   UseCase,
@@ -725,6 +728,10 @@ export async function generateStoryboard(input: {
   /** An existing storyboard to write a retry into, so retried shots join the
    * original group instead of starting a new one. */
   storyboardId?: string;
+  /** S15: submit the shots as a chain (each continues from the previous shot's
+   * last frame) rather than all at once. Only shot 0 is submitted now; the
+   * runner drives the rest as each predecessor settles. */
+  chained?: boolean;
 }): Promise<StoryboardResult> {
   try {
     return await invoke<StoryboardResult>("generate_storyboard", {
@@ -734,6 +741,60 @@ export async function generateStoryboard(input: {
     if (!isDesktop()) return mockGenerateStoryboard(input);
     throw asError(e);
   }
+}
+
+/**
+ * S15: render a completed storyboard set into one stitched ad on disk.
+ *
+ * Spends nothing — it runs the bundled ffmpeg sidecar on the already-downloaded
+ * clips locally. Returns the finished render (path, dimensions, duration, and
+ * the set's Σ actual cost). Progress arrives on the `storyboard:render` event.
+ */
+export async function renderStoryboard(args: {
+  storyboardId: string;
+  options?: RenderOptions;
+}): Promise<StoryboardRender> {
+  const raw = await invoke<RawStoryboardRender>("render_storyboard", {
+    storyboardId: args.storyboardId,
+    options: args.options ?? {},
+  } as unknown as Record<string, unknown>);
+  return toStoryboardRender(raw);
+}
+
+/** S15: the finished renders, for the Library's set items. */
+export async function listStoryboardRenders(): Promise<StoryboardRender[]> {
+  try {
+    const raw = await invoke<RawStoryboardRender[]>("list_storyboard_renders");
+    return raw.map(toStoryboardRender);
+  } catch {
+    return [];
+  }
+}
+
+interface RawStoryboardRender {
+  storyboard_id?: string;
+  storyboardId?: string;
+  output_path?: string;
+  outputPath?: string;
+  width?: number | null;
+  height?: number | null;
+  seconds?: number | null;
+  actual_usd?: number | null;
+  actualUsd?: number | null;
+  created_at?: number;
+  createdAt?: number;
+}
+
+function toStoryboardRender(r: RawStoryboardRender): StoryboardRender {
+  return {
+    storyboardId: r.storyboard_id ?? r.storyboardId ?? "",
+    outputPath: r.output_path ?? r.outputPath ?? "",
+    width: r.width ?? null,
+    height: r.height ?? null,
+    seconds: r.seconds ?? null,
+    actualUsd: r.actual_usd ?? r.actualUsd ?? null,
+    createdAt: r.created_at ?? r.createdAt ?? 0,
+  };
 }
 
 /** The stored storyboards, for the Library's group headers. */
@@ -787,6 +848,64 @@ export async function revealResult(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * S15: open a finished render in the OS (reuses the opener permission, scoped
+ * to the library). Off the desktop it is a no-op.
+ */
+export async function openResult(path: string): Promise<boolean> {
+  if (!isDesktop()) return false;
+  try {
+    const { openPath } = await import("@tauri-apps/plugin-opener");
+    await openPath(path);
+    return true;
+  } catch {
+    // Fall back to reveal-in-folder, which is already wired and scoped.
+    return revealResult(path);
+  }
+}
+
+/**
+ * S15: streamed storyboard render progress. Returns an unsubscribe function.
+ * Mirrors `subscribeJobs`' async-setup/sync-teardown shape.
+ */
+export function subscribeRenderProgress(
+  onProgress: (p: RenderProgress) => void,
+): () => void {
+  let cancelled = false;
+  let detach: (() => void) | null = null;
+  void (async () => {
+    try {
+      const { listen } = await import("@tauri-apps/api/event");
+      const un = await listen<RawStoryboardRenderProgress>(
+        "storyboard:render",
+        (event) => {
+          const p = event.payload;
+          onProgress({
+            storyboardId: p.storyboard_id ?? p.storyboardId ?? "",
+            percent: p.percent ?? 0,
+            done: p.done ?? false,
+          });
+        },
+      );
+      if (cancelled) un();
+      else detach = un;
+    } catch {
+      // No desktop event bus in the browser; nothing streams.
+    }
+  })();
+  return () => {
+    cancelled = true;
+    detach?.();
+  };
+}
+
+interface RawStoryboardRenderProgress {
+  storyboard_id?: string;
+  storyboardId?: string;
+  percent?: number;
+  done?: boolean;
 }
 
 export async function cancelJob(jobSetId: string): Promise<void> {

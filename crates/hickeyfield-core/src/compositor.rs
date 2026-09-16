@@ -562,6 +562,12 @@ impl Timeline {
                 "-y",
                 "-loglevel",
                 "error",
+                // Security (S10 sandbox parity): whitelist only the file
+                // protocol, *before* the `-i` inputs, so a downloaded clip
+                // cannot chain to `http`/`concat`/etc. An input option, so it
+                // must precede every input.
+                "-protocol_whitelist",
+                "file",
                 "-progress",
                 "pipe:1",
             ]
@@ -1368,6 +1374,24 @@ mod tests {
         assert!(joined.contains("-movflags +faststart"), "{joined}");
         assert!(joined.contains("-progress pipe:1"), "the UI needs progress");
         assert!(joined.contains("-nostdin"), "{joined}");
+    }
+
+    #[test]
+    fn the_render_argv_whitelists_only_the_file_protocol_before_the_inputs() {
+        // S15 §D6: a downloaded clip must not be able to chain to http/concat.
+        // `-protocol_whitelist file` is an input option, so it has to precede
+        // every `-i`. Asserted on the argv so it holds without a spawn.
+        let args = Timeline::new(two_clips(), spec()).to_args();
+        let wl = args
+            .iter()
+            .position(|s| s == "-protocol_whitelist")
+            .unwrap();
+        assert_eq!(args[wl + 1], "file");
+        let first_i = args.iter().position(|s| s == "-i").unwrap();
+        assert!(
+            wl < first_i,
+            "whitelist must precede the first -i: {args:?}"
+        );
     }
 
     #[test]

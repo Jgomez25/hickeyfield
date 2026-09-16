@@ -209,6 +209,10 @@ export interface Shot {
   continuity?: Continuity | null;
   /** Clamp notes: a shot narrowed toward its model's duration axis says so. */
   advisories?: string[];
+  /** S15: whether this shot's model can continue from a start frame (has an
+   * image-to-video route). Computed server-side; the Chain toggle defaults on
+   * only when every shot is chainable. */
+  chainable?: boolean;
 }
 
 /** A whole storyboard plan, drafted from one brief. Mirrors `StoryboardPlan`. */
@@ -224,6 +228,9 @@ export interface ShotOutcome {
   shotIndex: number;
   jobSetId: string | null;
   error: string | null;
+  /** S15: a chained shot not yet submitted — the settled hook submits it when
+   * its predecessor completes. */
+  pending?: boolean;
 }
 
 /** The result of a generate-all. Mirrors `StoryboardResult`. */
@@ -239,6 +246,31 @@ export interface Storyboard {
   targetSeconds: number;
   planJson: string;
   createdAt: number;
+}
+
+/** S15: a finished, stitched storyboard ad on disk. Mirrors the Rust
+ * `StoryboardRenderDto`. `actualUsd` is Σ of the member shots' actual cost
+ * (null if any member is unpriced — never $0). */
+export interface StoryboardRender {
+  storyboardId: string;
+  outputPath: string;
+  width: number | null;
+  height: number | null;
+  seconds: number | null;
+  actualUsd: number | null;
+  createdAt: number;
+}
+
+/** S15: a render progress tick from the `storyboard:render` event. */
+export interface RenderProgress {
+  storyboardId: string;
+  percent: number;
+  done: boolean;
+}
+
+/** S15: render options passed to `renderStoryboard`. */
+export interface RenderOptions {
+  overlapSeconds?: number | null;
 }
 
 export interface JobSet {

@@ -64,6 +64,7 @@ export function Storyboard({
     shots: SubmitInput[];
     shotIndices?: number[];
     storyboardId?: string;
+    chained?: boolean;
   }) => Promise<StoryboardResult>;
   /** Called after a successful generate-all (App switches to the Library). */
   onGenerated: (result: StoryboardResult) => void;
@@ -88,6 +89,12 @@ export function Storyboard({
   // sees which failed (and why) and can retry just those. `null` while a batch
   // fully succeeded (App switched to the Library) or nothing has run yet.
   const [outcome, setOutcome] = useState<StoryboardResult | null>(null);
+  // S15: chain the shots (each continues from the previous shot's last frame).
+  // Defaults on only when every shot's model can serve image-to-video; the user
+  // can override, and a re-draft re-applies the default.
+  const [chained, setChained] = useState(false);
+  const canChain = shots.length > 1;
+  const allChainable = canChain && shots.every((s) => s.chainable ?? false);
 
   /** Close any open inline preview — called on reorder/delete so a stale
    * preview cannot be accepted for the shot that now sits at that index. */
@@ -117,6 +124,12 @@ export function Storyboard({
       },
     );
   }, [shots, onEstimate]);
+
+  // The Chain toggle defaults on only when every shot can continue from a
+  // frame; it follows the current plan (a re-draft re-applies the default).
+  useEffect(() => {
+    setChained(shots.length > 1 && shots.every((s) => s.chainable ?? false));
+  }, [shots]);
 
   const draft = useCallback(async () => {
     if (!brief.trim()) return;
@@ -271,9 +284,12 @@ export function Storyboard({
         shots: shotInputs,
         shotIndices: isRetry ? indices : undefined,
         storyboardId: retryStoryboardId,
+        // Chaining applies only to a first generate-all; a retry re-submits a
+        // single failed shot and the runner's hook resumes the chain from it.
+        chained: isRetry ? undefined : chained,
       });
     },
-    [shots, brief, targetSeconds, tab, models, settings, enhancer, finalPrompts, onGenerate],
+    [shots, brief, targetSeconds, tab, models, settings, enhancer, finalPrompts, onGenerate, chained],
   );
 
   const generate = useCallback(async () => {
@@ -581,6 +597,25 @@ export function Storyboard({
           ) : null}
 
           <footer className="storyboard-foot">
+            {canChain ? (
+              <div className="storyboard-chain">
+                <label className="storyboard-chain-toggle">
+                  <input
+                    type="checkbox"
+                    checked={chained}
+                    aria-label="Chain shots with continuity"
+                    onChange={(e) => setChained(e.currentTarget.checked)}
+                  />
+                  <span>Chain shots (continue each from the last frame)</span>
+                </label>
+                {!allChainable ? (
+                  <p className="storyboard-chain-note">
+                    Some shots' models can't continue from a frame — those shots
+                    will be generated from the prompt.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             <div className="storyboard-total-line">
               <span className="storyboard-total-label">Total</span>
               <span

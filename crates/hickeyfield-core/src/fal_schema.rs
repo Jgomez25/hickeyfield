@@ -295,6 +295,32 @@ pub fn apply_constants(
     }
 }
 
+/// Write caller-supplied overrides (S15 D-C) into `body`, for keys the endpoint
+/// declares.
+///
+/// Like [`apply_constants`] but the values are typed JSON — a `seed` is a
+/// number, `prompt_expansion_mode` a string — and the intent is to *override* a
+/// constant, so this runs **before** [`apply_constants`]: a key written here
+/// makes the constant pass skip it (`"balanced"` → `"disabled"` on a chained
+/// shot). It is still gap-only against the user/binder (never clobbers a key
+/// already in the body) and still schema-gated (with a cached schema it writes
+/// only a key the endpoint `accepts`, so the chain cannot inject an arbitrary
+/// field). Offline it writes regardless, the same lesser-risk rule constants use.
+pub fn apply_overrides(
+    overrides: &serde_json::Map<String, serde_json::Value>,
+    schema: Option<&EndpointSchema>,
+    body: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    for (key, value) in overrides {
+        if body.contains_key(key) {
+            continue;
+        }
+        if schema.is_none_or(|s| s.accepts(key)) {
+            body.insert(key.clone(), value.clone());
+        }
+    }
+}
+
 /// A scalar as the text an enum would spell it with.
 ///
 /// `4.0` is the number a JSON settings object carries for a whole-second
@@ -678,6 +704,80 @@ mod tests {
             Some(&schema),
             &mut body,
         );
+        assert!(!body.contains_key("prompt_expansion_mode"));
+    }
+
+    #[test]
+    fn a_chained_override_disables_expansion_and_carries_the_seed() {
+        // S15 D-C: a chained shot writes `prompt_expansion_mode: "disabled"`
+        // (overriding S14's "balanced" constant, because `apply_overrides` runs
+        // first and `apply_constants` then skips the present key) and a typed
+        // `seed`. Both keys are declared by the H3 Max schema, so both land;
+        // `audit_fal` stays clean because neither is invented.
+        // A schema that declares both keys, as the real H3 Max i2v endpoint
+        // does (`schemas/minimax_h3-max_image-to-video.json` carries `seed`).
+        let with_seed = r#"{"components":{"schemas":{"H3MaxInput":{"properties":{
+            "prompt":{"type":"string"},
+            "prompt_expansion_mode":{"type":"string","default":"balanced","examples":["disabled","balanced","quality"]},
+            "seed":{"type":"integer"},
+            "duration":{"type":"integer","minimum":5,"maximum":15,"default":5}},
+            "required":["prompt","prompt_expansion_mode"]}}}}"#;
+        let schema = parsed(with_seed);
+        let mut overrides = serde_json::Map::new();
+        overrides.insert(
+            "prompt_expansion_mode".into(),
+            serde_json::json!("disabled"),
+        );
+        overrides.insert("seed".into(), serde_json::json!(4242));
+        let mut body = serde_json::Map::new();
+        body.insert("prompt".into(), serde_json::json!("a red door"));
+        apply_overrides(&overrides, Some(&schema), &mut body);
+        // The constant pass now cannot revert the mode.
+        apply_constants(
+            &[("prompt_expansion_mode", "balanced")],
+            Some(&schema),
+            &mut body,
+        );
+        assert_eq!(
+            body.get("prompt_expansion_mode"),
+            Some(&serde_json::json!("disabled")),
+            "chained shot disables fal's second rewrite"
+        );
+        assert_eq!(body.get("seed"), Some(&serde_json::json!(4242)));
+    }
+
+    #[test]
+    fn a_standalone_submit_keeps_balanced_and_has_no_seed() {
+        // The mirror: with no overrides the constant stands and no seed appears.
+        let schema = parsed(H3_MAX_T2V);
+        let mut body = serde_json::Map::new();
+        body.insert("prompt".into(), serde_json::json!("a red door"));
+        apply_overrides(&serde_json::Map::new(), Some(&schema), &mut body);
+        apply_constants(
+            &[("prompt_expansion_mode", "balanced")],
+            Some(&schema),
+            &mut body,
+        );
+        assert_eq!(
+            body.get("prompt_expansion_mode"),
+            Some(&serde_json::json!("balanced"))
+        );
+        assert!(!body.contains_key("seed"), "standalone has no seed");
+    }
+
+    #[test]
+    fn an_override_cannot_inject_a_field_the_endpoint_rejects() {
+        // The chain cannot smuggle an arbitrary key: a schema-gated override for
+        // a field the endpoint does not declare is dropped.
+        let schema = parsed(GEMINI_OMNI);
+        assert!(!schema.accepts("prompt_expansion_mode"));
+        let mut overrides = serde_json::Map::new();
+        overrides.insert(
+            "prompt_expansion_mode".into(),
+            serde_json::json!("disabled"),
+        );
+        let mut body = serde_json::Map::new();
+        apply_overrides(&overrides, Some(&schema), &mut body);
         assert!(!body.contains_key("prompt_expansion_mode"));
     }
 

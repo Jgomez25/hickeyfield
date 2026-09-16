@@ -19,10 +19,18 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub struct AppState {
     pub store: Arc<SqliteStore>,
-    pub runner: Runner,
+    /// `Arc` so the runner's settled hook (S15) can hold a `Weak<Runner>` and
+    /// call `watch` on the next chained shot without an ownership cycle (§D2).
+    pub runner: Arc<Runner>,
     pub library: Arc<Library>,
     /// Live provider prices. Every USD figure the app shows comes from here.
     pub prices: Arc<Prices>,
+    /// S15: where the bundled ffmpeg sidecar lives (next to the exe). Cached so
+    /// the chain scheduler and the render command locate it once.
+    pub ffmpeg_dir: PathBuf,
+    /// S15: `app_data_dir()/renders` — the base for per-storyboard intermediates
+    /// (extracted continuity frames). The final ad goes to the Library.
+    pub renders_root: PathBuf,
 }
 
 /// Build a provider client for `provider:slug`, or `None` when the user has no
@@ -97,6 +105,27 @@ pub fn library_root(app: &AppHandle) -> PathBuf {
         .unwrap_or_else(default_root)
 }
 
+/// The directory the bundled ffmpeg sidecar lives in — next to the running
+/// executable (Tauri places `externalBin` there), the same directory
+/// `probe_first_local` locates it in.
+pub fn sidecar_dir(_app: &AppHandle) -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// `app_data_dir()/renders` — the base for per-storyboard render intermediates
+/// (extracted continuity frames). Deliberately under app data, not the Library:
+/// these are ephemeral working files, and `library.rs` keeps only user-facing
+/// media (the finished ad).
+pub fn renders_root(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("renders")
+}
+
 pub fn db_path(app: &AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
@@ -124,26 +153,57 @@ impl AppState {
         let prices = Arc::new(Prices::bundled());
         prices.start_refresh();
 
-        let runner = Runner::new(
+        let runner = Arc::new(Runner::new(
             Arc::clone(&store) as Arc<dyn JobStore>,
             clients,
             on_update,
             Arc::clone(&library),
             Arc::clone(&prices),
-        );
+        ));
+
+        // S15: wire the chain scheduler. The hook holds a `Weak<Runner>` (so
+        // there is no Arc cycle: the runner owns the hook, the hook only
+        // upgrades to the runner when it fires) plus the Arcs `chain::advance`
+        // needs. `upgrade()` returns `None` only during teardown, which the
+        // hook treats as "nothing to advance".
+        let ffmpeg_dir = sidecar_dir(app);
+        let renders_root = renders_root(app);
+        {
+            let weak = Arc::downgrade(&runner);
+            let store = Arc::clone(&store);
+            let prices = Arc::clone(&prices);
+            let library = Arc::clone(&library);
+            let ffmpeg_dir = ffmpeg_dir.clone();
+            let renders_root = renders_root.clone();
+            runner.set_on_settled(Arc::new(move |job: &JobSet| {
+                if let Some(runner) = weak.upgrade() {
+                    crate::chain::advance(
+                        &store,
+                        &prices,
+                        &library,
+                        &ffmpeg_dir,
+                        &renders_root,
+                        &runner,
+                        job,
+                    );
+                }
+            }));
+        }
 
         Ok(AppState {
             store,
             runner,
             library,
             prices,
+            ffmpeg_dir,
+            renders_root,
         })
     }
 
     /// Restart anything the last session left running. Called once at startup;
     /// this is the payoff for keeping job state in Rust rather than the webview.
     pub fn resume(&self) -> usize {
-        match self.runner.resume_all() {
+        let n = match self.runner.resume_all() {
             Ok(n) => {
                 if n > 0 {
                     tracing::info!("resumed {n} unfinished job(s) from the last session");
@@ -154,7 +214,13 @@ impl AppState {
                 tracing::warn!("could not resume jobs: {e}");
                 0
             }
-        }
+        };
+        // S15: a chained set whose shot settled *between* download and the next
+        // submit (a crash in that window) is not in `unfinished()`, so the hook
+        // never fires for it. Reconcile every chained set here, after the
+        // ordinary resume has re-attached still-running shots (§D2.5).
+        crate::chain::resume_all(self);
+        n
     }
 }
 
@@ -171,6 +237,10 @@ pub fn submit_to_provider(
     // for. `job.prompt` deliberately still holds the user's own words, so the
     // UI can show both and the recipe records what was actually sent.
     wire_prompt: &str,
+    // S15 D-C: request-body overrides for endpoint-declared keys the app has no
+    // control for (a chained shot's `prompt_expansion_mode: "disabled"` + fixed
+    // `seed`). Empty for a standalone submit. Applied before the constant pass.
+    constant_overrides: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<String, hickeyfield_core::engine::JobError> {
     use hickeyfield_core::engine::JobError;
 
@@ -324,6 +394,15 @@ pub fn submit_to_provider(
     // below (so those passes treat it like any other body field). A constant
     // never overrides a value the user or the binder already set.
     if route.provider == ProviderId::Fal {
+        // S15 D-C: the chain's overrides go in FIRST, so a value it writes for
+        // an endpoint-declared key (a chained shot's `prompt_expansion_mode:
+        // "disabled"` and `seed`) wins over the S14 constant, which only fills a
+        // gap. Schema-gated, so it cannot inject a field the endpoint rejects.
+        hickeyfield_core::fal_schema::apply_overrides(
+            constant_overrides,
+            fal_schema.as_ref(),
+            &mut body,
+        );
         hickeyfield_core::fal_schema::apply_constants(
             hickeyfield_core::media::fal_constants(&route.slug),
             fal_schema.as_ref(),

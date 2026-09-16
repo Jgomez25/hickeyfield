@@ -89,6 +89,12 @@ pub enum FfmpegError {
     Probe(String),
     /// The build is not one we are allowed to redistribute.
     Licence(String),
+    /// A render or last-frame extraction spawned, but did not produce its
+    /// output: a non-zero exit, a timeout, or a missing output file. Unlike a
+    /// probe (which is *given* no output and exits non-zero by design), these
+    /// helpers WRITE a file, so a failed exit is a real failure — never a
+    /// silent skip. Carries the bounded stderr tail.
+    Render(String),
 }
 
 impl std::fmt::Display for FfmpegError {
@@ -98,6 +104,7 @@ impl std::fmt::Display for FfmpegError {
             FfmpegError::Spawn(m) => write!(f, "could not run ffmpeg: {m}"),
             FfmpegError::Probe(m) => write!(f, "could not probe ffmpeg: {m}"),
             FfmpegError::Licence(m) => write!(f, "ffmpeg licence check failed: {m}"),
+            FfmpegError::Render(m) => write!(f, "ffmpeg render failed: {m}"),
         }
     }
 }
@@ -790,6 +797,242 @@ fn run_probe(bin: &Path, file: &Path) -> Result<String, FfmpegError> {
     Ok(text)
 }
 
+// ---------------------------------------------------------------------------
+// Last-frame extraction (storyboard continuity)
+// ---------------------------------------------------------------------------
+
+/// The argv for extracting the final frame of `clip` to `out` as a PNG.
+///
+/// Split out so the sandboxing is unit-testable without a spawn, exactly like
+/// [`probe_args`]. `-protocol_whitelist file` and `-sseof` are **input**
+/// options and MUST precede `-i` (a whitelist after `-i` protects nothing, and
+/// `-sseof` after `-i` is an *output* seek).
+///
+/// **Getting the *true* last frame on any GOP.** `-sseof -3` seeks the demuxer
+/// to ~3s before EOF, which lands on a keyframe at or before that point even on
+/// a sparse-GOP stream (a `-sseof -0.05` too close to EOF can seek *past* the
+/// last keyframe and emit nothing — proven by the keyframe-sparse ignored test,
+/// design §10.3). Then, instead of `-frames:v 1` (which would grab the *first*
+/// frame after the seek, ~3s early), `-update 1` **overwrites** the same PNG for
+/// every decoded frame from the seek point to EOF, so the file left on disk is
+/// the genuine final frame. Decoding ≤3s is cheap.
+fn last_frame_args(clip: &str, out: &str, scale: Option<(u32, u32)>) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-protocol_whitelist",
+        "file",
+        "-sseof",
+        "-3",
+        "-i",
+        clip,
+        "-update",
+        "1",
+    ]
+    .map(String::from)
+    .to_vec();
+    // S15 continuity (#4): the next shot's canvas follows this frame, so extract
+    // it at that shot's target resolution when it differs from the clip. Even
+    // dimensions are the caller's responsibility (yuv420p needs them); the
+    // filter forces the exact box.
+    if let Some((w, h)) = scale {
+        a.push("-vf".into());
+        a.push(format!("scale={w}:{h}:flags=lanczos"));
+    }
+    a.push(out.to_string());
+    a
+}
+
+/// Extract the final frame of `clip` as a PNG at `out`, via the sidecar.
+///
+/// Sandboxed exactly like the probe ([`run_probe`]): stdin closed,
+/// `-protocol_whitelist file` before `-i`, a wall-clock timeout with kill,
+/// bounded stderr. **Unlike the probe this WRITES a file**, so a non-zero exit
+/// or a missing output is a real [`FfmpegError::Render`], never a silent skip
+/// (AC1). Returns `out` on success.
+pub fn last_frame(
+    bin: &Path,
+    clip: &Path,
+    out: &Path,
+    size: Option<(u32, u32)>,
+) -> Result<PathBuf, FfmpegError> {
+    let clip_s = clip.to_string_lossy().into_owned();
+    let out_s = out.to_string_lossy().into_owned();
+    let args = last_frame_args(&clip_s, &out_s, size);
+    // A single-frame decode is quick; reuse the probe's fixed 20s ceiling.
+    run_to_file(bin, &args, PROBE_TIMEOUT)?;
+    if !out.is_file() {
+        return Err(FfmpegError::Render(format!(
+            "ffmpeg produced no last frame at {}",
+            out.display()
+        )));
+    }
+    Ok(out.to_path_buf())
+}
+
+/// Spawn `ffmpeg` with `args` (an argv vector, never a shell string), drain and
+/// bound stderr, enforce a wall-clock deadline with a kill on overrun, and
+/// require `status.success()`. Shared by [`last_frame`] and [`render`] — the
+/// same hardening skeleton as [`run_probe`], but this asserts success because
+/// these helpers write an output. Discards stdout unless a reader is wired by
+/// the caller (see [`render`], which reads progress instead of calling this).
+fn run_to_file(bin: &Path, args: &[String], timeout: Duration) -> Result<(), FfmpegError> {
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| FfmpegError::Spawn(format!("{}: {e}", bin.display())))?;
+
+    let err_h = {
+        let mut r = child.stderr.take();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(r) = r.as_mut() {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match r.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => bounded_push(&mut buf, &chunk[..n], MAX_PROBE_CAPTURE),
+                    }
+                }
+            }
+            buf
+        })
+    };
+
+    let deadline = Instant::now() + timeout;
+    let timed_out = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Err(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(FfmpegError::Spawn(format!("{}: {e}", bin.display()))),
+        }
+    };
+
+    let stderr = err_h.join().unwrap_or_default();
+    match timed_out {
+        Ok(()) => Err(FfmpegError::Render(format!(
+            "ffmpeg timed out after {}s",
+            timeout.as_secs()
+        ))),
+        Err(status) if status.success() => Ok(()),
+        Err(status) => Err(FfmpegError::Render(format!(
+            "ffmpeg exited {}: {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into()),
+            String::from_utf8_lossy(&stderr).trim()
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering a timeline (streaming progress)
+// ---------------------------------------------------------------------------
+
+/// Run a compositor argv to completion, streaming progress.
+///
+/// Spawns the sidecar with `args` (which already carries `-progress pipe:1` from
+/// [`crate::compositor::Timeline::to_args`]), feeds stdout to a
+/// [`ProgressReader`], and calls `on_progress` per completed block. `timeout`
+/// is the render's own scaled deadline (the shell sizes it to the total
+/// duration). stderr is drained and bounded for the error message. A non-zero
+/// exit, a timeout, or a spawn failure is a typed error — a render either
+/// produces its file or says why, never silently.
+pub fn render(
+    bin: &Path,
+    args: &[String],
+    timeout: Duration,
+    mut on_progress: impl FnMut(Progress),
+) -> Result<(), FfmpegError> {
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| FfmpegError::Spawn(format!("{}: {e}", bin.display())))?;
+
+    // stderr on its own drain thread so a full pipe cannot deadlock the wait.
+    let err_h = {
+        let mut r = child.stderr.take();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(r) = r.as_mut() {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match r.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => bounded_push(&mut buf, &chunk[..n], MAX_PROBE_CAPTURE),
+                    }
+                }
+            }
+            buf
+        })
+    };
+
+    // stdout (the progress stream) is read on this thread so we can invoke
+    // `on_progress` live. A `progress=end` block sets `done`.
+    let mut reader = ProgressReader::new();
+    let mut stdout = child.stdout.take();
+    let deadline = Instant::now() + timeout;
+    let mut chunk = [0u8; 8192];
+    let mut timed_out = false;
+    if let Some(out) = stdout.as_mut() {
+        loop {
+            // Bound each read by polling the deadline between reads: a wedged
+            // encoder that stops emitting progress is killed here.
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                timed_out = true;
+                break;
+            }
+            match out.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&chunk[..n]);
+                    for p in reader.push(&text) {
+                        on_progress(p);
+                    }
+                }
+            }
+        }
+    }
+
+    let status = child.wait();
+    let stderr = err_h.join().unwrap_or_default();
+    if timed_out {
+        return Err(FfmpegError::Render(format!(
+            "render timed out after {}s",
+            timeout.as_secs()
+        )));
+    }
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(FfmpegError::Render(format!(
+            "ffmpeg exited {}: {}",
+            s.code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into()),
+            String::from_utf8_lossy(&stderr).trim()
+        ))),
+        Err(e) => Err(FfmpegError::Spawn(format!("{}: {e}", bin.display()))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1191,5 +1434,197 @@ At least one output file must be specified
         assert_eq!(d.width, Some(1280), "{d:?}");
         assert_eq!(d.height, Some(720), "{d:?}");
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn last_frame_args_sandbox_the_input_and_seek_from_eof() {
+        // AC1: the last-frame extract must close stdin, whitelist only the file
+        // protocol *before* -i, seek from EOF *before* -i, write exactly one
+        // image, and end on the output path. Asserted on the argv, no spawn.
+        let a = last_frame_args("/tmp/clip.mp4", "/tmp/out.png", None);
+        assert_eq!(a[0], "-nostdin");
+        let wl = a.iter().position(|s| s == "-protocol_whitelist").unwrap();
+        assert_eq!(a[wl + 1], "file");
+        let sseof = a.iter().position(|s| s == "-sseof").unwrap();
+        assert_eq!(a[sseof + 1], "-3", "seek a safe window before EOF");
+        let i = a.iter().position(|s| s == "-i").unwrap();
+        assert!(wl < i, "protocol whitelist must precede -i: {a:?}");
+        assert!(
+            sseof < i,
+            "-sseof is an input seek and must precede -i: {a:?}"
+        );
+        assert_eq!(a[i + 1], "/tmp/clip.mp4");
+        // `-update 1` overwrites for every decoded frame → the true last frame;
+        // no `-frames:v 1` (that would grab the first frame after the seek).
+        assert!(a.iter().any(|s| s == "-update"), "overwrite write: {a:?}");
+        assert!(
+            !a.iter().any(|s| s == "-frames:v"),
+            "no first-frame cap: {a:?}"
+        );
+        assert_eq!(a.last().unwrap(), "/tmp/out.png", "output path is last");
+        assert!(
+            !a.iter().any(|s| s.starts_with("scale=")),
+            "no scale filter when size is None: {a:?}"
+        );
+    }
+
+    #[test]
+    fn last_frame_args_scale_to_the_sets_canvas_when_requested() {
+        // S15 D-C/#4: the next shot's canvas follows this frame, so when the
+        // caller passes the set's size the extract scales to it with lanczos,
+        // before the output path.
+        let a = last_frame_args("/tmp/clip.mp4", "/tmp/out.png", Some((1280, 720)));
+        let vf = a.iter().position(|s| s == "-vf").expect("scale filter");
+        assert_eq!(a[vf + 1], "scale=1280:720:flags=lanczos");
+        let i = a.iter().position(|s| s == "-i").unwrap();
+        assert!(vf > i, "the scale is an output filter, after -i: {a:?}");
+        assert_eq!(a.last().unwrap(), "/tmp/out.png", "output path stays last");
+    }
+
+    #[test]
+    fn last_frame_failure_is_a_typed_render_error() {
+        // AC1: a missing input must be a typed `Render` error, never an `Ok`
+        // with no file. `run_to_file` sees a non-zero exit and reports it; even
+        // if a build somehow exits 0 without writing, `last_frame`'s
+        // `out.is_file()` check turns that into `Render` too. Uses whatever
+        // `ffmpeg` is on PATH; if none, the spawn error is also acceptable —
+        // the point is it is never a silent success.
+        let bin = std::path::Path::new("ffmpeg");
+        let out = std::env::temp_dir().join("hickeyfield-nope-lastframe.png");
+        let _ = std::fs::remove_file(&out);
+        let r = last_frame(
+            bin,
+            std::path::Path::new("/nonexistent/definitely-missing.mp4"),
+            &out,
+            None,
+        );
+        assert!(r.is_err(), "a missing input must never succeed silently");
+        assert!(
+            matches!(r, Err(FfmpegError::Render(_)) | Err(FfmpegError::Spawn(_))),
+            "{r:?}"
+        );
+        assert!(!out.is_file(), "no output file must be left behind");
+    }
+
+    #[test]
+    #[ignore = "spawns the bundled sidecar; run with --ignored"]
+    fn last_frame_writes_a_png_with_the_clips_dimensions() {
+        // AC1 §10.3: on the real sidecar, the last frame of a keyframe-sparse
+        // synthesised clip (testsrc with a 250-frame GOP) writes a PNG whose
+        // dimensions match the clip. Proves the last-frame extract does not seek past
+        // the last keyframe and emit nothing.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/binaries");
+        let bin = locate(&dir).expect("bundled sidecar; run scripts/fetch-ffmpeg.sh");
+        let clip = std::env::temp_dir().join("hickeyfield-lastframe-src.mp4");
+        let status = Command::new(&bin)
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=2:size=1280x720:rate=10",
+                // Sparse keyframes: one every 250 frames, so the whole 20-frame
+                // clip has a single keyframe at the head — the hostile case for
+                // an EOF seek.
+                "-g",
+                "250",
+            ])
+            .arg(&clip)
+            .status()
+            .expect("synthesise clip");
+        assert!(status.success());
+        let out = std::env::temp_dir().join("hickeyfield-lastframe-out.png");
+        let _ = std::fs::remove_file(&out);
+        let got = last_frame(&bin, &clip, &out, None).expect("extract last frame");
+        assert!(got.is_file(), "the PNG must exist");
+        let d = probe_file(&bin, &out).unwrap();
+        assert_eq!(d.width, Some(1280), "{d:?}");
+        assert_eq!(d.height, Some(720), "{d:?}");
+        let _ = std::fs::remove_file(&clip);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    #[ignore = "spawns the bundled sidecar; run with --ignored"]
+    fn render_stitches_to_the_expected_duration() {
+        // AC3/AC4 §10.4: three 4s testsrc clips, crossfaded 1s each, must render
+        // to 4+4+4 - 2*1 = 10s within ±0.2s on the real sidecar; and a single
+        // clip renders to its own duration (no stitch). The pure
+        // `total_duration` is proven by the compositor's own tests; this is the
+        // only thing that catches the *sidecar* drifting from the maths.
+        use crate::compositor::{Clip, OutputSpec, Timeline};
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/binaries");
+        let bin = locate(&dir).expect("bundled sidecar; run scripts/fetch-ffmpeg.sh");
+        let tmp = std::env::temp_dir();
+        let mut clips_on_disk = Vec::new();
+        for i in 0..3 {
+            let p = tmp.join(format!("hickeyfield-render-src-{i}.mp4"));
+            let status = Command::new(&bin)
+                .args([
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc=duration=4:size=640x480:rate=25",
+                    "-g",
+                    "250",
+                ])
+                .arg(&p)
+                .status()
+                .expect("synthesise clip");
+            assert!(status.success());
+            clips_on_disk.push(p);
+        }
+
+        // Three-clip crossfade → 10s.
+        let out = tmp.join("hickeyfield-render-out.mp4");
+        let _ = std::fs::remove_file(&out);
+        let clips: Vec<Clip> = clips_on_disk
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let c = Clip::new(p.clone(), 0.0, 4.0);
+                if i == 0 {
+                    c
+                } else {
+                    c.crossfade_in(1.0)
+                }
+            })
+            .collect();
+        let mut spec = OutputSpec::new(640, 480, 25, out.clone());
+        spec.encoder = probe_encoders(&bin).unwrap();
+        let t = Timeline::new(clips, spec);
+        assert!(
+            (t.total_duration() - 10.0).abs() < 1e-9,
+            "pure maths: {}",
+            t.total_duration()
+        );
+        render(&bin, &t.to_args(), Duration::from_secs(120), |_| {}).expect("render");
+        let d = probe_file(&bin, &out).unwrap();
+        let secs = d.seconds.expect("probed duration");
+        assert!(
+            (secs - 10.0).abs() <= 0.2,
+            "stitched duration {secs}s, want 10±0.2"
+        );
+
+        // Single clip → its own duration, no crossfade/concat.
+        let out1 = tmp.join("hickeyfield-render-out-single.mp4");
+        let _ = std::fs::remove_file(&out1);
+        let mut spec1 = OutputSpec::new(640, 480, 25, out1.clone());
+        spec1.encoder = probe_encoders(&bin).unwrap();
+        let t1 = Timeline::new(vec![Clip::new(clips_on_disk[0].clone(), 0.0, 4.0)], spec1);
+        render(&bin, &t1.to_args(), Duration::from_secs(120), |_| {}).expect("render single");
+        let d1 = probe_file(&bin, &out1).unwrap();
+        let secs1 = d1.seconds.expect("probed duration");
+        assert!(
+            (secs1 - 4.0).abs() <= 0.2,
+            "single-clip duration {secs1}s, want 4±0.2"
+        );
+
+        for p in &clips_on_disk {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&out1);
     }
 }

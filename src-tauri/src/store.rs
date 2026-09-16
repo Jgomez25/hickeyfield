@@ -28,6 +28,36 @@ pub struct Storyboard {
     pub target_seconds: f64,
     pub plan_json: String,
     pub created_at: i64,
+    /// S15: whether this set is chained (each shot continues from the previous
+    /// shot's last frame). `false` is S13's all-at-once behaviour.
+    pub chained: bool,
+    /// S15: the ordered `SubmitInput` payloads for the WHOLE plan (serialised
+    /// `Vec`), so a chained set can advance itself after a relaunch without
+    /// re-deriving the user's per-shot edits from `plan_json`. `None` for an
+    /// all-at-once set.
+    pub shots_json: Option<String>,
+    /// S15: the crossfade overlap the plan was reconciled to (D4). `None`
+    /// defaults to `DEFAULT_CROSSFADE_SECONDS` at render time.
+    pub overlap_seconds: Option<f64>,
+    /// S15 (reserved for the continuity-score slice, memo §0): a serialised
+    /// `[{index, kind, applied, ssim, …, pass, attempt}]` recording each join's
+    /// measured continuity. Written by the deferred per-join SSIM scorer; stored
+    /// and round-tripped now so that slice is purely additive. `None` today.
+    pub joins_json: Option<String>,
+}
+
+/// S15: one finished, stitched ad for a storyboard set. Re-rendering overwrites
+/// (one ad per set). `actual_usd` is the sum of the member shots' `actual_usd`
+/// at render time — `None` if any member is unpriced, never summed as $0.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoryboardRender {
+    pub storyboard_id: String,
+    pub output_path: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub seconds: Option<f64>,
+    pub actual_usd: Option<f64>,
+    pub created_at: i64,
 }
 
 fn map_err(e: impl std::fmt::Display) -> JobError {
@@ -212,6 +242,35 @@ impl SqliteStore {
             )
             .map_err(map_err)?;
         }
+
+        if version < 9 {
+            // S15 storyboard render + chaining. Three columns on the existing
+            // `storyboards` group row let a chained set advance itself after a
+            // relaunch (`chained` + the full ordered `shots_json` payloads) and
+            // record the crossfade the plan was reconciled to. A new
+            // `storyboard_renders` table holds the one finished ad per set. All
+            // additive; old storyboards read `chained=0` (all-at-once), which is
+            // the honest S13 value.
+            conn.execute_batch(
+                r#"
+                ALTER TABLE storyboards ADD COLUMN chained         INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE storyboards ADD COLUMN shots_json      TEXT;
+                ALTER TABLE storyboards ADD COLUMN overlap_seconds REAL;
+                ALTER TABLE storyboards ADD COLUMN joins_json      TEXT;
+                CREATE TABLE IF NOT EXISTS storyboard_renders (
+                    storyboard_id TEXT PRIMARY KEY,
+                    output_path   TEXT NOT NULL,
+                    width         INTEGER,
+                    height        INTEGER,
+                    seconds       REAL,
+                    actual_usd    REAL,
+                    created_at    INTEGER NOT NULL
+                );
+                PRAGMA user_version = 9;
+                "#,
+            )
+            .map_err(map_err)?;
+        }
         Ok(())
     }
 
@@ -232,17 +291,96 @@ impl SqliteStore {
             .unwrap()
             .execute(
                 r#"
-                INSERT INTO storyboards (id, brief, target_seconds, plan_json, created_at)
-                VALUES (?1,?2,?3,?4,?5)
+                INSERT INTO storyboards
+                    (id, brief, target_seconds, plan_json, created_at,
+                     chained, shots_json, overlap_seconds, joins_json)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
                 ON CONFLICT(id) DO UPDATE SET
-                    brief          = excluded.brief,
-                    target_seconds = excluded.target_seconds,
-                    plan_json      = excluded.plan_json
+                    brief           = excluded.brief,
+                    target_seconds  = excluded.target_seconds,
+                    plan_json       = excluded.plan_json,
+                    chained         = excluded.chained,
+                    shots_json      = excluded.shots_json,
+                    overlap_seconds = excluded.overlap_seconds,
+                    joins_json      = excluded.joins_json
                 "#,
-                params![s.id, s.brief, s.target_seconds, s.plan_json, s.created_at],
+                params![
+                    s.id,
+                    s.brief,
+                    s.target_seconds,
+                    s.plan_json,
+                    s.created_at,
+                    s.chained as i64,
+                    s.shots_json,
+                    s.overlap_seconds,
+                    s.joins_json,
+                ],
             )
             .map(|_| ())
             .map_err(map_err)
+    }
+
+    /// Persist the finished render for a set. One row per storyboard (re-render
+    /// overwrites).
+    pub fn upsert_render(&self, r: &StoryboardRender) -> Result<(), JobError> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                r#"
+                INSERT INTO storyboard_renders
+                    (storyboard_id, output_path, width, height, seconds, actual_usd, created_at)
+                VALUES (?1,?2,?3,?4,?5,?6,?7)
+                ON CONFLICT(storyboard_id) DO UPDATE SET
+                    output_path = excluded.output_path,
+                    width       = excluded.width,
+                    height      = excluded.height,
+                    seconds     = excluded.seconds,
+                    actual_usd  = excluded.actual_usd,
+                    created_at  = excluded.created_at
+                "#,
+                params![
+                    r.storyboard_id,
+                    r.output_path,
+                    r.width.map(|w| w as i64),
+                    r.height.map(|h| h as i64),
+                    r.seconds,
+                    r.actual_usd,
+                    r.created_at,
+                ],
+            )
+            .map(|_| ())
+            .map_err(map_err)
+    }
+
+    /// The finished render for one set, or `None`. The Library lists renders
+    /// with `renders()`; this singular reader is exercised by the store test.
+    #[allow(dead_code)]
+    pub fn render(&self, storyboard_id: &str) -> Result<Option<StoryboardRender>, JobError> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT storyboard_id, output_path, width, height, seconds, actual_usd, created_at \
+                 FROM storyboard_renders WHERE storyboard_id = ?1",
+                params![storyboard_id],
+                row_to_render,
+            )
+            .optional()
+            .map_err(map_err)
+    }
+
+    /// Every finished render, for the Library's set items.
+    pub fn renders(&self) -> Result<Vec<StoryboardRender>, JobError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT storyboard_id, output_path, width, height, seconds, actual_usd, created_at \
+                 FROM storyboard_renders ORDER BY created_at DESC",
+            )
+            .map_err(map_err)?;
+        let rows = stmt.query_map([], row_to_render).map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     }
 
     /// One storyboard by id, or `None`. Part of the store surface S14 (render)
@@ -255,18 +393,11 @@ impl SqliteStore {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id, brief, target_seconds, plan_json, created_at \
+                "SELECT id, brief, target_seconds, plan_json, created_at, \
+                        chained, shots_json, overlap_seconds, joins_json \
                  FROM storyboards WHERE id = ?1",
                 params![id],
-                |row| {
-                    Ok(Storyboard {
-                        id: row.get(0)?,
-                        brief: row.get(1)?,
-                        target_seconds: row.get(2)?,
-                        plan_json: row.get(3)?,
-                        created_at: row.get(4)?,
-                    })
-                },
+                row_to_storyboard,
             )
             .optional()
             .map_err(map_err)
@@ -277,21 +408,12 @@ impl SqliteStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT id, brief, target_seconds, plan_json, created_at \
+                "SELECT id, brief, target_seconds, plan_json, created_at, \
+                        chained, shots_json, overlap_seconds, joins_json \
                  FROM storyboards ORDER BY created_at DESC",
             )
             .map_err(map_err)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(Storyboard {
-                    id: row.get(0)?,
-                    brief: row.get(1)?,
-                    target_seconds: row.get(2)?,
-                    plan_json: row.get(3)?,
-                    created_at: row.get(4)?,
-                })
-            })
-            .map_err(map_err)?;
+        let rows = stmt.query_map([], row_to_storyboard).map_err(map_err)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
     }
 
@@ -321,6 +443,36 @@ impl SqliteStore {
             .query_row("SELECT COUNT(*) FROM job_sets", [], |r| r.get(0))
             .map_err(map_err)
     }
+}
+
+fn row_to_storyboard(row: &rusqlite::Row<'_>) -> rusqlite::Result<Storyboard> {
+    Ok(Storyboard {
+        id: row.get("id")?,
+        brief: row.get("brief")?,
+        target_seconds: row.get("target_seconds")?,
+        plan_json: row.get("plan_json")?,
+        created_at: row.get("created_at")?,
+        // Pre-v9 rows have none of these; they read as an all-at-once (S13) set,
+        // the honest value rather than a guessed chain.
+        chained: row.get::<_, i64>("chained").unwrap_or(0) != 0,
+        shots_json: row.get::<_, Option<String>>("shots_json").unwrap_or(None),
+        overlap_seconds: row.get::<_, Option<f64>>("overlap_seconds").unwrap_or(None),
+        joins_json: row.get::<_, Option<String>>("joins_json").unwrap_or(None),
+    })
+}
+
+fn row_to_render(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoryboardRender> {
+    Ok(StoryboardRender {
+        storyboard_id: row.get("storyboard_id")?,
+        output_path: row.get("output_path")?,
+        width: row.get::<_, Option<i64>>("width")?.map(|n| n.max(0) as u32),
+        height: row
+            .get::<_, Option<i64>>("height")?
+            .map(|n| n.max(0) as u32),
+        seconds: row.get("seconds")?,
+        actual_usd: row.get("actual_usd")?,
+        created_at: row.get("created_at")?,
+    })
 }
 
 fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobSet> {
@@ -577,7 +729,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8, "in_memory must migrate to the latest schema");
+        assert_eq!(v, 9, "in_memory must migrate to the latest schema");
 
         let mut j = job("p", JobStatus::Completed);
         j.priced_from = Some(PriceProvenance::Feed);
@@ -622,6 +774,10 @@ mod tests {
             plan_json: r#"{"brief":"x","targetSeconds":30.0,"useCase":"text-to-video","shots":[]}"#
                 .into(),
             created_at: 42,
+            chained: false,
+            shots_json: None,
+            overlap_seconds: None,
+            joins_json: None,
         };
         s.upsert_storyboard(&sb).unwrap();
         assert_eq!(s.storyboard("sb1").unwrap().unwrap(), sb);
@@ -666,6 +822,10 @@ mod tests {
             target_seconds: 24.0,
             plan_json: "{}".into(),
             created_at: 1,
+            chained: false,
+            shots_json: None,
+            overlap_seconds: None,
+            joins_json: None,
         })
         .unwrap();
         // Insert out of order; the query must return shot_index order.
@@ -688,6 +848,53 @@ mod tests {
             .map(|j| j.id)
             .collect();
         assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn the_chained_columns_and_a_render_round_trip() {
+        // S15 migration 9: the chain state on a storyboard and a render row both
+        // survive a write/read, and `user_version` is 9.
+        let s = SqliteStore::in_memory().unwrap();
+        let sb = Storyboard {
+            id: "chain".into(),
+            brief: "a 30s ad".into(),
+            target_seconds: 30.0,
+            plan_json: "{}".into(),
+            created_at: 7,
+            chained: true,
+            shots_json: Some(r#"[{"modelId":"m","prompt":"p"}]"#.into()),
+            overlap_seconds: Some(0.0),
+            joins_json: None,
+        };
+        s.upsert_storyboard(&sb).unwrap();
+        assert_eq!(s.storyboard("chain").unwrap().unwrap(), sb);
+
+        let r = StoryboardRender {
+            storyboard_id: "chain".into(),
+            output_path: "/lib/day-0/ad.mp4".into(),
+            width: Some(1280),
+            height: Some(720),
+            seconds: Some(30.0),
+            actual_usd: Some(2.4),
+            created_at: 8,
+        };
+        s.upsert_render(&r).unwrap();
+        assert_eq!(s.render("chain").unwrap().unwrap(), r);
+        // Re-render overwrites (one ad per set).
+        let mut r2 = r.clone();
+        r2.actual_usd = None; // an unpriced member → None, never 0
+        r2.seconds = Some(28.5);
+        s.upsert_render(&r2).unwrap();
+        assert_eq!(s.render("chain").unwrap().unwrap(), r2);
+        assert_eq!(s.renders().unwrap().len(), 1);
+
+        let version: i64 = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 9, "migration 9 must have run");
     }
 
     #[test]
@@ -838,7 +1045,8 @@ mod tests {
                  ALTER TABLE job_sets DROP COLUMN actual_source; \
                  ALTER TABLE job_sets DROP COLUMN storyboard_id; \
                  ALTER TABLE job_sets DROP COLUMN shot_index; \
-                 DROP TABLE IF EXISTS storyboards;",
+                 DROP TABLE IF EXISTS storyboards; \
+                 DROP TABLE IF EXISTS storyboard_renders;",
             )
             .unwrap();
         }

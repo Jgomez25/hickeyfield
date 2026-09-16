@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Library } from "./Library";
-import type { JobSet } from "../types";
+import type { JobSet, Storyboard, StoryboardRender } from "../types";
 
 /**
  * AC6 (S12). The Library gallery over the same `jobs` array (no new command):
@@ -111,5 +111,135 @@ describe("Library", () => {
     expect(tiles.length).toBe(1);
     expect(container.querySelector('[data-job-anchor="failed"]')).not.toBeNull();
     expect(container.querySelector('[data-job-anchor="priced"]')).toBeNull();
+  });
+
+  // S15 AC5/AC6: the storyboard set item's render controls.
+  const SET: Storyboard = {
+    id: "sb1",
+    brief: "a 30s ad",
+    targetSeconds: 30,
+    planJson: "{}",
+    createdAt: 0,
+  };
+
+  function shot(idx: number, done: boolean): JobSet {
+    return job({
+      id: `sb1-${idx}`,
+      storyboardId: "sb1",
+      shotIndex: idx,
+      status: done ? "completed" : "in_progress",
+      results: done
+        ? [{ url: "https://x/s.mp4", kind: "video", localPath: `/lib/s${idx}.mp4` }]
+        : [],
+      actualUsd: done ? 1.2 : null,
+    });
+  }
+
+  it("the Render button is disabled until every shot is Done, then enabled", () => {
+    // One shot still running → disabled.
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, false)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[SET]}
+        onRender={vi.fn()}
+      />,
+    );
+    let btn = container.querySelector<HTMLButtonElement>(".storyboard-render")!;
+    expect(btn).not.toBeNull();
+    expect(btn.disabled).toBe(true);
+
+    // Both done → enabled, and clicking asks to render this set.
+    const onRender = vi.fn();
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[SET]}
+        onRender={onRender}
+      />,
+    );
+    btn = container.querySelector<HTMLButtonElement>(".storyboard-render")!;
+    expect(btn.disabled).toBe(false);
+    act(() => btn.click());
+    expect(onRender).toHaveBeenCalledWith("sb1");
+    // Money honesty: the panel says rendering is free.
+    expect(container.textContent).toContain("Rendering is free");
+  });
+
+  it("a render event advances the progress bar", () => {
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[SET]}
+        onRender={vi.fn()}
+        renderProgress={{ sb1: { storyboardId: "sb1", percent: 0.42, done: false } }}
+      />,
+    );
+    const bar = container.querySelector<HTMLElement>(".storyboard-render-progress")!;
+    expect(bar.getAttribute("role")).toBe("progressbar");
+    expect(bar.getAttribute("aria-valuenow")).toBe("42");
+  });
+
+  it("a finished render shows the sum actual and Open result", () => {
+    const onOpenResult = vi.fn();
+    const render1: StoryboardRender = {
+      storyboardId: "sb1",
+      outputPath: "/lib/day-0/ad.mp4",
+      width: 1280,
+      height: 720,
+      seconds: 30,
+      actualUsd: 2.4,
+      createdAt: 0,
+    };
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[SET]}
+        onRender={vi.fn()}
+        onOpenResult={onOpenResult}
+        renders={[render1]}
+      />,
+    );
+    expect(container.textContent).toContain("$2.40");
+    const open = container.querySelector<HTMLButtonElement>(".storyboard-open-result")!;
+    act(() => open.click());
+    expect(onOpenResult).toHaveBeenCalledWith("/lib/day-0/ad.mp4");
+  });
+
+  it("an unpriced member makes the render total say unpriced, never $0", () => {
+    const render1: StoryboardRender = {
+      storyboardId: "sb1",
+      outputPath: "/lib/day-0/ad.mp4",
+      width: 1280,
+      height: 720,
+      seconds: 30,
+      actualUsd: null,
+      createdAt: 0,
+    };
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[SET]}
+        onRender={vi.fn()}
+        renders={[render1]}
+      />,
+    );
+    const cost = container.querySelector(".storyboard-result-cost")!;
+    expect(cost.textContent).toContain("unpriced");
+    expect(cost.textContent).not.toContain("$0.00");
   });
 });

@@ -46,6 +46,13 @@ pub type ClientFactory = Arc<dyn Fn(&str) -> Option<Arc<dyn ProviderClient>> + S
 /// Called on every observed change, so the UI can stream rather than poll.
 pub type OnUpdate = Arc<dyn Fn(&JobSet) + Send + Sync>;
 
+/// Called exactly when a storyboard shot's bytes are local and its row is final
+/// (S15). The chain scheduler wires this to advance the set to the next shot.
+/// Fired only for a settled, `Completed` job carrying a `storyboard_id`; a
+/// standalone job never fires it, and a failed shot never reaches it (so the
+/// chain parks rather than continuing past a failure).
+pub type OnSettled = Arc<dyn Fn(&JobSet) + Send + Sync>;
+
 pub struct Runner {
     store: Arc<dyn JobStore>,
     clients: ClientFactory,
@@ -69,6 +76,11 @@ pub struct Runner {
     /// Prices the settled output at the same rate the estimate used, so each
     /// finished job records an `actual_usd` measured from what fal produced.
     prices: Arc<crate::pricing::Prices>,
+    /// S15: fired once a storyboard shot settles, to advance a chained set.
+    /// Behind a `OnceLock` because the hook must capture a `Weak<Runner>` — so
+    /// it can only be built *after* the `Arc<Runner>` exists (see
+    /// `set_on_settled`), which is the cycle break §D2 describes.
+    on_settled: Arc<std::sync::OnceLock<OnSettled>>,
 }
 
 impl Runner {
@@ -88,7 +100,15 @@ impl Runner {
             abandoned: Arc::new(Mutex::new(HashSet::new())),
             limiter: Arc::new(ConcurrencyLimiter::new()),
             prices,
+            on_settled: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Install the settled hook (S15). Called once, after the `Arc<Runner>`
+    /// exists, so the hook can hold a `Weak<Runner>` and break the cycle. A
+    /// second call is ignored (the `OnceLock` is already set).
+    pub fn set_on_settled(&self, hook: OnSettled) {
+        let _ = self.on_settled.set(hook);
     }
 
     /// Restart polling for everything left unfinished by the last session.
@@ -123,6 +143,7 @@ impl Runner {
         let library = Arc::clone(&self.library);
         let limiter = Arc::clone(&self.limiter);
         let prices = Arc::clone(&self.prices);
+        let on_settled = Arc::clone(&self.on_settled);
         // Sized once, off the loop, from the job's own settings (AC1).
         let budget = timeout_budget(&job.route_id, &job.settings);
 
@@ -138,6 +159,7 @@ impl Runner {
                 library,
                 limiter,
                 prices,
+                on_settled,
             );
             watching.lock().unwrap().remove(&id);
             abandoned.lock().unwrap().remove(&id);
@@ -186,6 +208,7 @@ fn download_outputs(
     on_update: OnUpdate,
     library: Arc<Library>,
     prices: Arc<crate::pricing::Prices>,
+    on_settled: Arc<std::sync::OnceLock<OnSettled>>,
 ) {
     if job.status.phase() != hickeyfield_core::Phase::Completed || job.results.is_empty() {
         return;
@@ -236,6 +259,19 @@ fn download_outputs(
         job.updated_at = now_secs();
         let _ = store.upsert(&job);
         on_update(&job);
+    }
+
+    // S15: once a storyboard shot's bytes are local and its row is final, tell
+    // the chain scheduler so it can extract the last frame and submit the next
+    // shot. Gated on `storyboard_id` (a standalone job never fires) and
+    // `is_settled()` (Completed + every output local — a still-downloading or
+    // failed-download job must not advance the chain from an absent frame).
+    // `advance` itself is idempotent (§D2.3), so a re-poll firing this twice is
+    // harmless.
+    if job.storyboard_id.is_some() && job.is_settled() {
+        if let Some(hook) = on_settled.get() {
+            hook(&job);
+        }
     }
 }
 
@@ -583,6 +619,7 @@ fn run_watched(
     library: Arc<Library>,
     limiter: Arc<ConcurrencyLimiter>,
     prices: Arc<crate::pricing::Prices>,
+    on_settled: Arc<std::sync::OnceLock<OnSettled>>,
 ) {
     let id = job.id.clone();
     // Checked before acquiring a permit, so a job the user deleted while it was
@@ -616,7 +653,7 @@ fn run_watched(
     // Check once more before writing the outputs: a job deleted during its final
     // poll would otherwise reappear complete.
     if !abandoned.lock().unwrap().contains(&id) {
-        download_outputs(finished, store, on_update, library, prices);
+        download_outputs(finished, store, on_update, library, prices, on_settled);
     }
 }
 
@@ -1618,6 +1655,7 @@ mod tests {
             library,
             Arc::new(ConcurrencyLimiter::new()),
             Arc::new(crate::pricing::Prices::bundled()),
+            Arc::new(std::sync::OnceLock::new()),
         );
 
         assert_eq!(
@@ -1625,6 +1663,7 @@ mod tests {
             0,
             "a completed job must never be re-polled on relaunch"
         );
+        // The hook is exercised separately in `the_settled_hook_fires_once…`.
         let stored = store.get("done").unwrap().unwrap();
         assert_eq!(
             stored.status,
@@ -1639,6 +1678,60 @@ mod tests {
             stored.actual_usd,
             Some(1.25),
             "the billing record must survive"
+        );
+    }
+
+    #[test]
+    fn the_settled_hook_fires_once_for_a_storyboard_shot() {
+        // S15 §D2.2/AC2: `download_outputs` fires `on_settled` exactly once for
+        // a settled storyboard shot (Completed + local), and NEVER for a
+        // standalone job. The count is the guard against a chain double-submit.
+        use std::sync::atomic::AtomicU32;
+        let store: Arc<dyn JobStore> = Arc::new(crate::store::SqliteStore::in_memory().unwrap());
+        let library = Arc::new(Library::new(
+            std::env::temp_dir().join("hickeyfield-settled-hook-test"),
+        ));
+        let prices = Arc::new(crate::pricing::Prices::bundled());
+        let fires = Arc::new(AtomicU32::new(0));
+        let hook_fires = Arc::clone(&fires);
+        let on_settled: Arc<std::sync::OnceLock<OnSettled>> = Arc::new(std::sync::OnceLock::new());
+        let _ = on_settled.set(Arc::new(move |_job: &JobSet| {
+            hook_fires.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        // A settled storyboard shot: Completed, its one output already local.
+        let mut shot = job("shot-0");
+        shot.status = JobStatus::Completed;
+        shot.storyboard_id = Some("set-1".into());
+        shot.shot_index = Some(0);
+        shot.results = vec![Output {
+            url: "https://a/shot0.mp4".into(),
+            kind: OutputKind::Video,
+            local_path: Some("/lib/shot0.mp4".into()),
+        }];
+        download_outputs(
+            shot,
+            Arc::clone(&store),
+            Arc::new(|_| {}),
+            Arc::clone(&library),
+            Arc::clone(&prices),
+            Arc::clone(&on_settled),
+        );
+        assert_eq!(fires.load(Ordering::SeqCst), 1, "the shot must fire once");
+
+        // A standalone completed job (no storyboard_id) must never fire it.
+        let mut solo = job("solo");
+        solo.status = JobStatus::Completed;
+        solo.results = vec![Output {
+            url: "https://a/solo.mp4".into(),
+            kind: OutputKind::Video,
+            local_path: Some("/lib/solo.mp4".into()),
+        }];
+        download_outputs(solo, store, Arc::new(|_| {}), library, prices, on_settled);
+        assert_eq!(
+            fires.load(Ordering::SeqCst),
+            1,
+            "a standalone job must never fire the storyboard hook"
         );
     }
 }

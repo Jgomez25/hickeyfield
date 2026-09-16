@@ -185,6 +185,37 @@ impl Library {
             .map_err(|e| JobError::Permanent(format!("cannot finalize download: {e}")))?;
         Ok(final_path)
     }
+
+    /// Adopt a locally-produced file (S15: a stitched storyboard render) into
+    /// the library, returning its new path.
+    ///
+    /// Unlike [`fetch`], which downloads a provider URL, this moves a file the
+    /// app itself produced under `app_data_dir()` into the visible library — so
+    /// a finished ad is a real, findable item next to every generation, not
+    /// buried in app data. A cross-device `rename` (app data and `~/Movies` can
+    /// sit on different volumes) falls back to copy-then-remove so the adopt
+    /// never fails silently on a laptop with an external drive.
+    pub fn adopt(&self, produced: &Path, stem: &str, created_at: i64) -> Result<PathBuf, JobError> {
+        let dir = self.dir_for(created_at);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| JobError::Permanent(format!("cannot create {}: {e}", dir.display())))?;
+        let ext = produced
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp4");
+        let final_path = unique_path(&dir, &sanitize(stem), ext);
+        // Try a rename first (instant, same volume); fall back to copy+remove
+        // across volumes.
+        if std::fs::rename(produced, &final_path).is_err() {
+            std::fs::copy(produced, &final_path).map_err(|e| {
+                JobError::Permanent(format!("cannot copy render into library: {e}"))
+            })?;
+            // Best effort: a source we could not remove is a leftover temp, not
+            // a failed adopt.
+            let _ = std::fs::remove_file(produced);
+        }
+        Ok(final_path)
+    }
 }
 
 #[cfg(test)]
@@ -288,5 +319,39 @@ mod tests {
             "expected a media folder, got {}",
             root.display()
         );
+    }
+
+    #[test]
+    fn adopt_moves_a_local_render_into_the_day_folder() {
+        // S15: a locally-produced render is adopted into the library (a real,
+        // findable item), not left in app data. The source is consumed; the
+        // destination is a sanitised, uniquified name in the day folder.
+        let tmp = std::env::temp_dir().join(format!("hf-adopt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let lib = Library::new(tmp.join("lib"));
+
+        let produced = tmp.join("storyboard.mp4");
+        std::fs::write(&produced, b"fake mp4 bytes").unwrap();
+
+        let out = lib
+            .adopt(&produced, "a cold-brew ad-storyboard", 0)
+            .unwrap();
+        assert!(out.is_file(), "the adopted file must exist in the library");
+        assert!(
+            out.starts_with(lib.root()),
+            "must land under the library root"
+        );
+        assert!(!produced.exists(), "the source is consumed, not duplicated");
+        assert_eq!(out.extension().and_then(|e| e.to_str()), Some("mp4"));
+
+        // A second adopt of the same stem must not overwrite.
+        let produced2 = tmp.join("storyboard2.mp4");
+        std::fs::write(&produced2, b"more bytes").unwrap();
+        let out2 = lib
+            .adopt(&produced2, "a cold-brew ad-storyboard", 0)
+            .unwrap();
+        assert_ne!(out, out2, "a second render gets a distinct name");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

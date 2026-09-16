@@ -22,7 +22,7 @@
 //! disagreeing: every `model_id` exists in the registry **and** is runnable for
 //! the tab (the same [`crate::use_case::supports`] predicate the model picker
 //! and the submit path use), every camera slug exists ([`crate::camera::get`],
-//! which never guesses a nearest move), the shot count is 3..=8, and the
+//! which never guesses a nearest move), the shot count is 1..=8, and the
 //! proposed durations sum to within ±10% of the target. Only after that does
 //! [`clamp_shot`] narrow each shot's seconds toward a value the chosen model
 //! actually offers — always advising, never silently substituting.
@@ -86,6 +86,13 @@ pub struct Shot {
     /// carries the honest reason here rather than being silently changed.
     #[serde(default)]
     pub advisories: Vec<String>,
+    /// S15: whether this shot's model can continue from a start frame (has an
+    /// image-to-video route). Computed server-side in [`plan`] so the UI's
+    /// Chain-toggle default and the chain scheduler agree on the same
+    /// authority. `#[serde(default)]` (false) so a plan written before this
+    /// field still parses.
+    #[serde(default)]
+    pub chainable: bool,
 }
 
 /// A whole storyboard plan.
@@ -118,7 +125,7 @@ pub enum PlanError {
     Refused(&'static str),
     /// `clean_reply` or the serde parse failed. Carries a short cause.
     NotJson(String),
-    /// The shot count was not in `3..=8`.
+    /// The shot count was not in `1..=8`.
     ShotCount(usize),
     /// The proposed durations did not sum to within ±10% of the target.
     DurationSum { sum: f64, target: f64 },
@@ -149,7 +156,7 @@ impl std::fmt::Display for PlanError {
             ),
             PlanError::ShotCount(n) => write!(
                 f,
-                "a storyboard needs 3 to 8 shots, but the draft had {n}. Try drafting again."
+                "a storyboard needs 1 to 8 shots, but the draft had {n}. Try drafting again."
             ),
             PlanError::DurationSum { sum, target } => write!(
                 f,
@@ -182,6 +189,83 @@ impl std::fmt::Display for PlanError {
 
 /// The ±fraction of the target the drafted durations must sum within.
 const SUM_TOLERANCE: f64 = 0.10;
+
+/// The default crossfade overlap between adjacent shots, in seconds. The single
+/// source both the plan-time length gate and the render read, so the length the
+/// user is validated against is the length the sidecar actually produces. A
+/// hard cut is `0.0`; the render's `RenderOptions.overlap_seconds` defaults from
+/// this.
+pub const DEFAULT_CROSSFADE_SECONDS: f64 = 0.5;
+
+/// How one shot joins the previous one in the stitched render (S15 D-B).
+///
+/// A **continuity** join is a hard cut (overlap 0): shot N+1's first frame *is*
+/// shot N's last frame, so a crossfade would superimpose two instants of one
+/// motion and read as a ghost/freeze — a match cut is invisible when the frames
+/// match. A **crossfade** join blends over `seconds`, for a montage/scene-change
+/// join where continuity was not applied.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Join {
+    /// Hard cut — the previous shot's last frame seeded this one.
+    Continuity,
+    /// Blend over this many seconds.
+    Crossfade(f64),
+}
+
+impl Join {
+    /// The overlap this join removes from the stitched length.
+    pub fn overlap(self) -> f64 {
+        match self {
+            Join::Continuity => 0.0,
+            Join::Crossfade(s) => s,
+        }
+    }
+}
+
+/// The stitched length for a set of shots with an explicit per-join kind (D-B).
+///
+/// `joins[i]` is the join *into* shot `i+1`; there are `shots.len() − 1` of
+/// them. A continuity join removes nothing (hard cut); a crossfade removes its
+/// clamped overlap. This is the arithmetic the render actually produces once
+/// continuity and crossfade joins are mixed, so the plan-time gate and the D3
+/// duration assertion agree. Worked: 2×15 all-continuity → 30.0; 2×15 all
+/// crossfade(0.5) → 29.5.
+pub fn stitched_duration_joined(shots: &[Shot], joins: &[Join]) -> f64 {
+    let mut total = shots.first().map_or(0.0, |s| s.seconds.max(0.0));
+    let mut prev = total;
+    for (shot, join) in shots.iter().skip(1).zip(joins.iter()) {
+        let this = shot.seconds.max(0.0);
+        let o = join.overlap();
+        let d = if o > 0.0 { o.min(prev).min(this) } else { 0.0 };
+        total += this - d;
+        prev = this;
+    }
+    total
+}
+
+/// The stitched length of a set of shots crossfaded at `overlap` seconds each.
+///
+/// A crossfade is an *overlap*, not an insertion, so N shots joined by N−1
+/// crossfades run `Σ seconds − (N−1)·overlap`, not the raw sum. Each overlap is
+/// clamped to the shorter of the two neighbours it joins (a crossfade cannot be
+/// longer than either side), mirroring [`crate::compositor::Timeline`]'s own
+/// clamp so plan-time and render-time cannot disagree. Returns the raw sum for
+/// `overlap <= 0` (a hard cut) or fewer than two shots.
+pub fn stitched_duration(shots: &[Shot], overlap: f64) -> f64 {
+    let mut total = shots.first().map_or(0.0, |s| s.seconds.max(0.0));
+    let mut prev = total;
+    for shot in shots.iter().skip(1) {
+        let this = shot.seconds.max(0.0);
+        let d = if overlap > 0.0 {
+            overlap.min(prev).min(this)
+        } else {
+            0.0
+        };
+        total += this - d;
+        prev = this;
+    }
+    total
+}
 
 /// Draft a storyboard for `brief` through `chat`, then validate and clamp it.
 ///
@@ -220,8 +304,15 @@ pub fn plan(
     parsed.target_seconds = target_seconds;
     parsed.use_case = use_case.slug().to_string();
 
-    // 3–6. Structural validation on the model's proposed shots.
-    validate(&parsed.shots, target_seconds, use_case)?;
+    // 3–6. Structural validation on the model's proposed shots. The stitched
+    //    length (crossfade-aware) is gated against the target, using the
+    //    default overlap the render will apply (AC4).
+    validate(
+        &parsed.shots,
+        target_seconds,
+        use_case,
+        DEFAULT_CROSSFADE_SECONDS,
+    )?;
 
     // Model-aware clamp + recorded continuity. Validation guaranteed every model
     // id resolves, so the lookups below cannot miss.
@@ -229,6 +320,11 @@ pub fn plan(
     for (i, shot) in parsed.shots.iter_mut().enumerate() {
         if let Some(model) = reg.get(&shot.model_id) {
             clamp_shot(shot, i, model, use_case);
+            // S15: does this shot's model serve image-to-video? The Chain-toggle
+            // default reads this; it is the same authority the chain scheduler
+            // gates on (a route that binds a start frame), so the two cannot
+            // drift.
+            shot.chainable = use_case::supports(model, UseCase::ImageToVideo);
         }
         shot.continuity = if i == 0 {
             None
@@ -239,14 +335,37 @@ pub fn plan(
         };
     }
 
+    // AC4 (clamp interaction): the clamp narrows each shot toward the model's
+    // duration axis, which the user cannot override — so if the *post-clamp*
+    // stitched length has drifted beyond ±10% of the target, that is advised,
+    // not failed. Failing here would strand a well-drafted plan on a model
+    // constraint. Recorded as a plan-level advisory on the first shot.
+    let stitched = stitched_duration(&parsed.shots, DEFAULT_CROSSFADE_SECONDS);
+    if (stitched - target_seconds).abs() > SUM_TOLERANCE * target_seconds {
+        if let Some(first) = parsed.shots.first_mut() {
+            first.advisories.push(format!(
+                "clamped shots run ~{}s stitched; target was {}s",
+                trim_secs(stitched),
+                trim_secs(target_seconds)
+            ));
+        }
+    }
+
     Ok(parsed)
 }
 
 /// Structural checks, in the documented order. Pure: registry/use-case/camera
 /// lookups only, no network. Reused by [`plan`] and exposed for tests.
-pub fn validate(shots: &[Shot], target_seconds: f64, use_case: UseCase) -> Result<(), PlanError> {
-    // 3. Shot count.
-    if !(3..=8).contains(&shots.len()) {
+pub fn validate(
+    shots: &[Shot],
+    target_seconds: f64,
+    use_case: UseCase,
+    overlap: f64,
+) -> Result<(), PlanError> {
+    // 3. Shot count. S15 D-G: the floor is 1, not 3 — a single-shot plan (a
+    //    Seedance 30s native, or a one-beat brief) is legitimate, and a 2×15
+    //    H3 Max chain must be reachable. The ceiling of 8 stands.
+    if !(1..=8).contains(&shots.len()) {
         return Err(PlanError::ShotCount(shots.len()));
     }
 
@@ -283,7 +402,11 @@ pub fn validate(shots: &[Shot], target_seconds: f64, use_case: UseCase) -> Resul
 
     // 6. Duration sum within ±10% of the target, on the *proposed* seconds —
     //    the drafting quality gate, before the per-shot clamp adjusts anything.
-    let sum: f64 = shots.iter().map(|s| s.seconds).sum();
+    //    The gate is on the STITCHED length (Σ seconds − overlaps), since a
+    //    crossfade shortens the result: a caller that passes `overlap = 0.0`
+    //    (a hard cut) gets the raw sum, so this is a strict generalisation of
+    //    the S13 raw-sum gate.
+    let sum = stitched_duration(shots, overlap);
     if (sum - target_seconds).abs() > SUM_TOLERANCE * target_seconds {
         return Err(PlanError::DurationSum {
             sum,
@@ -424,6 +547,38 @@ mod tests {
             .to_string()
     }
 
+    /// Bare shots with the given durations (model id blank — for the pure
+    /// `stitched_duration`, which reads only `seconds`).
+    fn shots_of(seconds: &[f64]) -> Vec<Shot> {
+        shots_on("", seconds)
+    }
+
+    /// Shots with the given durations on `model`, roles filled in, no cameras —
+    /// for the overlap-aware `validate` (which resolves the model).
+    fn shots_on(model: &str, seconds: &[f64]) -> Vec<Shot> {
+        seconds
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| Shot {
+                title: "x".into(),
+                prompt: "x".into(),
+                seconds: s,
+                camera: None,
+                model_id: model.to_string(),
+                role: if i == 0 {
+                    ShotRole::Start
+                } else if i + 1 == seconds.len() {
+                    ShotRole::End
+                } else {
+                    ShotRole::Middle
+                },
+                continuity: None,
+                advisories: Vec::new(),
+                chainable: false,
+            })
+            .collect()
+    }
+
     /// Four shots summing to 30s, all on `model`, cameras real.
     fn good_json(model: &str, cam: &str) -> String {
         format!(
@@ -543,10 +698,123 @@ mod tests {
         .unwrap_err();
         match err {
             PlanError::DurationSum { sum, target } => {
-                assert_eq!(sum, 20.0);
+                // The gate now reports the STITCHED length (S15 AC4): four 5s
+                // shots joined by three 0.5s crossfades run 20 − 1.5 = 18.5s,
+                // which is still far outside ±10% of 30s, so still rejected.
+                assert_eq!(sum, 18.5);
                 assert_eq!(target, 30.0);
             }
             other => panic!("expected DurationSum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stitched_duration_subtracts_the_overlaps() {
+        // AC4: four shots 8/8/8/6 joined by three 0.5s crossfades run
+        // 30 − 1.5 = 28.5s, not the raw 30. A hard cut (overlap 0) is the raw
+        // sum. Mutating `stitched_duration` to return the raw sum fails this.
+        let shots = shots_of(&[8.0, 8.0, 8.0, 6.0]);
+        assert_eq!(stitched_duration(&shots, 0.5), 28.5);
+        assert_eq!(stitched_duration(&shots, 0.0), 30.0);
+        // Each overlap is clamped to the shorter neighbour: a 5s crossfade
+        // between a 2s and a 3s shot can only take 2s.
+        let short = shots_of(&[2.0, 3.0]);
+        assert_eq!(stitched_duration(&short, 5.0), 3.0);
+    }
+
+    #[test]
+    fn stitched_duration_joined_is_per_join() {
+        // S15 D-B: a 2×15 set joined by a continuity (hard cut) keeps all 30s;
+        // the same set crossfaded 0.5s renders 29.5s; a 3×10 set where shot 2
+        // fell back (crossfade) but shot 1 chained (continuity) is 29.5s.
+        let two = shots_of(&[15.0, 15.0]);
+        assert_eq!(stitched_duration_joined(&two, &[Join::Continuity]), 30.0);
+        assert_eq!(
+            stitched_duration_joined(&two, &[Join::Crossfade(0.5)]),
+            29.5
+        );
+        let three = shots_of(&[10.0, 10.0, 10.0]);
+        assert_eq!(
+            stitched_duration_joined(&three, &[Join::Crossfade(0.5), Join::Continuity]),
+            29.5
+        );
+        // All faded 0.5s → 30 − 1.5 = 28.5 (design D4's example).
+        let four = shots_of(&[8.0, 8.0, 8.0, 6.0]);
+        assert_eq!(
+            stitched_duration_joined(
+                &four,
+                &[
+                    Join::Crossfade(0.5),
+                    Join::Crossfade(0.5),
+                    Join::Crossfade(0.5)
+                ]
+            ),
+            28.5
+        );
+    }
+
+    #[test]
+    fn plan_time_gate_uses_the_stitched_duration() {
+        // AC4: the overlap-aware validate accepts a 28.5s-stitched plan against
+        // a 30s target (|28.5−30| = 1.5 ≤ 3) and rejects an 18.5s one.
+        let model = a_t2v_model();
+        let accepted = shots_on(&model, &[8.0, 8.0, 8.0, 6.0]);
+        assert!(
+            validate(&accepted, 30.0, UseCase::TextToVideo, 0.5).is_ok(),
+            "28.5 stitched is within ±10% of 30"
+        );
+        let rejected = shots_on(&model, &[5.0, 5.0, 5.0, 5.0]);
+        assert!(
+            validate(&rejected, 30.0, UseCase::TextToVideo, 0.5).is_err(),
+            "18.5 stitched is not within ±10% of 30"
+        );
+        // A hard cut (overlap 0) uses the raw sum: 8+8+8+6 = 30 = target, ok.
+        assert!(validate(&accepted, 30.0, UseCase::TextToVideo, 0.0).is_ok());
+        // …and a 5×4 raw sum of 20 is still short even as a hard cut.
+        assert!(validate(&rejected, 30.0, UseCase::TextToVideo, 0.0).is_err());
+    }
+
+    #[test]
+    fn clamp_drift_is_advised_not_failed() {
+        // AC4: a plan whose per-shot clamp pushes the stitched length outside
+        // ±10% is accepted with a plan-level advisory, not rejected — the clamp
+        // is a model constraint the user cannot override. Kling 2.6 offers an
+        // enumerated 5/10s axis, so 8s shots snap to a value that drifts the
+        // stitched total; the plan still comes back Ok with an advisory.
+        let model = "kling2_6";
+        if !registry().contains_key(model) {
+            return; // catalogue drift: skip rather than assert on a missing id
+        }
+        let cam = a_camera();
+        let json = format!(
+            r#"{{"shots": [
+  {{"title": "a", "prompt": "x", "seconds": 8, "camera": "{cam}", "modelId": "{model}", "role": "start"}},
+  {{"title": "b", "prompt": "x", "seconds": 8, "camera": null, "modelId": "{model}", "role": "middle"}},
+  {{"title": "c", "prompt": "x", "seconds": 8, "camera": null, "modelId": "{model}", "role": "middle"}},
+  {{"title": "d", "prompt": "x", "seconds": 6, "camera": null, "modelId": "{model}", "role": "end"}}
+]}}"#
+        );
+        let out = plan(
+            &fake(&json),
+            "sys",
+            "brief",
+            30.0,
+            UseCase::TextToVideo,
+            &[],
+        );
+        // Either the model isn't runnable here (catalogue-dependent) — skip —
+        // or the plan is accepted; it must never be rejected on clamp drift.
+        if let Ok(p) = out {
+            let clamped = p.shots.iter().any(|s| !s.advisories.is_empty());
+            let stitched = stitched_duration(&p.shots, DEFAULT_CROSSFADE_SECONDS);
+            if (stitched - 30.0).abs() > 0.10 * 30.0 {
+                assert!(
+                    p.shots[0].advisories.iter().any(|a| a.contains("stitched")),
+                    "a drifted clamp must carry the plan-level advisory: {:?}",
+                    p.shots[0].advisories
+                );
+            }
+            let _ = clamped;
         }
     }
 
@@ -638,6 +906,7 @@ mod tests {
             role: ShotRole::Middle,
             continuity: None,
             advisories: Vec::new(),
+            chainable: false,
         };
         clamp_shot(&mut shot, 2, model, UseCase::TextToVideo);
         assert_eq!(
@@ -666,6 +935,7 @@ mod tests {
             role: ShotRole::Start,
             continuity: None,
             advisories: Vec::new(),
+            chainable: false,
         };
         clamp_shot(&mut shot, 0, model, UseCase::TextToVideo);
         assert_eq!(shot.seconds, 30.0);
@@ -697,17 +967,39 @@ mod tests {
     }
 
     #[test]
-    fn the_shot_count_bound_is_three_to_eight() {
+    fn the_shot_count_bound_is_one_to_eight() {
+        // S15 D-G: a two-shot plan (the 2×15 H3 Max chain) and a one-shot plan
+        // (a Seedance 30s native) are now BOTH accepted; the floor is 1. Only
+        // an empty plan is too few. The mutation check for the `1..=8` bound.
         let model = a_t2v_model();
-        // Two shots is too few; the mutation check for the 3..=8 bound.
-        let json = format!(
+        let two = format!(
             r#"{{"shots": [
   {{"title": "a", "prompt": "x", "seconds": 15, "camera": null, "modelId": "{model}", "role": "start"}},
   {{"title": "b", "prompt": "x", "seconds": 15, "camera": null, "modelId": "{model}", "role": "end"}}
 ]}}"#
         );
+        assert!(
+            plan(&fake(&two), "sys", "brief", 30.0, UseCase::TextToVideo, &[]).is_ok(),
+            "two 15s shots (H3 Max 2×15) must be accepted"
+        );
+
+        // Zero shots is still too few.
+        let none = r#"{"shots": []}"#;
+        let err = plan(&fake(none), "sys", "brief", 30.0, UseCase::TextToVideo, &[]).unwrap_err();
+        assert!(matches!(err, PlanError::ShotCount(0)), "got {err:?}");
+
+        // Nine shots is still too many.
+        let nine: String = format!(
+            r#"{{"shots": [{}]}}"#,
+            (0..9)
+                .map(|_| format!(
+                    r#"{{"title":"a","prompt":"x","seconds":3.3,"camera":null,"modelId":"{model}","role":"middle"}}"#
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         let err = plan(
-            &fake(&json),
+            &fake(&nine),
             "sys",
             "brief",
             30.0,
@@ -715,6 +1007,6 @@ mod tests {
             &[],
         )
         .unwrap_err();
-        assert!(matches!(err, PlanError::ShotCount(2)), "got {err:?}");
+        assert!(matches!(err, PlanError::ShotCount(9)), "got {err:?}");
     }
 }

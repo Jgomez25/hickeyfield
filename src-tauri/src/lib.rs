@@ -1,8 +1,10 @@
 mod app;
+mod chain;
 mod commands;
 mod harness;
 mod library;
 mod pricing;
+mod render;
 mod runner;
 mod store;
 mod validate;
@@ -83,6 +85,8 @@ pub fn run() {
             commands::plan_storyboard,
             commands::generate_storyboard,
             commands::list_storyboards,
+            render::render_storyboard,
+            render::list_storyboard_renders,
             commands::list_jobs,
             commands::cancel_job,
             commands::delete_job,
