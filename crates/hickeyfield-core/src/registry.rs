@@ -1561,8 +1561,8 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
             Modality::Video,
             &[
                 ("prompt", true, ValueSpec::Text),
-                ("start_image", false, ValueSpec::Media),
-                ("end_image", false, ValueSpec::Media),
+                // `start_image` / `end_image` return with `InputMode::Image`
+                // once the parser reads fal's `const` (see `FAL_ROUTE_MODES`).
                 (
                     "duration",
                     false,

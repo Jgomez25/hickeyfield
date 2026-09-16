@@ -972,3 +972,261 @@ AC1, AC2, AC4, AC6 and the mechanical half of AC7 are independently verified gre
 and AC5 fail on F1.
 
 VERDICT: FAIL
+
+---
+
+## RE-TEST 2 (HEAD 9e53dfd)
+
+Scope: the repair delta only (`git show 9e53dfd`), plus a full gate re-run. Everything above is
+kept as history. RE-TEST 1's F1 was the blocking finding; this section re-runs it.
+
+The delta I reviewed, from `git show 9e53dfd -- crates/ CHANGELOG.md`:
+
+```
+-    (
+-        "bytedance/seedance-2.5",
+-        false,
+-        &[InputMode::Text, InputMode::Image],
+-    ),
++    // fal serves `/seedance-2.5/image-to-video` too, and it is deliberately
++    // not claimed here: that endpoint pins `aspect_ratio` to `"auto"` by
++    // `const` ... Re-claim Image once the parser reads `const` (backlog:
++    // fal-schema-const-and-int-enums).
++    ("bytedance/seedance-2.5", false, &[InputMode::Text]),
+```
+plus the `use_case.rs` list losing `("seedance_2_5", UseCase::ImageToVideo)`, a second
+constraint string on the seedance spec, the CHANGELOG qualifier, the `picker_only_specs` doc
+comment (my F2), a stale `/extend-video` mention in `media.rs`, and the Wan 3.0 Prime duration
+note.
+
+### Commands — gate re-run at 9e53dfd
+
+```
+$ cargo test --workspace
+test result: ok. 657 passed; 0 failed; 9 ignored; ... finished in 1.03s
+test result: ok.   2 passed; 0 failed; 0 ignored; ... finished in 0.00s
+test result: ok. 120 passed; 0 failed; 1 ignored; ... finished in 15.27s
+test result: ok.   0 passed; 0 failed; ... (x3 bin/doc targets)
+TEST_EXIT=0
+```
+Summed: **779 passed, 0 failed.**
+
+```
+$ cargo fmt --all --check                                   FMT_EXIT=0   (no output)
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.04s
+                                                            CLIPPY_EXIT=0
+$ ./scripts/lint-provenance.py
+CDN hostnames      PASS  no third-party media hosts referenced
+Copy provenance    PASS  no shipped string matches the reference corpus (80015 shingles indexed)
+                                                            PROV_EXIT=0
+$ cargo run -q -p hickeyfield-core --example fal_diff -- --offline | head -1
+fal index: 1491 model(s), bundled snapshot of 2026-09-16. Registry reaches 62 fal endpoint(s).
+                                                            DIFF_EXIT=0
+$ cd ui && pnpm test                                        (node v24.8.0)
+ Test Files  14 passed (14)
+      Tests  232 passed (232)                               UITEST_EXIT=0
+$ cd ui && pnpm build
+✓ built in 894ms                                            UIBUILD_EXIT=0
+```
+63 → 62 fal endpoints reached is the one endpoint the repair gives up. Correct.
+
+### F1 re-test — is `bytedance/seedance-2.5/image-to-video` still reachable?
+
+fal still pins it, re-fetched live and keylessly just now:
+
+```
+$ curl -s "https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=bytedance/seedance-2.5/image-to-video" | ...
+{ "default": "auto", "type": "string", "title": "Aspect Ratio",
+  "description": "The aspect ratio of the generated video. Always \"auto\" for image-to-video",
+  "const": "auto" }
+```
+
+The same probe I used to break RE-TEST 1, re-run unchanged against a scratch copy of 9e53dfd:
+
+```
+$ cargo run -q -p hickeyfield-core --example probe_aspect
+slug = bytedance/seedance-2.5
+-- resolve_endpoint --
+  Text -> Ok("bytedance/seedance-2.5/text-to-video")
+  Image -> Err(UnsupportedMode { wanted: Image, supported: [Text] })
+  Video -> Err(UnsupportedMode { wanted: Video, supported: [Text] })
+-- use_case::supports (picker tabs) --
+  text-to-video -> true
+  image-to-video -> false
+  edit-video -> false
+  text-to-image -> false
+  edit-image -> false
+-- submit-time aspect decision (requested = DEFAULT_SETTINGS.aspect) --
+  Text -> bytedance/seedance-2.5/text-to-video
+     aspect values=["auto","21:9","16:9","4:3","1:1","3:4","9:16"] accepts=true plan=Sent("16:9") wire=Some("16:9")
+  Image: no endpoint (this model takes a prompt on its own, not a still image) -- unreachable, nothing is sent
+```
+
+Three independent layers now agree, and I checked the third by reading this HEAD:
+`media::resolve_endpoint` errors for Image; `use_case::supports` is false for the Animate tab so
+`models_for_use_case` never lists it there; and `src-tauri/src/app.rs:277-286` maps a
+`resolve_endpoint` error to `JobError::Permanent` **before** the provider is called, so even a
+hand-constructed attachment is refused without a round trip and without spend. The `"16:9"` that
+still goes on the wire now goes to the text-to-video endpoint, which enumerates `16:9`.
+
+**F1 is genuinely fixed.**
+
+### 30s still offered on text-to-video
+
+```
+$ cargo test -p hickeyfield-core seedance_2_5_offers_a_thirty_second_clip
+test registry::tests::seedance_2_5_offers_a_thirty_second_clip ... ok
+```
+and independently, against fal's live schema rather than the test's own fixture:
+
+```
+-- 30s still on text-to-video --
+  durations = [4.0, 5.0, ..., 29.0, 30.0]
+  contains 30.0 = true
+  live fal axis for bytedance/seedance-2.5/text-to-video:
+    ["auto","4","5",...,"29","30"]
+```
+The spec's list and fal's list are identical, 30 is on both. **AC4's headline holds.**
+
+### Wan 3.0 Prime constraint note
+
+The old note claimed "no published ceiling". fal, fetched live:
+
+```
+"duration": { "default": 5, "anyOf": [ { "type": "integer", "maximum": 30, "minimum": 2 },
+                                       { "type": "null" } ] }
+```
+The new note ("a plain integer from 2 to 30 seconds (default 5) … the endpoint enforces the
+range") is accurate. The app still offers it free-form, which is what AC4 asks for
+("free-form-integer models remain uncapped in-app, fal enforces"). **Correct.**
+
+### F2 re-test
+
+`crates/hickeyfield-core/src/registry.rs:1536` no longer claims LTX 2.5 / Veo 3.1 Extend were
+imported; it now records them as probed-and-withdrawn. The stale `/extend-video` clause in the
+`media.rs:626` comment is gone. `grep -rniE 'ltx_2_5|ltx-2\.5|veo3_1_extend|veo3\.1/extend'`
+over `crates/ src-tauri/ ui/ docs/ CHANGELOG.md` still returns only the deliberate withdrawal
+comments, the backlog entry and the vendored snapshot rows. **F2 fixed.**
+
+---
+
+## Break attempts (RE-TEST 2)
+
+### B8 — mutation: revert the one-line repair (**not caught**)
+
+In a scratch copy of 9e53dfd, outside the repo, I restored exactly what the repair removed:
+
+```
+697:    ("bytedance/seedance-2.5", false, &[InputMode::Text, InputMode::Image]),
+
+$ cargo test -q --workspace
+test result: ok. 657 passed; 0 failed; 9 ignored; ... finished in 0.77s
+test result: ok.   2 passed; 0 failed; ...
+test result: ok. 120 passed; 0 failed; 1 ignored; ... finished in 144.16s
+```
+
+**779 green with the defect fully restored.** Nothing guards the repair. The array-length
+assertion does not fire (the length is still 48 — only the mode list changed), and the
+`use_case` test lost its `seedance_2_5` / ImageToVideo line by **deletion**, where the same test
+block two lines below already uses the negative form for precisely this situation:
+
+```
+crates/hickeyfield-core/src/use_case.rs:315  assert!(!supports(&reg["kling3_0_pro"], UseCase::ImageToVideo));
+crates/hickeyfield-core/src/use_case.rs:316  assert!(!supports(&reg["wan3_0_prime"], UseCase::ImageToVideo));
+crates/hickeyfield-core/src/use_case.rs:317  assert!(!supports(&reg["qwen_image_3"], UseCase::EditImage));
+```
+
+This is a defect that escaped one REVIEW, one TEST and a second REVIEW, and was found only by
+probing fal's live schema. Leaving it unguarded by a one-line assertion that the file already
+demonstrates the pattern for is not acceptable at a gate whose own AC5 says these guards are to
+be "updated, not deleted".
+
+### B9 — `audit_fal` after the repair (**a new finding the repair introduced**)
+
+```
+$ env -u hickeyfield_FAL_KEY -u FAL_KEY cargo run -q -p hickeyfield-core --example audit_fal
+=== SILENTLY IGNORED MEDIA — bills for the wrong generation (12) ===
+  ...
+  seedance_2_5               bytedance/seedance-2.5/text-to-video
+      catalogue offers [start_image, end_image] but the endpoint takes none
+  ...
+=== UNREACHABLE — fal serves no schema for this endpoint (0) ===
+=== CHECKED — fal answered with a schema (62) ===
+AUDIT_EXIT=0
+```
+
+Pre-repair (the committed `audit_fal-2026-09-16-reduced.log`) that section had **11** entries and
+`seedance_2_5` was not among them; I verified `findings=0` for all eleven in RE-TEST 1. The
+repair took the model down to one endpoint but left `("start_image", false, ValueSpec::Media)`
+and `("end_image", false, ValueSpec::Media)` on the spec (`registry.rs:1564-1565`), describing
+an endpoint `seedance_2_5` no longer serves.
+
+Consequences, each checked rather than assumed:
+
+- `implement.md` §4's pasted claim — *"Every landed slug: CHECKED, zero findings, zero
+  UNREACHABLE. Gate passed, no exceptions taken."* — is now **false**, on the one model the
+  slice and the CHANGELOG lead with. AC3's text ("each PASSING `audit_fal`") is the rule the
+  orchestrator invoked four separate times to withdraw models; it is not being applied here.
+- **No money is at risk and the user cannot reach it.** `UseCase::TextToVideo => slots() = &[]`
+  (`use_case.rs:131`), so the New Video tab draws no attachment box at all, and if one were
+  reached, `app.rs:277-286` refuses before the provider call. The severity is honesty, not spend.
+- It is the same *class* as 11 pre-existing entries in that section (`veo3_1`, `flux_2`,
+  `gpt_image_2` …), which the project already carries as its known baseline — so this is a
+  regression on the slice's own verification metric, not a new kind of wrongness.
+
+### B10 — the other ten, re-checked
+
+The delta touches no other model's routes, slugs, modes or flags. `resolve_endpoint`,
+`FAL_ROUTE_MODES` length (48), `LAUNCH_FAMILIES` (12), `there_are_twelve_launch_families`,
+`the_unroutable_models_are_a_known_short_list`, `registry_covers_the_catalogue_minus_its_exclusions`
+(`+27`) and `every_imported_model_resolves_to_an_exact_fal_endpoint` are all unchanged and green
+in the 779. `audit_fal` shows `findings=0` for the other ten and `UNREACHABLE 0`. **Not broken.**
+
+### B11 — repo state
+
+`git status --porcelain` before writing this file showed only `.forge/.../review.md`, modified
+by the concurrent REVIEW agent, not by me. All mutation work ran in
+`scratchpad/copy2`, an rsync copy outside the repo. The only file I wrote is this one.
+
+---
+
+## Findings (RE-TEST 2)
+
+- **F1 — FIXED.** Verified three ways above, including against fal's live schema. No spend path.
+- **F2 — FIXED.**
+- **F3 (new, introduced by the repair) — `seedance_2_5` now carries an `audit_fal` finding.**
+  Its spec still declares `start_image` / `end_image` (`registry.rs:1564-1565`) for an endpoint
+  it no longer serves. Unreachable from the UI and cannot bill, but it falsifies
+  `implement.md` §4 and AC3's literal rule.
+- **F4 (new) — the repair has no regression test.** Restoring one line re-creates the 422 defect
+  with all 779 tests green (B8). The deleted positive assertion was not replaced by the negative
+  one the same test block already uses three times.
+
+## Root-cause diagnosis (for the repair loop)
+
+Both remaining findings are in the same two files and are two lines of work.
+
+1. **F3** — delete `("start_image", false, ValueSpec::Media)` and
+   `("end_image", false, ValueSpec::Media)` from the `seedance_2_5` spec at
+   `crates/hickeyfield-core/src/registry.rs:1564-1565`. The model is text-to-video only now;
+   those flags describe `…/image-to-video`, which `FAL_ROUTE_MODES` no longer claims. Removing
+   them restores `SILENTLY IGNORED MEDIA` to 11, makes `media::can_bind` /
+   `CapabilitiesDto::unsupported_roles` honest, and makes `implement.md` §4's "zero findings"
+   sentence true again. Re-add them in the same commit that re-claims `InputMode::Image` once
+   the parser reads `const`. (The existing constraint note already explains the restriction to
+   the user, so nothing user-facing is lost.)
+2. **F4** — add one line to `the_models_imported_from_fal_land_on_the_right_tab`
+   (`crates/hickeyfield-core/src/use_case.rs`, beside lines 315-317):
+   `assert!(!supports(&reg["seedance_2_5"], UseCase::ImageToVideo));`
+   Confirm it is non-vacuous by re-running B8: with `InputMode::Image` restored in a scratch
+   copy, that test must fail.
+
+Then re-run `audit_fal` (expect `SILENTLY IGNORED MEDIA (11)`, `CHECKED 62`, `UNREACHABLE 0`,
+`seedance_2_5 findings=0`) and `cargo test --workspace` (expect 779, or 779 with the added
+assertion folded into the existing test).
+
+AC1, AC2, AC4, AC5's named guards, AC6 and AC7's mechanical gate are all independently verified
+green at 9e53dfd. AC3 fails on F3; the durability of the F1 repair fails on F4.
+
+VERDICT: FAIL

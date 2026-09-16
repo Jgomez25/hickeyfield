@@ -314,6 +314,7 @@ mod tests {
         // becoming a tile that refuses the user's file at submit.
         assert!(!supports(&reg["kling3_0_pro"], UseCase::ImageToVideo));
         assert!(!supports(&reg["wan3_0_prime"], UseCase::ImageToVideo));
+        assert!(!supports(&reg["seedance_2_5"], UseCase::ImageToVideo));
         assert!(!supports(&reg["qwen_image_3"], UseCase::EditImage));
     }
 

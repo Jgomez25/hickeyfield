@@ -626,8 +626,8 @@ const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 48] = [
     ),
     // Measured 2026-09-16 against fal's refreshed index. Each of these is a
     // complete endpoint whose family is split by something other than an input
-    // mode — a tier (`…/text-to-video/pro`) or a tiered name (`…/flare/edit`)
-    // — so the mode list is the one mode it serves and `Exact` is true.
+    // mode — a tiered name (`…/flare/text-to-image`, `…/flare/edit`) — so the
+    // mode list is the one mode it serves and `Exact` is true.
     // Suffixing any of them 404s.
     (
         "openai/gpt-image-2.5/flare/text-to-image",

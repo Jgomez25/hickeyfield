@@ -320,3 +320,13 @@ and the false Wan 3.0 Prime "no published ceiling" constraint (fal: integer 2–
 Gate after repair: cargo test 779/0, fmt, clippy -D warnings, provenance all clean; pnpm 232/232,
 build ok. The native-30s text-to-video path is unaffected. Re-claiming Image for Seedance 2.5 and
 re-landing the 3 withdrawn models both belong to backlog slice `fal-schema-const-and-int-enums`.
+
+## ORCHESTRATOR ADDENDUM 3 (post RE-REVIEW 2 / RE-TEST 2, 2026-09-16)
+Both verifiers named the same two residuals of the Seedance repair: no negative assertion guarded
+the Text-only mode (restoring `InputMode::Image` left 779 green), and the spec's unused
+`start_image`/`end_image` flags produced a new `SILENTLY IGNORED MEDIA` audit row for
+`seedance_2_5`. Fixed: `use_case.rs` now asserts `!supports(seedance_2_5, ImageToVideo)` beside
+the kling3_0_pro/wan3_0_prime guards; the two media flags are removed from the spec (to return
+with the Image mode); the media.rs example comment corrected. Gate: 779/0, fmt, clippy,
+provenance clean; keyless audit_fal UNREACHABLE 0, CHECKED 62, SILENTLY IGNORED back to the 11
+pre-existing rows — every landed slug clean again (log: audit_fal-2026-09-16-reduced.log).

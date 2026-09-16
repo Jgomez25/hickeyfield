@@ -1,5 +1,5 @@
    Compiling hickeyfield-core v0.1.0 (/Users/jorge/Documents/GitHub/hickeyfield/crates/hickeyfield-core)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.94s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.11s
      Running `target/debug/examples/audit_fal`
 
 === SILENTLY IGNORED MEDIA — bills for the wrong generation (11) ===
@@ -99,7 +99,7 @@
 === UNREACHABLE — fal serves no schema for this endpoint (0) ===
   none
 
-=== CHECKED — fal answered with a schema (63) ===
+=== CHECKED — fal answered with a schema (62) ===
   flux_2                       fal-ai/flux-2-pro
   flux_kontext                 fal-ai/flux-pro/kontext
   gemini_omni                  google/gemini-omni-flash
@@ -145,7 +145,6 @@
   seedance_2_0_mini            bytedance/seedance-2.0/mini/text-to-video
   seedance_2_0_mini            bytedance/seedance-2.0/mini/image-to-video
   seedance_2_5                 bytedance/seedance-2.5/text-to-video
-  seedance_2_5                 bytedance/seedance-2.5/image-to-video
   seedance_pro                 fal-ai/bytedance/seedance/v1/pro/text-to-video
   seedance_pro                 fal-ai/bytedance/seedance/v1/pro/image-to-video
   seedream_v5_lite             bytedance/seedream/v5/lite/text-to-image
@@ -164,4 +163,4 @@
   wan3_0_prime                 alibaba/wan-3.0-prime/text-to-video
   wan_vace                     fal-ai/wan-vace-14b
 
-63 endpoint(s) audited against fal's own schema. A slug listed under CHECKED and under nothing else is one this registry can drive.
+62 endpoint(s) audited against fal's own schema. A slug listed under CHECKED and under nothing else is one this registry can drive.

@@ -522,3 +522,124 @@ Everything else re-verified above is at or above the bar, and the repair itself 
 cleanly: no dangling references, no stale counts, no relaxed tests.
 
 VERDICT: FAIL
+
+---
+
+## RE-REVIEW 2 (HEAD 9e53dfd)
+
+Read-only, independent. Scope: the delta only — `git show 9e53dfd` restricted to
+`crates/ src-tauri/ ui/ docs/ CHANGELOG.md` (4 files: `media.rs`, `registry.rs`, `use_case.rs`,
+`CHANGELOG.md`; the rest of the commit is `.forge/` evidence). Everything cleared in RE-REVIEW 1
+stands and is not re-litigated.
+
+### 1. Gate, re-run here (real output)
+
+```
+$ cargo test --workspace     TEST exit=0
+test result: ok. 657 passed; 0 failed; 9 ignored   (hickeyfield-core lib)
+test result: ok.   2 passed; 0 failed              (examples/fal_diff)
+test result: ok. 120 passed; 0 failed; 1 ignored   (hickeyfield-tauri-lib)   -> 779 passing, 0 failed
+$ cargo fmt --all --check                     FMT exit=0  (no output)
+$ cargo clippy --workspace --all-targets -- -D warnings   CLIPPY exit=0 (no warnings)
+$ ./scripts/lint-provenance.py                PROV exit=0
+CDN hostnames      PASS      Copy provenance  PASS  (80015 shingles indexed)
+$ env -u hickeyfield_FAL_KEY -u FAL_KEY cargo run -q -p hickeyfield-core --example audit_fal
+=== SILENTLY IGNORED MEDIA (12) ===   === MISSING REQUIRED FIELDS (2) ===
+=== DROPPED SETTINGS (21) ===         === REJECTED OPTIONS (9) ===
+=== UNREACHABLE — fal serves no schema for this endpoint (0) ===
+=== CHECKED — fal answered with a schema (62) ===
+$ cd ui && pnpm test    Test Files 14 passed (14)   Tests 232 passed (232)
+$ cd ui && pnpm build   ✓ built in 5.11s
+```
+
+`CHECKED` 63 → 62 is exactly right: `bytedance/seedance-2.5/image-to-video` is no longer a route
+any mode reaches, so it is never probed. `UNREACHABLE` stays 0. Nothing authenticated, nothing
+spent, `first_light.rs` not run.
+
+### 2. B4 — verified fixed, at all three levels
+
+Measured through the shipped library against the built registry (probe run in a scratch crate; no
+project file touched):
+
+```
+supports TextToVideo  = true
+supports ImageToVideo = false
+seedance_2_5 in ImageToVideo picker list = false     (use_case::models_for — the picker DTO path)
+seedance_2_5 in TextToVideo  picker list = true
+resolve_endpoint(Text)  = Ok("bytedance/seedance-2.5/text-to-video")
+resolve_endpoint(Image) = Err(UnsupportedMode { wanted: Image, supported: [Text] })
+resolve_endpoint(Video) = Err(UnsupportedMode { wanted: Video, supported: [Text] })
+durations contain 30.0 = true   max = 30.0
+constraints = [
+  "fal serves 4-30s; 30s is the native maximum. `auto` lets the model choose.",
+  "Text-to-video only for now: fal's image-to-video endpoint pins `aspect_ratio` to `auto`,
+   which the app cannot yet honour.",
+]
+```
+
+So the i2v URL can no longer be built: `media.rs:689-697` now reads
+`("bytedance/seedance-2.5", false, &[InputMode::Text])`, and `resolve_endpoint` (`media.rs:920-925`)
+takes the "measured to serve this endpoint but not this mode" branch. `src-tauri/src/app.rs:277-286`
+maps that `Err` to `JobError::Permanent("Seedance 2.5 — this model takes text, not an image")`
+**before** any request is made, so even a forced attach costs nothing and gives the user an
+actionable sentence. The 30-second headline is untouched
+(`seedance_2_5_offers_a_thirty_second_clip`, `registry.rs:2889`, green).
+
+The withdrawal is documented where a reader will hit it: the `media.rs:686-693` comment names the
+`const`, cites fal's own description, and points at the `fal-schema-const-and-int-enums` backlog
+slice as the condition for re-claiming `Image`. The CHANGELOG sentence is now qualified truthfully
+("text-to-video for now: fal's image-to-video endpoint pins its aspect ratio in a way the app
+cannot yet honour") and the spec carries the same statement as a user-visible constraint. No
+invented mechanism, no dead code, nothing over-built for the scope.
+
+### 3. Prior minors — checked
+
+- **N1 fixed.** `registry.rs:1536-1539` no longer lists LTX 2.5 / Veo 3.1 Extend as imported; it
+  names them as probed-and-withdrawn with the reason, which is more useful than deletion. Nit only:
+  the reflowed line "…enums the parser cannot yet read.) Their flags are transcribed from fal's
+  published schema per" runs ~103 columns against the file's 100-column habit (rustfmt does not
+  reflow doc comments, so nothing catches it).
+- **N3 fixed and verified against the live schema.** `registry.rs:2003-2004` now says "a plain
+  integer from 2 to 30 seconds (default 5)"; fal's `alibaba/wan-3.0-prime/text-to-video` publishes
+  `{"anyOf":[{"type":"integer","minimum":2,"maximum":30},{"type":"null"}],"default":5}`. Exact match.
+- **N2 half-fixed.** `media.rs:629` still describes that block's rows as split by "a tier
+  (`…/text-to-video/pro`) or a tiered name (`…/flare/edit`)" — the `/extend-video` example went, but
+  `grep -n "text-to-video/pro"` over `media.rs` and `registry.rs` returns **only this comment line**:
+  the row it cites was `ltx_2_5`, withdrawn. Fix: drop the first example, keep `…/flare/edit`.
+- N4 and the first review's M2–M7 are unchanged and remain backlog.
+
+### 4. New minors from this delta
+
+- **N5 — the fix is not pinned by a test.** `crates/hickeyfield-core/src/use_case.rs:291-317`:
+  the positive `("seedance_2_5", UseCase::ImageToVideo)` row was removed, but no negative assertion
+  replaced it, even though the two structurally identical withdrawals sit four lines below —
+  `assert!(!supports(&reg["kling3_0_pro"], UseCase::ImageToVideo));` and the `wan3_0_prime` twin
+  (`:315-316`). Consequence: restoring `InputMode::Image` to the route-mode row would leave the
+  whole workspace green, and the blocker would come back silently. Standard: a fix that a review
+  forced should be regression-pinned. Fix (one line, next to its siblings):
+  `assert!(!supports(&reg["seedance_2_5"], UseCase::ImageToVideo));`
+- **N6 — the delta adds one audit finding on a landed model, and implement.md's evidence claim no
+  longer holds verbatim.** `SILENTLY IGNORED MEDIA` went 11 → 12; the new row is
+  `seedance_2_5  bytedance/seedance-2.5/text-to-video — catalogue offers [start_image, end_image]
+  but the endpoint takes none` (audit run, line 17). It is structural: the spec keeps its
+  `start_image`/`end_image` flags (`registry.rs:1560-1561`) while the only reachable endpoint is now
+  text-to-video. **Not a money bug** — I traced it: with media attached, `InputMode::of(media)` is
+  `Image`, `resolve_endpoint` errors, and `app.rs:286` refuses permanently before the call, so the
+  bucket's headline ("bills for the wrong generation") does not describe this row; and the
+  pre-existing `seedream_v5_pro` entry in the same bucket is the identical shape, already baseline.
+  But implement.md §4's "Every landed slug: CHECKED, zero findings, zero UNREACHABLE. Gate passed,
+  no exceptions taken" is now false for the reduced set. Fix: either drop the two media flags from
+  the `seedance_2_5` spec while `Image` is withdrawn (restoring them with the mode), or keep them
+  and restate §4 as "one known finding on `seedance_2_5`, neutralised by `resolve_endpoint`".
+  The latter is honest and cheaper; what should not happen is the claim standing unamended.
+
+### 5. Verdict
+
+The blocker is genuinely gone, by the narrowest correct route and with the reason recorded in the
+code, the constraint, the CHANGELOG and the backlog. Both new findings (N5, N6) are minor: neither
+can spend money, neither shows the user a tile that cannot run, and N6's runtime path is refused
+before any request. Nothing in the delta is a blocker or a major on a critical path. They should be
+carried as follow-ups — N5 in particular, because it is one line and it is what stops this
+regressing.
+
+VERDICT: PASS
