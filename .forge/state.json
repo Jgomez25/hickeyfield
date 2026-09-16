@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S11-ui-redesign-mockup",
+  "currentSlice": "S12-ui-redesign-code",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -83,6 +83,12 @@
     {
       "id": "S11-ui-redesign-mockup",
       "title": "ui-redesign-mockup",
+      "status": "in-progress",
+      "started": "2026-09-15"
+    },
+    {
+      "id": "S12-ui-redesign-code",
+      "title": "ui-redesign-code",
       "status": "in-progress",
       "started": "2026-09-15"
     }
