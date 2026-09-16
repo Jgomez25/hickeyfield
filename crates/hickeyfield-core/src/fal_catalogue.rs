@@ -9,7 +9,9 @@
 //! guessing. This module fixes the other half: fal also publishes its *index*.
 //!
 //! `GET https://fal.ai/api/models?page=N` is unauthenticated and paged 40 to a
-//! page. Measured on 2026-08-05: **36 pages, 1,418 live models**, each carrying
+//! page. Measured on 2026-09-16: **38 pages, 1,491 live models** (1,418 on
+//! 2026-08-05, so fal added 100 endpoints and retired 27 in six weeks — the
+//! drift this module exists to absorb), each carrying
 //! `id`, `title`, `category`, `shortDescription`, `pricingInfoOverride`,
 //! `deprecated`, `removed`, `modelFamily` and `thumbnailUrl`. That is twenty
 //! times the roster we had transcribed, it is authoritative for the provider we
@@ -21,8 +23,8 @@
 //! Generate button and is deliberately stricter than this parser, because a
 //! wrong figure there charges someone money. What [`Pricing`] gives you is what
 //! fal *said*, reduced to a rate only where the sentence states one outright,
-//! and kept as prose otherwise. Of the 653 models that publish pricing text,
-//! 184 reduce to a rate and 469 stay prose — see [`parse_pricing`] for why the
+//! and kept as prose otherwise. Of the 730 models that publish pricing text,
+//! 193 reduce to a rate and 537 stay prose — see [`parse_pricing`] for why the
 //! remainder is refused rather than approximated.
 //!
 //! It is also not a route table. An id here is a fal endpoint, not proof that
@@ -31,7 +33,7 @@
 //!
 //! # Offline first
 //!
-//! A snapshot of all 1,418 rows ships in the binary via `include_str!`, so the
+//! A snapshot of all 1,491 rows ships in the binary via `include_str!`, so the
 //! first launch on a plane still lists models. [`refresh_in_background`] then
 //! replaces it. [`Catalogue::captured`] records which of the two you are
 //! looking at and when it was taken, because a roster from last month is only
@@ -40,10 +42,14 @@
 //! # Refreshing the snapshot
 //!
 //! ```sh
-//! cargo run -p hickeyfield-core --example dump_fal_catalogue > \
+//! cargo run -p hickeyfield-core --example fal_diff -- --dump > \
 //!   crates/hickeyfield-core/vendor/fal-catalogue-snapshot.json
 //! cargo test -p hickeyfield-core fal_catalogue
 //! ```
+//!
+//! The same example, run without `--dump`, prints what fal serves that
+//! [`crate::registry`] has no route to — which is the question a refresh is
+//! usually being run to answer.
 //!
 //! The tests assert on the counts measured at capture time, so a refresh that
 //! changes the roster fails loudly rather than drifting. Update the expected
@@ -63,7 +69,7 @@ use crate::prices::{Origin, BROWSER_USER_AGENT, FAL_MODELS_URL};
 /// the point where someone is trying to work out why a model is missing.
 const SNAPSHOT: &str = include_str!("../vendor/fal-catalogue-snapshot.json");
 
-/// fal reported 36 pages on 2026-08-05. The cap stops a malformed `pages` field
+/// fal reported 38 pages on 2026-09-16. The cap stops a malformed `pages` field
 /// from turning a background refresh into an unbounded crawl of the user's
 /// connection.
 const MAX_PAGES: u32 = 60;
@@ -322,8 +328,8 @@ impl PriceUnit {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Pricing {
-    /// fal carried no `pricingInfoOverride` at all — 765 of 1,418 models on
-    /// 2026-08-05.
+    /// fal carried no `pricingInfoOverride` at all — 761 of 1,491 models on
+    /// 2026-09-16.
     Unpublished,
     /// fal published prose that states more than one rate, conditions its rate
     /// on something we cannot evaluate, or names a unit we do not model. Kept
@@ -406,7 +412,7 @@ pub struct Model {
     pub deprecated: bool,
     #[serde(default)]
     pub removed: bool,
-    /// e.g. `Flux 3`. Absent on 589 of 1,418 rows.
+    /// e.g. `Flux 3`. Absent on 606 of 1,491 rows.
     #[serde(rename = "modelFamily", default)]
     pub model_family: Option<String>,
     /// A `https://` still on fal's CDN. Absent rows exist; a card must handle
@@ -419,7 +425,7 @@ impl Model {
     /// Read [`Model::pricing_info_override`].
     ///
     /// Parsed on demand rather than at load: it costs a few string scans and
-    /// only a visible card needs it, whereas doing all 1,418 up front would put
+    /// only a visible card needs it, whereas doing all 1,491 up front would put
     /// the work on the launch path where it delays the first paint.
     pub fn pricing(&self) -> Pricing {
         parse_pricing(self.pricing_info_override.as_deref())
@@ -488,7 +494,7 @@ impl Captured {
 
 /// Lower-cased text for one model, built once at load.
 ///
-/// A filter box runs `search` on every keystroke. Lower-casing 1,418 titles and
+/// A filter box runs `search` on every keystroke. Lower-casing 1,491 titles and
 /// descriptions per key is ~280 KB of allocation for each character typed, and
 /// it is entirely avoidable.
 #[derive(Debug, Clone)]
@@ -785,7 +791,7 @@ struct Page {
 
 /// Fetch the whole index, blocking.
 ///
-/// 36 requests as of 2026-08-05. Call it off the UI thread — or call
+/// 38 requests as of 2026-09-16. Call it off the UI thread — or call
 /// [`refresh_in_background`], which does that for you.
 pub fn fetch() -> Result<Catalogue, CatalogueError> {
     let client = reqwest::blocking::Client::builder()
@@ -920,7 +926,7 @@ fn cell() -> &'static Mutex<Arc<Catalogue>> {
 
 /// The catalogue in force: the bundle until a refresh lands, then the live one.
 ///
-/// Cheap — it clones an `Arc`, not 1,418 models — so callers can hold the lock
+/// Cheap — it clones an `Arc`, not 1,491 models — so callers can hold the lock
 /// for as short a time as possible and then read at leisure.
 ///
 /// A poisoned mutex is recovered from rather than propagated. Nothing here
@@ -1169,8 +1175,8 @@ const LOOSE_UNIT_ANCHORS: [(&str, PriceUnit); 7] = [
 /// (resolution, mode, audio, an add-on), and must name a unit this module
 /// models. Anything else is [`Pricing::Unparsed`] with the sentence kept.
 ///
-/// Measured against all 1,418 rows on 2026-08-05: 765 publish nothing, 184
-/// reduce to a rate and 469 stay prose. That 72% refusal rate is the feature.
+/// Measured against all 1,491 rows on 2026-09-16: 761 publish nothing, 193
+/// reduce to a rate and 537 stay prose. That 73% refusal rate is the feature.
 /// fal writes conditional rate tables as English sentences —
 /// *"$0.15 for 360p and 540p, $0.2 for 720p and $0.4 for 1080p"* — and the only
 /// numbers a parser can take from those are the wrong ones. The prose is
@@ -1452,14 +1458,19 @@ fn leading_number(s: &str) -> Option<(f64, usize)> {
 mod tests {
     use super::*;
 
-    // Counts measured against the live index on 2026-08-05 and frozen into
+    // Counts measured against the live index on 2026-09-16 and frozen into
     // vendor/fal-catalogue-snapshot.json. A refresh that changes them should
     // fail here first.
-    const SNAPSHOT_MODELS: usize = 1418;
-    const SNAPSHOT_DATE: &str = "2026-08-05";
-    const SNAPSHOT_PARSED_RATES: usize = 184;
-    const SNAPSHOT_UNPUBLISHED: usize = 765;
-    const SNAPSHOT_UNPARSED: usize = 469;
+    //
+    // Previous capture, 2026-08-05: 1,418 models, 184 rates, 765 unpublished,
+    // 469 unparsed. The refresh added 100 endpoints and retired 27, and the
+    // refusal rate held at 73% — the parser did not get looser, fal published
+    // more prose.
+    const SNAPSHOT_MODELS: usize = 1491;
+    const SNAPSHOT_DATE: &str = "2026-09-16";
+    const SNAPSHOT_PARSED_RATES: usize = 193;
+    const SNAPSHOT_UNPUBLISHED: usize = 761;
+    const SNAPSHOT_UNPARSED: usize = 537;
 
     fn row(id: &str, title: &str, category: &str, description: &str) -> Model {
         Model {
@@ -1517,13 +1528,13 @@ mod tests {
         let c = Catalogue::bundled();
         let counts = c.categories();
         for (wire, want) in [
-            ("image-to-image", 385),
-            ("text-to-image", 195),
-            ("image-to-video", 194),
-            ("video-to-video", 190),
-            ("text-to-video", 127),
-            ("training", 53),
-            ("3d-to-3d", 7),
+            ("image-to-image", 396),
+            ("text-to-image", 201),
+            ("image-to-video", 201),
+            ("video-to-video", 206),
+            ("text-to-video", 134),
+            ("training", 59),
+            ("3d-to-3d", 12),
             ("workflow", 1),
             ("unknown", 2),
         ] {
@@ -1550,7 +1561,7 @@ mod tests {
 
     #[test]
     fn the_bundle_prices_exactly_what_was_measured_and_refuses_the_rest() {
-        // The 72% refusal rate is the feature, not a gap: fal writes
+        // The 73% refusal rate is the feature, not a gap: fal writes
         // conditional rate tables as English and the only numbers a parser can
         // take from those are the wrong ones. If this count jumps, the parser
         // got looser, not smarter.
@@ -1708,7 +1719,7 @@ mod tests {
     fn by_category_returns_only_that_category() {
         let c = Catalogue::bundled();
         let v = c.by_category(&Category::TextTo3d);
-        assert_eq!(v.len(), 11);
+        assert_eq!(v.len(), 12);
         assert!(v.iter().all(|m| m.category == Category::TextTo3d));
     }
 

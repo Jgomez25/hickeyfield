@@ -31,7 +31,9 @@ fn main() {
     let mut dropped_settings = Vec::new();
     let mut wrong_options = Vec::new();
     let mut unreachable = Vec::new();
-    let mut checked = 0usize;
+    // Kept as rows, not a counter: "which slugs did you actually probe" is the
+    // question an importer has to answer, and a number cannot answer it.
+    let mut checked: Vec<String> = Vec::new();
 
     for m in reg.values() {
         let Some(route) = m
@@ -62,7 +64,7 @@ fn main() {
                 unreachable.push(format!("{} -> {endpoint}", m.id));
                 continue;
             };
-            checked += 1;
+            checked.push(format!("{:<28} {endpoint}", m.id));
 
             // 1. Does the catalogue promise media NO mode of this route can
             //    take? A text-to-video endpoint rejecting a start frame is by
@@ -169,8 +171,20 @@ fn main() {
         "REJECTED OPTIONS — the chip row offers invalid values",
         &wrong_options,
     );
+    // The loudest signal of all: we route to a slug fal does not serve. It was
+    // collected and thrown away until 2026-09-15.
+    section(
+        "UNREACHABLE — fal serves no schema for this endpoint",
+        &unreachable,
+    );
 
-    println!("\n{checked} endpoint(s) audited against fal's own schema.");
+    section("CHECKED — fal answered with a schema", &checked);
+
+    println!(
+        "\n{} endpoint(s) audited against fal's own schema. A slug listed under \
+         CHECKED and under nothing else is one this registry can drive.",
+        checked.len()
+    );
 }
 
 /// The enumerated values fal declares for one field, if it enumerates them.

@@ -29,7 +29,16 @@ inspection.
 
 ---
 
-## What broke: the input-mode suffix was never implemented
+## What broke: the input-mode suffix was never implemented (resolved)
+
+> **Resolved.** The resolver exists and is wired. `media::resolve_endpoint` reads the measured
+> mode table `media::FAL_ROUTE_MODES`, and the submit path calls it before every fal request
+> (`src-tauri/src/app.rs`). Both landed in `ab06e31` (2026-08-05, the commit this document was
+> written alongside) and were extended to Higgsfield's fal-shaped mirror in `8d8ecfb`
+> (2026-08-28). The narrative below is kept as written because it is the record of how the
+> failure was found, not a description of today's code. What is still true: the mode list
+> cannot be derived, only measured — which is why `examples/audit_fal` re-probes it and why
+> no slug is added to the registry without passing that probe.
 
 The first real submit failed:
 
@@ -92,10 +101,18 @@ fal's catalogue. Either they route elsewhere or they should be excluded — the 
 
 ## Consequences
 
-1. **Build the input-mode resolver.** Selection is deterministic from the attached media:
+1. **Build the input-mode resolver.** *(done — `media::resolve_endpoint`, see the note above.)*
+   Selection is deterministic from the attached media:
    no media → `text-to-*`; a start frame → `image-to-*`; a source video → `video-to-video`.
    The mode's *availability* per route is not deterministic and must come from fal's schema.
-2. **`EXCLUSIONS` the three missing models**, or find their real route.
+2. **`EXCLUSIONS` the three missing models**, or find their real route. *(done differently:
+   `media::FAL_MISSING_ROUTES` pins them instead. `EXCLUSIONS` removes a model from the
+   registry outright, which would also remove the Higgsfield route that can still run it;
+   the pin only refuses the fal path, and `use_case::route_serves` keeps the dead tile out of
+   the picker. Re-checked against fal's index on 2026-09-16: all three slugs are still
+   unserved, though fal now serves Hailuo 2.3 and Kling v3 turbo under **tier-qualified**
+   paths — `fal-ai/minimax/hailuo-2.3/pro/…`, `fal-ai/kling-video/v3/turbo/pro/…` — which are
+   different endpoints with a different parameter surface, not the pinned slugs.)*
 3. **Cost accuracy is still unverified.** The run never reached a completed generation, so the
    estimator has still never been checked against a real charge. That remains open.
 4. `docs/PARITY.md` §3.3 can drop "no live generation has ever completed" for upload and

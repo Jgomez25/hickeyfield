@@ -596,7 +596,7 @@ impl InputMode {
 /// **Provisional.** Phase C2 replaces this by reading fal's schema per
 /// endpoint and caching it. Until then a slug absent from this table is
 /// suffixed optimistically, which costs one 404 and no money.
-const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 38] = [
+const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 48] = [
     // Video editors. Each takes a clip and nothing else — offering them for
     // "Animate Image" produced "does not accept a start frame" at submit.
     // A complete text-to-image endpoint. Its editing counterpart is a separate
@@ -624,6 +624,35 @@ const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 38] = [
         true,
         &[InputMode::Text, InputMode::Image, InputMode::Video],
     ),
+    // Measured 2026-09-16 against fal's refreshed index. Each of these is a
+    // complete endpoint whose family is split by something other than an input
+    // mode — a tier (`…/text-to-video/pro`), a tiered name (`…/flare/edit`) or
+    // a verb (`/extend-video`) — so the mode list is the one mode it serves and
+    // `Exact` is true. Suffixing any of them 404s.
+    (
+        "openai/gpt-image-2.5/flare/text-to-image",
+        true,
+        &[InputMode::Text],
+    ),
+    ("openai/gpt-image-2.5/flare/edit", true, &[InputMode::Image]),
+    (
+        "openai/gpt-image-2.5/sunburst/text-to-image",
+        true,
+        &[InputMode::Text],
+    ),
+    (
+        "openai/gpt-image-2.5/sunburst/edit",
+        true,
+        &[InputMode::Image],
+    ),
+    (
+        "alibaba/qwen-image-3/text-to-image",
+        true,
+        &[InputMode::Text],
+    ),
+    ("fal-ai/nano-banana-pro/edit", true, &[InputMode::Image]),
+    ("fal-ai/nano-banana-2/edit", true, &[InputMode::Image]),
+    ("bytedance/seedream/v5/pro/edit", true, &[InputMode::Image]),
     // Complete endpoints — never suffix.
     ("bytedance/seed-audio-1.0", true, &[]),
     ("fal-ai/flux-2-pro", true, &[]),
@@ -697,6 +726,15 @@ const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 38] = [
         false,
         &[InputMode::Text, InputMode::Image],
     ),
+    // fal serves `/v3/pro/image-to-video` too, and it is deliberately not
+    // claimed here: that endpoint names its start frame `start_image_url`,
+    // which [`fal_keys`] does not speak, so a frame attached to it would be
+    // refused at submit. Listing text-to-video only keeps the mode we can
+    // actually bind out in front and the one we cannot out of the picker.
+    ("fal-ai/kling-video/v3/pro", false, &[InputMode::Text]),
+    // Same measurement, same reason: `alibaba/wan-3.0-prime/image-to-video`
+    // requires `start_image_url`.
+    ("alibaba/wan-3.0-prime", false, &[InputMode::Text]),
     // The only route that serves video-to-video.
     (
         "fal-ai/wan/v2.2-a14b",

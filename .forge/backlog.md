@@ -65,7 +65,7 @@ Dependencies: none.
 ### 4. live-fal-e2e — position 4
 Goal: prove the one live end-to-end generation `docs/FIRST-LIGHT.md` records as never achieved.
 Acceptance criteria (objective §C1–C2):
-- [ ] Route-suffix resolver: a family-root slug (e.g. `fal-ai/kling-video/...`) gains the correct input mode before submit — `/image-to-video` when a still is attached, otherwise the text suffix — so the call no longer 404s; resolver unit test. The three non-fal slugs (`kling3_0_turbo`, `minimax_hailuo`, `wan2_6`) are excluded or re-routed.
+- [x] Route-suffix resolver: a family-root slug (e.g. `fal-ai/kling-video/...`) gains the correct input mode before submit — `/image-to-video` when a still is attached, otherwise the text suffix — so the call no longer 404s; resolver unit test. The three non-fal slugs (`kling3_0_turbo`, `minimax_hailuo`, `wan2_6`) are excluded or re-routed. *(Done: `media::resolve_endpoint` + `media::FAL_ROUTE_MODES`, landed `ab06e31` 2026-08-05 and extended to Higgsfield's mirror in `8d8ecfb` 2026-08-28; the three slugs are pinned in `media::FAL_MISSING_ROUTES` rather than excluded, so their non-fal routes still run. Re-probed 2026-09-16 by S8 — still unserved.)*
 - [ ] One live generation proven green with a real `FAL_KEY` (keychain/env, never in chat): submit -> poll -> download -> file on disk -> reattach, `estimated_usd` recorded alongside actual charge; evidence is a green `cargo run -p hickeyfield-core --example first_light` (or equivalent e2e harness) and updated `docs/FIRST-LIGHT.md` / `docs/PARITY.md §3.3` (human-run, spends real money).
 Dependencies: #1 (reliability baseline must hold before spending real money).
 
@@ -195,3 +195,19 @@ mandatory slice; tracked here for prioritization.
   change after previewing (App.tsx useEffect). Today the stale preview panel persists; Generate
   still sends the shown text (safe), but the stored `original` can diverge from what was shown.
   Cosmetic provenance, non-blocking.
+
+- **NEW SLICE — fal-schema-const-and-int-enums (from S8 REVIEW, blocking-class bug).**
+  `crates/hickeyfield-core/src/fal_schema.rs:216` keeps only STRING enum members and ignores
+  `const`, so (a) mixed enums like LTX 2.5's duration {6,8,10,"auto"} record as ["auto"] and every
+  submit is refused, and (b) const-pinned fields (Veo 3.1 extend: duration "7s", resolution
+  "720p") are sent free-form and 422. `examples/audit_fal.rs:133` check 4 only fires when both
+  sides enumerate, so the audit cannot see either. Fix: read `const` as a one-member enum and
+  stringify integer/number enum members; make audit check 4 use them; then re-probe ALL existing
+  fal routes (the same bug may hide already-broken models); then re-land `ltx_2_5`,
+  `ltx_2_5_animate` (duration enum 6/8/10, default 6) and `veo3_1_extend` (fixed 7s/720p — drop
+  those fields from body + cost). Tests: parser fixtures for const + int-enum; audit finding on a
+  const mismatch.
+- **S8 minors (non-blocking):** Wan 3.0 Prime "no published ceiling" comment is false;
+  `nano_banana_2_edit` defaults to 0.5K but is priced at 1K; `fal_diff --dump --offline` restamps
+  stale data with a new date; snapshot `thumbnailUrl` values (418 storage.googleapis.com,
+  1 pbs.twimg.com) are parsed but never rendered — must stay unrendered (hotlink/provenance).

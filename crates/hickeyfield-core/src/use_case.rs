@@ -281,6 +281,41 @@ mod tests {
     }
 
     #[test]
+    fn the_models_imported_from_fal_land_on_the_right_tab() {
+        // AC5 of the 2026-09-16 catalogue sync: a model imported but filed
+        // under the wrong job is a model nobody finds. Each pair below is the
+        // one tab its endpoint actually serves — `kling3_0_pro` is
+        // text-to-video only on purpose, because fal's pro image-to-video
+        // endpoint names its start frame in a key the binder cannot write.
+        let reg = registry();
+        for (id, tab) in [
+            ("seedance_2_5", UseCase::TextToVideo),
+            ("seedance_2_5", UseCase::ImageToVideo),
+            ("kling3_0_pro", UseCase::TextToVideo),
+            ("wan3_0_prime", UseCase::TextToVideo),
+            ("gpt_image_2_5_flare", UseCase::TextToImage),
+            ("gpt_image_2_5_flare_edit", UseCase::EditImage),
+            ("gpt_image_2_5_sunburst", UseCase::TextToImage),
+            ("gpt_image_2_5_sunburst_edit", UseCase::EditImage),
+            ("qwen_image_3", UseCase::TextToImage),
+            ("nano_banana_pro_edit", UseCase::EditImage),
+            ("nano_banana_2_edit", UseCase::EditImage),
+            ("seedream_v5_pro_edit", UseCase::EditImage),
+        ] {
+            assert!(
+                supports(&reg[id], tab),
+                "{id} is missing from the {} tab",
+                tab.slug()
+            );
+        }
+        // And the mode we measured they do not serve stays hidden, rather than
+        // becoming a tile that refuses the user's file at submit.
+        assert!(!supports(&reg["kling3_0_pro"], UseCase::ImageToVideo));
+        assert!(!supports(&reg["wan3_0_prime"], UseCase::ImageToVideo));
+        assert!(!supports(&reg["qwen_image_3"], UseCase::EditImage));
+    }
+
+    #[test]
     fn editing_a_clip_offers_only_models_that_take_one() {
         let editors = models_for(UseCase::EditVideo);
         assert!(!editors.is_empty(), "no model can edit a video");

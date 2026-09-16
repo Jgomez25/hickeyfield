@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S7-enhancer-prompt-preview",
+  "currentSlice": "S8-fal-catalogue-sync",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -57,6 +57,12 @@
       "id": "S7-enhancer-prompt-preview",
       "title": "enhancer-prompt-preview",
       "status": "released",
+      "started": "2026-09-15"
+    },
+    {
+      "id": "S8-fal-catalogue-sync",
+      "title": "fal-catalogue-sync",
+      "status": "in-progress",
       "started": "2026-09-15"
     }
   ]

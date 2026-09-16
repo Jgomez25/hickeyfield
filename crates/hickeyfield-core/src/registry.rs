@@ -295,6 +295,7 @@ pub const JOB_TYPES: [(&str, &[&str]); 16] = [
             "kling-v2-5-turbo",
             "kling2_6",
             "kling3_0",
+            "kling3_0_pro",
             "kling3_0_turbo",
             "kling_o3_flf",
             "minimax_h3",
@@ -314,6 +315,7 @@ pub const JOB_TYPES: [(&str, &[&str]); 16] = [
             "wan2_5_video",
             "wan2_6",
             "wan2_7",
+            "wan3_0_prime",
         ],
     ),
     // The studio compilers. Three of these earn `builder` outright — the spec
@@ -362,6 +364,9 @@ pub const JOB_TYPES: [(&str, &[&str]); 16] = [
         &[
             "grok_image",
             "image_auto",
+            // Qwen Image 3's text-to-image tier: an ordinary prose image model
+            // with no surface of its own in the job-type table.
+            "qwen_image_3",
             "recraft_v4_1",
             "soul_cast",
             "soul_cinematic",
@@ -380,7 +385,18 @@ pub const JOB_TYPES: [(&str, &[&str]); 16] = [
     // it into `image-gpt-image-2` instead would put a different model with a
     // different parameter surface on the instruction-follower default.
     ("image-gpt", &["openai_hazel"]),
-    ("image-gpt-image-2", &["gpt_image_2"]),
+    // GPT Image 2.5's two tiers and their edit paths are the same OpenAI
+    // instruction-following surface as GPT Image 2, at a different checkpoint.
+    (
+        "image-gpt-image-2",
+        &[
+            "gpt_image_2",
+            "gpt_image_2_5_flare",
+            "gpt_image_2_5_flare_edit",
+            "gpt_image_2_5_sunburst",
+            "gpt_image_2_5_sunburst_edit",
+        ],
+    ),
     ("image-kling-omni", &["kling_omni_image"]),
     ("image-nano-banana", &["nano_banana"]),
     // Keyed by Higgsfield's internal id, not by the name they sell: their
@@ -393,11 +409,22 @@ pub const JOB_TYPES: [(&str, &[&str]); 16] = [
     // until one of them gains a behaviour the other lacks.
     (
         "image-nano-banana-2",
-        &["nano_banana_2", "nano_banana_2_lite", "nano_banana_flash"],
+        &[
+            "nano_banana_2",
+            "nano_banana_2_edit",
+            "nano_banana_2_lite",
+            "nano_banana_flash",
+            "nano_banana_pro_edit",
+        ],
     ),
     (
         "image-seedream",
-        &["seedream_v4_5", "seedream_v5_lite", "seedream_v5_pro"],
+        &[
+            "seedream_v4_5",
+            "seedream_v5_lite",
+            "seedream_v5_pro",
+            "seedream_v5_pro_edit",
+        ],
     ),
     ("z-image", &["z_image"]),
     // Jobs that take no `--prompt` at all: background removal, outpaint, and the
@@ -587,6 +614,19 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
                 per_second_audio(0.168, 1.5),
             ),
         ],
+        // The pro tier of the same generation, imported 2026-09-16 from fal's
+        // refreshed index. Text-to-video only: fal's `/v3/pro/image-to-video`
+        // names its start frame `start_image_url`, which `media::fal_keys` does
+        // not speak, so an animate request would be refused at submit. Offering
+        // a mode we cannot bind is the dead tile this registry keeps out.
+        "kling3_0_pro" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "fal-ai/kling-video/v3/pro",
+                "pro tier: $0.112/s audio-off, $0.168/s audio-on, $0.196/s with voice control",
+            ),
+            per_second_audio(0.112, 1.5),
+        )],
         "kling3_0_turbo" => vec![(
             Route::new(ProviderId::Fal, "fal-ai/kling-video/v3/turbo"),
             per_second(0.14),
@@ -716,15 +756,18 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
                 per_token(1.20),
             ),
         ],
+        // Shipped. fal served `bytedance/seedance-2.5/{text,image}-to-video`
+        // on 2026-09-16 and publishes the token rate the family is really
+        // billed on, so the placeholder's `Unknown` and its "unverified slug"
+        // note are both retired.
         "seedance_2_5" => vec![(
             Route::noted(
                 ProviderId::Fal,
                 "bytedance/seedance-2.5",
-                "unverified slug — announced 2026-08-01 and not yet carried by any aggregator; \
-                 Higgsfield does not have access either. The only sourced prices are BytePlus \
-                 token rates ($10.70/M, $6.40/M with video input) on a vendor we do not ship",
+                "$0.0214 per 1,000 output tokens at 480p and 720p, ~$0.0234 at 1080p — the \
+                 higher tier is not expressible here, so 1080p is a ~9% under-estimate",
             ),
-            CostModel::Unknown,
+            per_token(21.40),
         )],
 
         // -- Kling O-series --------------------------------------------------
@@ -790,6 +833,19 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
                 per_second(0.10),
             ),
         ],
+        // Alibaba's 2026-09 flagship, imported from fal's refreshed index.
+        // Text-to-video only for the same reason as Kling v3 pro: its
+        // image-to-video endpoint names the start frame `start_image_url`.
+        "wan3_0_prime" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "alibaba/wan-3.0-prime",
+                "$0.068/s at 480p, $0.14/s at 720p, $0.28/s at 1080p",
+            ),
+            CostModel::PerSecondTiered {
+                tiers: vec![(480, 0.068), (720, 0.14), (1080, 0.28)],
+            },
+        )],
         "wan2_6" => vec![
             (
                 Route::noted(
@@ -1153,6 +1209,51 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
                 CostModel::Unknown,
             ),
         ],
+        // GPT Image 2.5's two tiers. fal bills them on tokens exactly as it
+        // bills GPT Image 2 — $30/M image-output tokens, swung by `quality` —
+        // and publishes no per-image figure, so the same refusal applies: a
+        // number here would be invented, and Billable has no token count.
+        "gpt_image_2_5_flare" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "openai/gpt-image-2.5/flare/text-to-image",
+                "$30/M image-output tokens; the `quality` setting moves the per-image cost by \
+                 more than an order of magnitude, so no single figure is honest",
+            ),
+            CostModel::Unknown,
+        )],
+        "gpt_image_2_5_flare_edit" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "openai/gpt-image-2.5/flare/edit",
+                "same token billing as the text-to-image tier, plus the input image's tokens",
+            ),
+            CostModel::Unknown,
+        )],
+        "gpt_image_2_5_sunburst" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "openai/gpt-image-2.5/sunburst/text-to-image",
+                "$30/M image-output tokens, priced identically to the flare tier",
+            ),
+            CostModel::Unknown,
+        )],
+        "gpt_image_2_5_sunburst_edit" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "openai/gpt-image-2.5/sunburst/edit",
+                "same token billing as the text-to-image tier, plus the input image's tokens",
+            ),
+            CostModel::Unknown,
+        )],
+        "qwen_image_3" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "alibaba/qwen-image-3/text-to-image",
+                "$0.04 per image at 1K, $0.075 at 2K",
+            ),
+            per_image(0.04),
+        )],
         // Same correction as the video line: xAI serves no image generation
         // API either. fal does, and publishes the price.
         "grok_image" => vec![(
@@ -1225,6 +1326,28 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
                 per_image(0.08),
             ),
         ],
+        // The edit paths. Separate ids on purpose: `fal-ai/nano-banana-pro`
+        // and `fal-ai/nano-banana-2` take no attachments at all
+        // (`media::FAL_NO_MEDIA`), and `…/edit` is a different endpoint that
+        // does. Conflating them is how a reference image gets billed for and
+        // ignored.
+        "nano_banana_pro_edit" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "fal-ai/nano-banana-pro/edit",
+                "$0.15 per image; 4K doubles, and web-search grounding adds $0.015 which we do \
+                 not model",
+            ),
+            per_image(0.15),
+        )],
+        "nano_banana_2_edit" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "fal-ai/nano-banana-2/edit",
+                "$0.08 per image at 1K; 2K is 1.5x, 4K is 2x and 0.5K is 0.75x",
+            ),
+            per_image(0.08),
+        )],
         "nano_banana_2_lite" => vec![
             (
                 Route::noted(
@@ -1270,6 +1393,20 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
                 },
             ),
         ],
+        // Seedream 5 Pro's editing endpoint. `bytedance/seedream/v5/pro` is in
+        // `media::FAL_NO_MEDIA`; this is the path that takes the images.
+        "seedream_v5_pro_edit" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "bytedance/seedream/v5/pro/edit",
+                "$0.0675 per output image up to 1536x1536 and $0.135 above it; every input image \
+                 after the first adds $0.0045",
+            ),
+            CostModel::PerImage {
+                usd: 0.0675,
+                usd_per_extra_input: 0.0045,
+            },
+        )],
         "seedream_v5_lite" => vec![
             (
                 Route::noted(ProviderId::Vaig, "bytedance/seedream-5.0-lite", "$0.035 flat"),
@@ -1375,8 +1512,10 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
 // Hand-authored specs
 // ---------------------------------------------------------------------------
 
-/// The twelve models in Higgsfield's live picker that their own `MODELS.md`
-/// never listed, verified against the create-page DOM capture of 2026-08-02:
+/// The models no vendored document describes, in two groups.
+///
+/// **From Higgsfield's live picker**, verified against the create-page DOM
+/// capture of 2026-08-02 — twelve models their own `MODELS.md` never listed:
 /// Seedance 2.5, Seedance 2.0 Fast, Seedance Pro, Kling 3.0 Omni, Kling 2.5,
 /// Kling O1, HappyHorse, MiniMax H3, Wan 2.5, Wan 2.2, Seedream 5.0 Pro and
 /// Higgsfield DoP. Sora 2 is the thirteenth entry in that picker and is
@@ -1391,20 +1530,53 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
 ///
 /// `base` supplies flags for the variants that are a *mode* of a model the
 /// vendored spec already documents, so they cannot drift apart.
+///
+/// **From fal's own index**, imported 2026-09-16 by `examples/fal_diff` and
+/// probed by `examples/audit_fal` before landing: Kling 3.0 Pro, Wan 3.0 Prime,
+/// LTX 2.5 Pro and its animate half, Veo 3.1 Extend, GPT Image 2.5 in both
+/// tiers with their edit paths, Qwen Image 3, the Nano Banana and Seedream 5
+/// edit endpoints. Their flags are transcribed from fal's published schema per
+/// endpoint — the only document that describes the API we actually call — and
+/// every enumerated option set is copied from it verbatim.
 fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
     let mut out = Vec::new();
 
+    // Transcribed from fal's own schema for `bytedance/seedance-2.5/*` on
+    // 2026-09-16, replacing the placeholder that carried nothing but a prompt.
+    // The duration list is fal's, copied value for value: it is the only
+    // document that knows which lengths the endpoint takes, and 30 is on it —
+    // this is the model that makes a native half-minute clip possible.
     out.push(ModelSpec {
         constraints: vec![
-            "Announced 2026-08-01 as coming soon. Higgsfield states it does not have access yet, \
-             so the parameter surface is unpublished and this spec is a placeholder."
+            "fal serves 4-30s; 30s is the native maximum. `auto` lets the model choose."
                 .to_string(),
         ],
         ..spec(
             "seedance_2_5",
             "Seedance 2.5",
             Modality::Video,
-            &[("prompt", true, ValueSpec::Text)],
+            &[
+                ("prompt", true, ValueSpec::Text),
+                ("start_image", false, ValueSpec::Media),
+                ("end_image", false, ValueSpec::Media),
+                (
+                    "duration",
+                    false,
+                    en(&[
+                        "auto", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
+                        "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27",
+                        "28", "29", "30",
+                    ]),
+                ),
+                ("resolution", false, en(&["480p", "720p", "1080p"])),
+                (
+                    "aspect_ratio",
+                    false,
+                    en(&["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
+                ),
+                ("generate_audio", false, ValueSpec::Boolean),
+                ("bitrate_mode", false, ValueSpec::Text),
+            ],
         )
     });
 
@@ -1780,7 +1952,215 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
         )
     });
 
+    // ── fal's 2026-09 frontier ─────────────────────────────────────────────
+    //
+    // Imported from the refreshed index (`examples/fal_diff`) on 2026-09-16 and
+    // transcribed flag by flag from each endpoint's own OpenAPI, not from the
+    // vendored catalogue, which describes a different provider's API and has
+    // never heard of any of them. Every option set below is fal's own; every
+    // slug below was probed by `examples/audit_fal` before it landed.
+    //
+    // Two families are deliberately narrower than fal's index. Kling v3 pro and
+    // Wan 3.0 prime serve image-to-video, but under a `start_image_url` key
+    // that `media::fal_keys` does not speak, so the attachment would be refused
+    // at submit; until the binder learns that spelling, these two are
+    // text-to-video models here and `media::FAL_ROUTE_MODES` says so.
+
+    out.push(ModelSpec {
+        constraints: vec![
+            "Voice control is a third audio tier fal bills at $0.196/s; the app does not \
+             drive it, so an audio-on estimate is the $0.168/s figure."
+                .to_string(),
+        ],
+        ..spec(
+            "kling3_0_pro",
+            "Kling 3.0 Pro",
+            Modality::Video,
+            &[
+                ("prompt", true, ValueSpec::Text),
+                (
+                    "duration",
+                    false,
+                    en(&[
+                        "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
+                    ]),
+                ),
+                ("aspect_ratio", false, en(&["16:9", "9:16", "1:1"])),
+                ("generate_audio", false, ValueSpec::Boolean),
+                ("negative_prompt", false, ValueSpec::Text),
+                ("cfg_scale", false, ValueSpec::Number),
+                ("shot_type", false, ValueSpec::Text),
+            ],
+        )
+    });
+
+    out.push(ModelSpec {
+        constraints: vec![
+            "fal declares `duration` as a plain integer with no published ceiling, so the app \
+             offers it free-form and lets the endpoint judge."
+                .to_string(),
+        ],
+        ..spec(
+            "wan3_0_prime",
+            "Wan 3.0 Prime",
+            Modality::Video,
+            &[
+                ("prompt", true, ValueSpec::Text),
+                ("duration", false, ValueSpec::Number),
+                ("resolution", false, en(&["480p", "720p", "1080p"])),
+                (
+                    "aspect_ratio",
+                    false,
+                    en(&["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16"]),
+                ),
+                ("enable_prompt_expansion", false, ValueSpec::Boolean),
+                ("seed", false, ValueSpec::Integer),
+            ],
+        )
+    });
+
+    // GPT Image 2.5's two tiers. `image_size` is OpenAI's shape control here —
+    // there is no `aspect_ratio` and no `resolution` on any of the four
+    // endpoints, so neither is declared and the UI offers neither.
+    for (id, display, slug_tier) in [
+        ("gpt_image_2_5_flare", "GPT Image 2.5 Flare", "flare"),
+        (
+            "gpt_image_2_5_sunburst",
+            "GPT Image 2.5 Sunburst",
+            "sunburst",
+        ),
+    ] {
+        out.push(ModelSpec {
+            constraints: vec![format!(
+                "fal's `{slug_tier}` tier. `quality` moves the per-image cost by more than an \
+                 order of magnitude; fal defaults it to high."
+            )],
+            ..spec(
+                id,
+                display,
+                Modality::Image,
+                &[
+                    ("prompt", true, ValueSpec::Text),
+                    ("quality", false, ValueSpec::Text),
+                    ("background", false, ValueSpec::Text),
+                    ("image_size", false, ValueSpec::Text),
+                    ("num_images", false, ValueSpec::Integer),
+                    ("output_format", false, ValueSpec::Text),
+                ],
+            )
+        });
+        let edit_id = format!("{id}_edit");
+        out.push(ModelSpec {
+            constraints: vec![
+                "The edit path takes its sources as a list of images; fal names the field \
+                 `image_urls`, so they bind as references rather than as a start frame."
+                    .to_string(),
+            ],
+            ..spec(
+                &edit_id,
+                &format!("{display} Edit"),
+                Modality::Image,
+                &[
+                    ("prompt", true, ValueSpec::Text),
+                    ("image_references", true, ValueSpec::Media),
+                    ("quality", false, ValueSpec::Text),
+                    ("background", false, ValueSpec::Text),
+                    ("image_size", false, ValueSpec::Text),
+                    ("num_images", false, ValueSpec::Integer),
+                    ("output_format", false, ValueSpec::Text),
+                ],
+            )
+        });
+    }
+
+    out.push(spec(
+        "qwen_image_3",
+        "Qwen Image 3",
+        Modality::Image,
+        &[
+            ("prompt", true, ValueSpec::Text),
+            ("negative_prompt", false, ValueSpec::Text),
+            ("image_size", false, ValueSpec::Text),
+            ("num_images", false, ValueSpec::Integer),
+            ("output_format", false, ValueSpec::Text),
+            ("enable_prompt_expansion", false, ValueSpec::Boolean),
+            ("seed", false, ValueSpec::Integer),
+        ],
+    ));
+
+    // The three editing endpoints whose generating siblings take no media at
+    // all. Keeping them as separate ids is what stops a reference image being
+    // attached to an endpoint with nowhere to put it.
+    out.push(ModelSpec {
+        constraints: vec![
+            "4K output is billed at double; web-search grounding adds $0.015 per image, which \
+             the estimate does not model."
+                .to_string(),
+        ],
+        ..spec(
+            "nano_banana_pro_edit",
+            "Nano Banana Pro Edit",
+            Modality::Image,
+            &[
+                ("prompt", true, ValueSpec::Text),
+                ("image_references", true, ValueSpec::Media),
+                ("resolution", false, en(&["1K", "2K", "4K"])),
+                ("aspect_ratio", false, ValueSpec::Text),
+                ("num_images", false, ValueSpec::Integer),
+                ("output_format", false, ValueSpec::Text),
+            ],
+        )
+    });
+
+    out.push(ModelSpec {
+        constraints: vec![
+            "Resolution moves the price: 0.5K is 0.75x, 2K is 1.5x and 4K is 2x the 1K rate."
+                .to_string(),
+        ],
+        ..spec(
+            "nano_banana_2_edit",
+            "Nano Banana 2 Edit",
+            Modality::Image,
+            &[
+                ("prompt", true, ValueSpec::Text),
+                ("image_references", false, ValueSpec::Media),
+                ("resolution", false, en(&["0.5K", "1K", "2K", "4K"])),
+                ("aspect_ratio", false, ValueSpec::Text),
+                ("num_images", false, ValueSpec::Integer),
+                ("output_format", false, ValueSpec::Text),
+            ],
+        )
+    });
+
+    out.push(ModelSpec {
+        constraints: vec![
+            "The first input image is free; each one after it adds $0.0045 to the bill."
+                .to_string(),
+        ],
+        ..spec(
+            "seedream_v5_pro_edit",
+            "Seedream 5.0 Pro Edit",
+            Modality::Image,
+            &[
+                ("prompt", true, ValueSpec::Text),
+                ("image_references", true, ValueSpec::Media),
+                ("image_size", false, ValueSpec::Text),
+                ("num_images", false, ValueSpec::Integer),
+                ("output_format", false, ValueSpec::Text),
+            ],
+        )
+    });
+
     out
+}
+
+/// An enumerated flag, written the way fal's schema writes it.
+///
+/// Always copied from a probed endpoint, never composed here: an option set we
+/// invent is a chip row that 422s, which is the failure `audit_fal`'s fourth
+/// check exists to find.
+fn en(values: &[&str]) -> ValueSpec {
+    ValueSpec::Enum(values.iter().map(|s| (*s).to_string()).collect())
 }
 
 fn spec(
@@ -1843,16 +2223,19 @@ mod tests {
         }
         // 55 catalogue models minus 2 exclusions, plus 13 hand-authored from
         // Higgsfield's picker, plus 2 fal-native video editors the catalogue
-        // never had because Higgsfield runs its editing surfaces in-house.
+        // never had because Higgsfield runs its editing surfaces in-house,
+        // plus the 13 fal frontier models imported on 2026-09-16 from fal's
+        // own index — none of which Higgsfield sells, so none of which any
+        // vendored document describes.
         assert_eq!(
             reg.len(),
-            cat.len() - EXCLUSIONS.len() + 17,
+            cat.len() - EXCLUSIONS.len() + 30,
             "registry size"
         );
     }
 
     #[test]
-    fn the_twelve_picker_only_models_are_all_present() {
+    fn the_picker_only_models_are_all_present() {
         let reg = registry();
         for id in [
             "seedance_2_5",
@@ -1867,6 +2250,18 @@ mod tests {
             "wan2_2_video",
             "seedream_v5_pro",
             "image2video",
+            // Imported from fal's own index on 2026-09-16. Higgsfield sells
+            // none of them, so `MODELS.md` describes none of them either.
+            "kling3_0_pro",
+            "wan3_0_prime",
+            "gpt_image_2_5_flare",
+            "gpt_image_2_5_flare_edit",
+            "gpt_image_2_5_sunburst",
+            "gpt_image_2_5_sunburst_edit",
+            "qwen_image_3",
+            "nano_banana_pro_edit",
+            "nano_banana_2_edit",
+            "seedream_v5_pro_edit",
         ] {
             assert!(reg.contains_key(id), "{id} missing");
             assert!(
@@ -2378,7 +2773,6 @@ mod tests {
         for id in [
             "kling-omni-flf",    // fal's pricing field is blank for the o1 family
             "happy_horse_video", // vendor known, slug and price never found
-            "seedance_2_5",      // announced, not shipped anywhere
             "image2video",       // in-house, credit-priced
         ] {
             let m = &reg[id];
@@ -2390,6 +2784,120 @@ mod tests {
         assert!(reg["gpt_image_2"].routes.iter().all(|r| reg["gpt_image_2"]
             .estimate(r, &Billable::image(1))
             .is_none()));
+        // The same refusal, extended to GPT Image 2.5: fal publishes a token
+        // rate and a `quality` flag that swings the per-image cost by an order
+        // of magnitude, and picking either end would be a fabricated number.
+        for id in [
+            "gpt_image_2_5_flare",
+            "gpt_image_2_5_flare_edit",
+            "gpt_image_2_5_sunburst",
+            "gpt_image_2_5_sunburst_edit",
+        ] {
+            let m = &reg[id];
+            assert!(
+                m.routes
+                    .iter()
+                    .all(|r| m.estimate(r, &Billable::image(1)).is_none()),
+                "{id} produced a price we cannot source"
+            );
+        }
+    }
+
+    // ---- the 2026-09-16 fal import ---------------------------------------
+
+    /// Every id added by the fal catalogue sync, in one place, so the three
+    /// tests below cannot drift apart from each other.
+    const IMPORTED_2026_09: [&str; 11] = [
+        "gpt_image_2_5_flare",
+        "gpt_image_2_5_flare_edit",
+        "gpt_image_2_5_sunburst",
+        "gpt_image_2_5_sunburst_edit",
+        "kling3_0_pro",
+        "nano_banana_2_edit",
+        "nano_banana_pro_edit",
+        "qwen_image_3",
+        // Promoted from placeholder to a real, probed, priced model rather
+        // than added, which is why it is here and not in the count above.
+        "seedance_2_5",
+        "seedream_v5_pro_edit",
+        "wan3_0_prime",
+    ];
+
+    #[test]
+    fn every_imported_model_resolves_to_an_exact_fal_endpoint() {
+        // The failure this closes is the one `docs/FIRST-LIGHT.md` records: a
+        // family root posted unsuffixed answers 404 after a full round trip.
+        // An imported model that resolves to nothing is a tile that cannot run.
+        let reg = registry();
+        for id in IMPORTED_2026_09 {
+            let m = &reg[id];
+            let route = m
+                .routes
+                .iter()
+                .find(|r| r.provider == ProviderId::Fal)
+                .unwrap_or_else(|| panic!("{id} has no fal route"));
+            let produces_video = m.modality == Modality::Video;
+            let resolved: Vec<String> = [
+                crate::media::InputMode::Text,
+                crate::media::InputMode::Image,
+                crate::media::InputMode::Video,
+            ]
+            .into_iter()
+            .filter_map(|mode| {
+                crate::media::resolve_endpoint(&route.slug, mode, produces_video).ok()
+            })
+            .collect();
+            assert!(
+                !resolved.is_empty(),
+                "{id}: no input mode resolves {} to an endpoint",
+                route.slug
+            );
+            // And the endpoint it resolves to is one fal's own index lists.
+            // This is the check a slug diff cannot do: `bytedance/seedance-2.5`
+            // is not an endpoint, `bytedance/seedance-2.5/text-to-video` is,
+            // and only the resolver knows which one goes on the wire.
+            let index = crate::fal_catalogue::Catalogue::bundled();
+            for ep in &resolved {
+                assert!(
+                    index.get(ep).is_some(),
+                    "{id}: {ep} is not in fal's index — the route would 404"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_imported_model_has_a_fal_route_with_a_real_adapter() {
+        // Guards against importing a frontier model that only reaches a
+        // provider we have no client for — a picker tile that cannot generate.
+        let reg = registry();
+        for id in IMPORTED_2026_09 {
+            assert!(
+                reg[id]
+                    .routes
+                    .iter()
+                    .any(|r| r.provider == ProviderId::Fal && r.provider.has_adapter()),
+                "{id} has no executable fal route"
+            );
+        }
+    }
+
+    #[test]
+    fn seedance_2_5_offers_a_thirty_second_clip() {
+        // The reason this slice imported it: no other model in the roster can
+        // make a native half-minute clip. Written to accept either shape —
+        // fal's own enum, or a free-form axis the UI renders as a number box —
+        // so it survives fal changing how it declares the field.
+        let caps = registry()["seedance_2_5"].spec.capabilities();
+        assert!(
+            caps.supports_duration,
+            "seedance_2_5 lost its duration axis"
+        );
+        assert!(
+            caps.durations.contains(&30.0) || caps.durations.is_empty(),
+            "seedance_2_5 offers {:?}, which cannot reach 30s",
+            caps.durations
+        );
     }
 
     #[test]
@@ -2488,15 +2996,27 @@ mod tests {
     #[test]
     fn unverified_slugs_are_flagged_in_the_note_the_ui_shows() {
         let reg = registry();
-        for id in ["seedance_2_5", "outpaint"] {
-            let m = &reg[id];
-            assert!(
-                m.routes
-                    .iter()
-                    .any(|r| r.note.as_deref().is_some_and(|n| n.contains("unverified"))),
-                "{id} hides its uncertainty"
-            );
-        }
+        // `seedance_2_5` left this list on 2026-09-16: fal now serves the slug
+        // and publishes its token rate, both verified by `examples/audit_fal`.
+        // `outpaint` stays, so the test keeps its teeth.
+        let outpaint = &reg["outpaint"];
+        assert!(
+            outpaint
+                .routes
+                .iter()
+                .any(|r| r.note.as_deref().is_some_and(|n| n.contains("unverified"))),
+            "outpaint hides its uncertainty"
+        );
+        // And the model that left must not have taken the word with it: a
+        // sourced price and an "unverified slug" note cannot both be true.
+        assert!(
+            reg["seedance_2_5"].routes.iter().all(|r| !r
+                .note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("unverified")),
+            "seedance_2_5 is priced and probed but still calls itself unverified"
+        );
     }
 
     #[test]

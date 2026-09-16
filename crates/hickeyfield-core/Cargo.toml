@@ -19,3 +19,11 @@ serde_json.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
+
+# `fal_diff` carries the only test of the fal-to-registry diff logic, and
+# `cargo test` does not run an example's tests unless the target says so. Left
+# off, the test compiles and is never executed — the quietest way to have a
+# green suite that checks nothing.
+[[example]]
+name = "fal_diff"
+test = true
