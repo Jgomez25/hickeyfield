@@ -1,4 +1,15 @@
-# HANDOFF — hickeyfield FORGE session → next session (2026-09-16)
+# HANDOFF — hickeyfield FORGE session → next session (updated 2026-09-16, evening)
+
+## State now
+main = S1–S12 released and installed (S8 catalogue sync, S9 schema const/int-enums, S10 pricing audit +
+actual cost, S11 redesign mockup https://claude.ai/artifact/2des9awBapmx8rSZN8wvAe, S12 redesign code).
+Tests 820 Rust / 272 UI. Nothing pushed. Current: S13-storyboard-plan on `forge/s13-storyboard-plan`
+(contract written; DESIGN next), then S14-storyboard-render.
+Rules learned: Opus 4.8 = OMIT the Agent `model` param (frontmatter pins claude-opus-4-8; the family
+alias overrides it); max two repair rounds per slice, then escalate to the owner.
+
+---
+# (previous handoff kept below)
 
 ## Paste this as the first message of the next session
 ```

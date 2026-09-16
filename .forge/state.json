@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S12-ui-redesign-code",
+  "currentSlice": "S13-storyboard-plan",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -93,6 +93,12 @@
       "status": "released",
       "started": "2026-09-15",
       "branch": "forge/s12-redesign-code"
+    },
+    {
+      "id": "S13-storyboard-plan",
+      "title": "storyboard-plan",
+      "status": "in-progress",
+      "started": "2026-09-16"
     }
   ]
 }
