@@ -611,9 +611,10 @@ export default function App() {
           [storyboardId]: { storyboardId, percent: 1, done: true },
         }));
       })
-      .catch(() => {
-        // Clear the progress so the Render button returns; the error surfaces
-        // via the standard toast path the invoke throws through.
+      .catch((e: unknown) => {
+        // Surface the failure in the same banner every other refused action
+        // uses, then clear the progress so the Render button returns.
+        setSubmitError(e instanceof Error ? e.message : String(e));
         setRenderProgress((prev) => {
           const next = { ...prev };
           delete next[storyboardId];
