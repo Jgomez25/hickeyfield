@@ -314,6 +314,8 @@ pub const JOB_TYPES: [(&str, &[&str]); 16] = [
             "ltx_2_5",
             "ltx_2_5_animate",
             "minimax_h3",
+            "minimax_h3_max",
+            "minimax_h3_max_turbo",
             "minimax_hailuo",
             "seedance1_5",
             "seedance_2_0",
@@ -1150,6 +1152,35 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
                 },
             ),
         ],
+        // fal's H3 Max is a post-trained variant of MiniMax H3 (a DIFFERENT
+        // model from `minimax/h3` above — never re-point it). fal's index prose:
+        // "Video costs $0.025 per second at 480p, $0.04 per second at 768p, and
+        // $0.08 per second at 1080p" — promotional launch rates. The prose is
+        // multi-figure and resolution-conditioned, which `parse_pricing`
+        // refuses, so `prices::audit` classifies it as `Prose`, not `Mismatch`:
+        // the tiers here are transcribed, verifiable only against the live
+        // pricing API. `768p` reaches the middle tier via the height map in
+        // `commands::resolution_height`.
+        "minimax_h3_max" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "minimax/h3-max",
+                "$0.025/s 480p, $0.04/s 768p, $0.08/s 1080p — promotional launch rate (fal index 2026-09-16)",
+            ),
+            CostModel::PerSecondTiered {
+                tiers: vec![(480, 0.025), (768, 0.04), (1080, 0.08)],
+            },
+        )],
+        "minimax_h3_max_turbo" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "minimax/h3-max-turbo",
+                "$0.0125/s 480p, $0.02/s 768p, $0.04/s 1080p — promotional launch rate (fal index 2026-09-16)",
+            ),
+            CostModel::PerSecondTiered {
+                tiers: vec![(480, 0.0125), (768, 0.02), (1080, 0.04)],
+            },
+        )],
         // The one model here whose fal route does not exist: `fal-ai/minimax/
         // hailuo-2.3` is in `media::FAL_MISSING_ROUTES`, measured absent
         // 2026-08-05. Until now that left the model with no reachable route at
@@ -1782,6 +1813,63 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
             ("height", false, ValueSpec::Integer),
         ],
     ));
+
+    // MiniMax H3 Max and its Turbo tier, transcribed from fal's own schemas for
+    // `minimax/h3-max*/{text,image}-to-video` on 2026-09-16 (vendored in
+    // slice S14's `schemas/`). Every enumerated set is fal's, value for value.
+    // These land on the constant-fields mechanism S8 lacked: both endpoints
+    // REQUIRE `prompt_expansion_mode`, which the app sends as a constant
+    // (`media::FAL_CONSTANT_FIELDS`) rather than surfacing as a control.
+    //
+    // `resolution` is fal's UPPERCASE enum verbatim. `duration` is free-form
+    // `Number`, not an enum: fal declares an integer range 5..15 and enforcing
+    // exact members would invent a ladder (the LTX class of bug).
+    //
+    // `aspect_ratio` is deliberately NOT on this shared spec, unlike Seedance
+    // 2.5. The two endpoints disagree — text-to-video enumerates six ratios,
+    // image-to-video declares no such key at all (not even a `const`) — and a
+    // spec cannot state both. The online path reads fal's per-endpoint schema
+    // (`capability::from_fal`), so the text-to-video chip row shows all six and
+    // the animate row shows none regardless of the spec. Putting the enum on the
+    // spec would make `spec.capabilities().supports_aspect` true, which the
+    // keyless audit's check 3 correctly reads as "the app offers `aspect` but the
+    // image-to-video endpoint has no `aspect_ratio`" — a DROPPED SETTINGS finding
+    // on a landed endpoint. Omitting it keeps the four endpoints clean and, as a
+    // bonus, stops the offline animate path from sending an undeclared key. The
+    // only cost is the rare offline-text-to-video case, where fal applies its own
+    // 16:9 default. (See slice S14 implement.md, deviation from design D3/Q2.)
+    for (id, display, note_speed) in [
+        ("minimax_h3_max", "MiniMax H3 Max", "H3 Max"),
+        (
+            "minimax_h3_max_turbo",
+            "MiniMax H3 Max Turbo",
+            "H3 Max Turbo",
+        ),
+    ] {
+        out.push(ModelSpec {
+            constraints: vec![
+                format!(
+                    "fal renders {note_speed} clips of 5-15 seconds (default 5); \
+                     1080P is a latent refinement of a native 768P source."
+                ),
+                "Animating a still always follows the image's own shape; the \
+                 aspect control applies to text-to-video only."
+                    .to_string(),
+            ],
+            ..spec(
+                id,
+                display,
+                Modality::Video,
+                &[
+                    ("prompt", true, ValueSpec::Text),
+                    ("start_image", false, ValueSpec::Media),
+                    ("end_image", false, ValueSpec::Media),
+                    ("duration", false, ValueSpec::Number),
+                    ("resolution", false, en(&["480P", "768P", "1080P"])),
+                ],
+            )
+        });
+    }
 
     out.push(spec(
         "wan2_5_video",
@@ -2436,11 +2524,15 @@ mod tests {
         // not added). Ten landed on 2026-09-16; `ltx_2_5`, `ltx_2_5_animate`
         // and `veo3_1_extend` followed once the schema parser learned to read
         // a `const` and an integer enum, which is what made them runnable.
+        // Then `minimax_h3_max` and `minimax_h3_max_turbo` (+2, listed in
+        // `IMPORTED_2026_09_H3`) landed once the submit path learned to send a
+        // required-with-default field the app does not surface as a control
+        // (`prompt_expansion_mode`, via `media::FAL_CONSTANT_FIELDS`).
         // None of these are sold by Higgsfield, so none are described by any
         // vendored document.
         assert_eq!(
             reg.len(),
-            cat.len() - EXCLUSIONS.len() + 30,
+            cat.len() - EXCLUSIONS.len() + 32,
             "registry size"
         );
     }
@@ -2476,6 +2568,9 @@ mod tests {
             "nano_banana_pro_edit",
             "nano_banana_2_edit",
             "seedream_v5_pro_edit",
+            // Landed on the constant-fields mechanism (`IMPORTED_2026_09_H3`).
+            "minimax_h3_max",
+            "minimax_h3_max_turbo",
         ] {
             assert!(reg.contains_key(id), "{id} missing");
             assert!(
@@ -2830,6 +2925,150 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_h3_max_models_are_present() {
+        let reg = registry();
+        assert!(reg.contains_key("minimax_h3_max"), "minimax_h3_max missing");
+        assert!(
+            reg.contains_key("minimax_h3_max_turbo"),
+            "minimax_h3_max_turbo missing"
+        );
+        // The pre-existing, DIFFERENT model must be untouched and still on
+        // `minimax/h3` — never re-pointed to H3 Max.
+        assert!(reg.contains_key("minimax_h3"));
+        assert!(
+            reg["minimax_h3"]
+                .routes
+                .iter()
+                .any(|r| r.provider == ProviderId::Fal && r.slug == "minimax/h3"),
+            "minimax_h3 must still route to minimax/h3"
+        );
+    }
+
+    #[test]
+    fn h3_max_offers_only_the_resolutions_fal_enumerates() {
+        // Non-vacuous: fails if the flag is reverted to `ValueSpec::Text`.
+        let reg = registry();
+        for id in ["minimax_h3_max", "minimax_h3_max_turbo"] {
+            assert_eq!(
+                reg[id].spec.capabilities().resolutions,
+                ["480P", "768P", "1080P"],
+                "{id} resolutions"
+            );
+        }
+    }
+
+    #[test]
+    fn h3_max_aspect_is_per_endpoint_not_per_spec() {
+        // Weakest point of the slice: one spec, two endpoints that disagree
+        // about `aspect_ratio`. Proved the way `model_capabilities` resolves it
+        // online — `capability::from_fal` reads fal's per-endpoint schema — so
+        // text-to-video shows the six ratios and image-to-video shows none,
+        // regardless of what the spec declares. Mirrors the vendored schemas.
+        use crate::capability::{ModelCapability, Support};
+        let spec = &registry()["minimax_h3_max"].spec;
+
+        let t2v = crate::fal_schema::parse(
+            &serde_json::from_str(
+                r#"{"components":{"schemas":{"H3MaxTextToVideoInput":{"properties":{
+                "prompt":{"type":"string"},
+                "prompt_expansion_mode":{"type":"string","default":"balanced"},
+                "resolution":{"type":"string","enum":["480P","768P","1080P"]},
+                "aspect_ratio":{"type":"string","enum":["21:9","16:9","4:3","1:1","3:4","9:16"]}},
+                "required":["prompt","prompt_expansion_mode"]}}}}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let i2v = crate::fal_schema::parse(
+            &serde_json::from_str(
+                r#"{"components":{"schemas":{"H3MaxImageToVideoInput":{"properties":{
+                "prompt":{"type":"string"},
+                "prompt_expansion_mode":{"type":"string","default":"balanced"},
+                "resolution":{"type":"string","enum":["480P","768P","1080P"]},
+                "image_url":{"anyOf":[{"type":"string"},{"type":"null"}]}},
+                "required":["prompt","prompt_expansion_mode"]}}}}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let cap_t2v = ModelCapability::from_fal(spec, "minimax/h3-max/text-to-video", &t2v);
+        assert_eq!(
+            cap_t2v.aspect.values,
+            ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "text-to-video must offer fal's six ratios"
+        );
+
+        let cap_i2v = ModelCapability::from_fal(spec, "minimax/h3-max/image-to-video", &i2v);
+        assert_eq!(
+            cap_i2v.aspect.support,
+            Support::No,
+            "image-to-video must offer no aspect control"
+        );
+    }
+
+    #[test]
+    fn h3_max_is_priced_per_the_launch_tiers() {
+        // Transcribed from fal's index prose (2026-09-16 promotional rates).
+        // H3 Max: $0.025 / $0.04 / $0.08 per second at 480/768/1080p.
+        near(
+            usd(
+                "minimax_h3_max",
+                "fal:minimax/h3-max",
+                &Billable::video(5.0, 854, 480),
+            ),
+            5.0 * 0.025,
+            "H3 Max 480p 5s",
+        );
+        near(
+            usd(
+                "minimax_h3_max",
+                "fal:minimax/h3-max",
+                &Billable::video(5.0, 1366, 768),
+            ),
+            5.0 * 0.04,
+            "H3 Max 768p 5s",
+        );
+        near(
+            usd(
+                "minimax_h3_max",
+                "fal:minimax/h3-max",
+                &Billable::video(5.0, 1920, 1080),
+            ),
+            5.0 * 0.08,
+            "H3 Max 1080p 5s",
+        );
+        // Turbo is half the H3 Max rate at each tier.
+        near(
+            usd(
+                "minimax_h3_max_turbo",
+                "fal:minimax/h3-max-turbo",
+                &Billable::video(5.0, 854, 480),
+            ),
+            5.0 * 0.0125,
+            "H3 Max Turbo 480p 5s",
+        );
+        near(
+            usd(
+                "minimax_h3_max_turbo",
+                "fal:minimax/h3-max-turbo",
+                &Billable::video(5.0, 1366, 768),
+            ),
+            5.0 * 0.02,
+            "H3 Max Turbo 768p 5s",
+        );
+        near(
+            usd(
+                "minimax_h3_max_turbo",
+                "fal:minimax/h3-max-turbo",
+                &Billable::video(5.0, 1920, 1080),
+            ),
+            5.0 * 0.04,
+            "H3 Max Turbo 1080p 5s",
+        );
+    }
+
     /// The arbitrage *knowledge* — which provider is genuinely cheapest.
     ///
     /// Asserted on price directly rather than through `resolve`, because the
@@ -3055,13 +3294,20 @@ mod tests {
         "wan3_0_prime",
     ];
 
+    /// Imported from fal's index on 2026-09-16 too, but landed on a NEW
+    /// mechanism — a required body field the app has no control for
+    /// (`prompt_expansion_mode`), sent as a route constant. A distinct const
+    /// keeps that provenance legible; the resolve/adapter loops iterate it for
+    /// free so both ids get the same coverage as the earlier sweep.
+    const IMPORTED_2026_09_H3: [&str; 2] = ["minimax_h3_max", "minimax_h3_max_turbo"];
+
     #[test]
     fn every_imported_model_resolves_to_an_exact_fal_endpoint() {
         // The failure this closes is the one `docs/FIRST-LIGHT.md` records: a
         // family root posted unsuffixed answers 404 after a full round trip.
         // An imported model that resolves to nothing is a tile that cannot run.
         let reg = registry();
-        for id in IMPORTED_2026_09 {
+        for id in IMPORTED_2026_09.into_iter().chain(IMPORTED_2026_09_H3) {
             let m = &reg[id];
             let route = m
                 .routes
@@ -3103,7 +3349,7 @@ mod tests {
         // Guards against importing a frontier model that only reaches a
         // provider we have no client for — a picker tile that cannot generate.
         let reg = registry();
-        for id in IMPORTED_2026_09 {
+        for id in IMPORTED_2026_09.into_iter().chain(IMPORTED_2026_09_H3) {
             assert!(
                 reg[id]
                     .routes

@@ -317,6 +317,20 @@ pub fn submit_to_provider(
         None
     };
 
+    // Some fal endpoints REQUIRE a field the app has no setting for — the H3 Max
+    // family demands `prompt_expansion_mode`, defaulted yet still rejected when
+    // absent. Write it here, after the schema is known (so we only send a key
+    // the endpoint accepts) and before the AspectPlan/sweep/reconcile block
+    // below (so those passes treat it like any other body field). A constant
+    // never overrides a value the user or the binder already set.
+    if route.provider == ProviderId::Fal {
+        hickeyfield_core::fal_schema::apply_constants(
+            hickeyfield_core::media::fal_constants(&route.slug),
+            fal_schema.as_ref(),
+            &mut body,
+        );
+    }
+
     // ── The shape of the output, decided once ──────────────────────────────
     //
     // Three things used to have an opinion about the aspect ratio: the chip

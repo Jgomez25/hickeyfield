@@ -4,7 +4,7 @@
 //! describes *Higgsfield's* API, we send to fal, and the two disagree. Each was
 //! found by a user hitting it. This finds the rest mechanically.
 //!
-//! Five checks, in descending order of how much they cost when wrong:
+//! Six checks, in descending order of how much they cost when wrong:
 //!
 //! 1. **Silently ignored media** — we let the user attach a file to an endpoint
 //!    with no field for it. fal drops it and bills for a generation that did
@@ -18,6 +18,13 @@
 //!    still send another. Invisible to check 4, which needs both sides to
 //!    enumerate: `fal-ai/veo3.1/extend-video` renders at `7s`/`720p` and
 //!    nothing else, and the app cheerfully sent `5.0`/`1080p` for a slice.
+//! 6. **Bad route constants** — a field the app injects as a constant
+//!    (`media::fal_constants`) that the endpoint does not accept, or whose value
+//!    the endpoint enumerates and this value is not among. Either is a wasted or
+//!    refused field the moment the constant is mistyped or an endpoint changes.
+//!
+//! Check 2 also treats a declared route constant as *supplied*: the mechanism
+//! sends `prompt_expansion_mode`, so the audit must not report it as missing.
 //!
 //! Run: `cargo run -p hickeyfield-core --example audit_fal`. No key needed; fal's
 //! schema endpoint is unauthenticated.
@@ -36,6 +43,7 @@ fn main() {
     let mut dropped_settings = Vec::new();
     let mut wrong_options = Vec::new();
     let mut pinned_fields = Vec::new();
+    let mut bad_constants = Vec::new();
     let mut unreachable = Vec::new();
     // Kept as rows, not a counter: "which slugs did you actually probe" is the
     // question an importer has to answer, and a number cannot answer it.
@@ -101,12 +109,11 @@ fn main() {
             // `prompt` is always supplied by the user, and a media key is
             // supplied when they attach something — so only flag the rest,
             // which is where a silent 422 comes from.
-            let never_sent: Vec<&str> = schema
-                .required
-                .iter()
-                .map(String::as_str)
-                .filter(|k| *k != "prompt" && !schema.media_keys().contains(k))
-                .collect();
+            // A route constant is supplied by the submit path
+            // (`fal_schema::apply_constants`), so it is no longer missing —
+            // subtract it here or every constant-bearing endpoint lands in
+            // MISSING REQUIRED FIELDS and AC5 can never be clean.
+            let never_sent = unsupplied_required(&schema, media::fal_constants(&route.slug));
             if !never_sent.is_empty() {
                 missing_required.push(format!(
                     "{:<26} {endpoint}\n      requires [{}] which nothing in the app supplies",
@@ -173,6 +180,12 @@ fn main() {
                     could_send.join(", ")
                 ));
             }
+
+            // 6. A route constant this endpoint does not accept, or whose value
+            //    the endpoint enumerates and this value is not among.
+            for issue in constant_issues(media::fal_constants(&route.slug), &schema) {
+                bad_constants.push(format!("{:<26} {endpoint}\n      {issue}", m.id));
+            }
         }
     }
 
@@ -195,6 +208,10 @@ fn main() {
     section(
         "PINNED FIELDS — the endpoint fixes this value and we would send another",
         &pinned_fields,
+    );
+    section(
+        "BAD ROUTE CONSTANTS — the app injects a field the endpoint refuses",
+        &bad_constants,
     );
     // The loudest signal of all: we route to a slug fal does not serve. It was
     // collected and thrown away until 2026-09-15.
@@ -232,6 +249,49 @@ fn main() {
 /// `aspect_ratio` is checked even when the spec declares no such flag, because
 /// the submit path derives that key from the **schema** and then always sends
 /// something explicit.
+/// Required fields nothing in the app supplies (check 2).
+///
+/// `prompt` is always the user's; a media key is supplied when they attach
+/// something; and a **route constant** is supplied by the submit path
+/// (`fal_schema::apply_constants`). What remains is where a silent 422 comes
+/// from. Pure over the fetched schema so both directions are pinned by a test:
+/// forget to subtract the constants and every H3 Max endpoint is falsely
+/// flagged; subtract too much and a genuine gap is hidden.
+fn unsupplied_required<'a>(schema: &'a EndpointSchema, constants: &[(&str, &str)]) -> Vec<&'a str> {
+    let media_keys = schema.media_keys();
+    schema
+        .required
+        .iter()
+        .map(String::as_str)
+        .filter(|k| {
+            *k != "prompt" && !media_keys.contains(k) && !constants.iter().any(|(c, _)| c == k)
+        })
+        .collect()
+}
+
+/// Route constants this endpoint would waste or refuse (check 6).
+///
+/// A constant is safe only when the endpoint accepts the key and — where the
+/// endpoint enumerates that key — the value is a member. Pure and network-free
+/// over the already-fetched schema, so a mistyped constant or an endpoint that
+/// changed its enum is caught by the build's own audit.
+fn constant_issues(constants: &[(&str, &str)], schema: &EndpointSchema) -> Vec<String> {
+    let mut out = Vec::new();
+    for (key, value) in constants {
+        if !schema.accepts(key) {
+            out.push(format!(
+                "constant `{key}` = {value} is not a field this endpoint accepts"
+            ));
+        } else if schema.enums.contains_key(*key) && schema.coerce(key, value).is_none() {
+            out.push(format!(
+                "constant `{key}` = {value} is outside the endpoint's enum [{}]",
+                schema.enums[*key].join(", ")
+            ));
+        }
+    }
+    out
+}
+
 fn pin_conflicts(
     spec: &ModelSpec,
     endpoint: &str,
@@ -360,6 +420,55 @@ mod tests {
             pin_conflicts(&spec, "fal-ai/veo3.1/extend-video", &schema),
             vec![]
         );
+    }
+
+    /// The H3 Max text-to-video input surface, as fal published it 2026-09-16:
+    /// `prompt_expansion_mode` is required, has no enum, and is accepted.
+    const H3_MAX_T2V: &str = r#"{"components":{"schemas":{"H3MaxTextToVideoInput":{"properties":{
+        "prompt":{"type":"string"},
+        "prompt_expansion_mode":{"type":"string","default":"balanced","examples":["disabled","balanced","quality"]},
+        "resolution":{"type":"string","enum":["480P","768P","1080P"],"default":"768P"}},
+        "required":["prompt","prompt_expansion_mode"]}}}}"#;
+
+    #[test]
+    fn a_required_constant_is_not_flagged_as_missing() {
+        // The mechanism sends `prompt_expansion_mode`, so check 2 must treat it
+        // as supplied — otherwise every H3 Max endpoint is a false positive.
+        let schema = fal_schema::parse(&serde_json::from_str(H3_MAX_T2V).unwrap()).unwrap();
+        let constants: &[(&str, &str)] = &[("prompt_expansion_mode", "balanced")];
+        assert!(
+            unsupplied_required(&schema, constants).is_empty(),
+            "constant should be subtracted"
+        );
+        // And without the constant it IS flagged — the check still bites.
+        assert_eq!(
+            unsupplied_required(&schema, &[]),
+            ["prompt_expansion_mode"],
+            "a genuinely unsupplied required field must still be reported"
+        );
+    }
+
+    #[test]
+    fn a_constant_the_endpoint_rejects_is_reported() {
+        let schema = fal_schema::parse(&serde_json::from_str(H3_MAX_T2V).unwrap()).unwrap();
+        // Accepted, enum-free → clean.
+        assert!(constant_issues(&[("prompt_expansion_mode", "balanced")], &schema).is_empty());
+        // A key the endpoint does not declare → reported.
+        let issues = constant_issues(&[("no_such_field", "x")], &schema);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].contains("not a field this endpoint accepts"),
+            "{issues:?}"
+        );
+        // A value outside an enumerated key → reported.
+        let issues = constant_issues(&[("resolution", "999P")], &schema);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].contains("outside the endpoint's enum"),
+            "{issues:?}"
+        );
+        // A value that IS an enum member (case-coerced) → clean.
+        assert!(constant_issues(&[("resolution", "768p")], &schema).is_empty());
     }
 
     #[test]

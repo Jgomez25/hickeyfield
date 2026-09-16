@@ -8,6 +8,12 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The app can now send a required setting a provider does not expose as a control.** Some
+  fal endpoints demand a body field even though they publish a default for it; the request
+  used to be refused before it was sent. Those fields are now supplied automatically, only
+  ever for an endpoint that accepts them and never overriding a value you set, and the
+  keyless model audit verifies every such field against fal's own schema.
+
 - **The window is redesigned into a stage-first Studio and a Library gallery.** Studio now
   shows your latest result large — with its model, duration, resolution and its estimated
   *and* actual cost on one caption — a strip of recent generations, and a 72-pixel use-case
@@ -26,6 +32,13 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a single fixed model.
 
 ### Added
+
+- **MiniMax H3 Max and H3 Max Turbo are in the picker, for text-to-video and
+  animate-an-image.** Both render 5-to-15-second clips at 480P, 768P or 1080P, with a choice
+  of six aspect ratios when you start from a prompt. They are priced at fal's promotional
+  launch rates — H3 Max at $0.025/$0.04/$0.08 per second across the three resolutions, and
+  the Turbo tier at half that — and the Generate button now prices the default 768P
+  resolution correctly.
 
 - **A Storyboard view turns one brief into a whole shot list you can edit and generate as a
   set.** Describe what you want ("a 30-second ad for …") and pick a target length; the local

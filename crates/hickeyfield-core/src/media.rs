@@ -596,7 +596,7 @@ impl InputMode {
 /// **Provisional.** Phase C2 replaces this by reading fal's schema per
 /// endpoint and caching it. Until then a slug absent from this table is
 /// suffixed optimistically, which costs one 404 and no money.
-const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 51] = [
+const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 53] = [
     // Video editors. Each takes a clip and nothing else — offering them for
     // "Animate Image" produced "does not accept a start frame" at submit.
     // A complete text-to-image endpoint. Its editing counterpart is a separate
@@ -765,12 +765,66 @@ const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 51] = [
         &[InputMode::Text, InputMode::Image],
     ),
     ("minimax/h3", false, &[InputMode::Text, InputMode::Image]),
+    // MiniMax H3 Max and its Turbo tier. Both family roots serve text-to-video
+    // and image-to-video; the suffix resolver splits each into the two exact
+    // endpoints fal publishes. They require `prompt_expansion_mode` with a
+    // value the app does not surface — see [`FAL_CONSTANT_FIELDS`].
+    (
+        "minimax/h3-max",
+        false,
+        &[InputMode::Text, InputMode::Image],
+    ),
+    (
+        "minimax/h3-max-turbo",
+        false,
+        &[InputMode::Text, InputMode::Image],
+    ),
     (
         "xai/grok-imagine-video/v1.5",
         false,
         &[InputMode::Text, InputMode::Image],
     ),
 ];
+
+/// Body fields a fal endpoint REQUIRES with a value the app does not surface as
+/// a user-facing setting.
+///
+/// fal lists a *default* for these fields yet still rejects the request when the
+/// key is absent — `prompt_expansion_mode` on the H3 Max family is the first
+/// example, and it is exactly why S8 refused to land H3 Max: there was no
+/// mechanism to send a required key that is neither the prompt nor a media
+/// attachment. Omitting it is a guaranteed 422 after a full round trip.
+///
+/// Keyed by the **family-root slug** because every input mode of the family
+/// (text-to-video and image-to-video alike) needs the same constant. The values
+/// are written verbatim into the request body before `reconcile`, by
+/// [`crate::fal_schema::apply_constants`], which:
+/// - never overrides a field a user (or the binder) already set, and
+/// - with a live schema, writes only a key the endpoint actually `accepts`.
+///
+/// With NO schema cached (offline), `apply_constants` sends the constant anyway:
+/// fal requires the key, so omitting it always 422s, whereas every endpoint this
+/// table currently covers is known to declare the key. Correct for the four H3
+/// Max endpoints; revisit the offline rule before adding a constant for a family
+/// whose modes disagree about the key.
+const FAL_CONSTANT_FIELDS: [(&str, &[(&str, &str)]); 2] = [
+    ("minimax/h3-max", &[("prompt_expansion_mode", "balanced")]),
+    (
+        "minimax/h3-max-turbo",
+        &[("prompt_expansion_mode", "balanced")],
+    ),
+];
+
+/// The constant body fields this fal route requires, or an empty slice.
+///
+/// Keyed by the family-root slug the registry stores (`minimax/h3-max`), which
+/// is what both the submit path and the audit hold.
+pub fn fal_constants(slug: &str) -> &'static [(&'static str, &'static str)] {
+    FAL_CONSTANT_FIELDS
+        .iter()
+        .find(|(s, _)| *s == slug)
+        .map_or(&[], |(_, c)| *c)
+}
 
 /// Routes the registry lists that fal does not serve at all.
 ///
@@ -1689,6 +1743,23 @@ mod tests {
                 "{slug} is in the mode table but no fal route uses it"
             );
         }
+    }
+
+    #[test]
+    fn fal_constants_names_the_required_field_for_h3_max() {
+        // The H3 Max family requires `prompt_expansion_mode`, defaulted by fal
+        // to `balanced` but still rejected when absent (S8's refusal).
+        assert_eq!(
+            fal_constants("minimax/h3-max"),
+            &[("prompt_expansion_mode", "balanced")]
+        );
+        assert_eq!(
+            fal_constants("minimax/h3-max-turbo"),
+            &[("prompt_expansion_mode", "balanced")]
+        );
+        // A model with no declared constants carries none.
+        assert!(fal_constants("minimax/h3").is_empty());
+        assert!(fal_constants("nope/does-not-exist").is_empty());
     }
 
     #[test]

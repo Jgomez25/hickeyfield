@@ -21,6 +21,13 @@
 //!    integers `{6, 8, 10}` beside the string `"auto"`. The enum reader kept
 //!    only strings and never looked at `const`, so both read as "no
 //!    constraint" (or, worse, as `["auto"]` alone) and both 422 on submit.
+//! 5. A field the endpoint **requires but the app has no setting for**: fal
+//!    lists a *default* yet still 422s when the key is absent. The MiniMax H3
+//!    Max family requires `prompt_expansion_mode`; it is neither the prompt nor
+//!    a media key, so nothing in the submit path ever added it and every
+//!    request was refused. [`apply_constants`] writes such a field from a table
+//!    keyed by slug ([`crate::media::fal_constants`]), respecting a value the
+//!    user already set and the endpoint's own schema.
 //!
 //! The catalogue describes Higgsfield's API. It is not wrong; it is about
 //! something else. fal publishes its own per-endpoint schema, unauthenticated,
@@ -248,6 +255,44 @@ pub fn reconcile(
         }
     }
     Ok(rewritten)
+}
+
+/// Write each `(key, value)` constant into `body` for a field the endpoint
+/// fixes, before [`reconcile`].
+///
+/// A constant is NOT a user setting: it exists only because fal requires the
+/// key while giving the app nothing to surface (see
+/// [`crate::media::fal_constants`]). The rules are the whole point of a
+/// *mechanism* rather than a hardcode:
+///
+/// - **Never override a field already present.** A value the user set, or that
+///   the binder wrote, always wins; a constant only fills a gap. Today no H3 Max
+///   constant collides with a real control, but the next required-with-default
+///   field a provider adds might.
+/// - **With a schema, write only a key the endpoint `accepts`.** A constant an
+///   endpoint does not declare would be swept away by the unknown-key pass
+///   anyway, and sending it to a strict endpoint 422s.
+/// - **With NO schema (offline / uncached), write it regardless.** fal requires
+///   the key, so omitting it is a guaranteed 422; sending a field that every
+///   endpoint we ship this for is known to take is the lesser risk. Correct for
+///   the four H3 Max endpoints, which all declare `prompt_expansion_mode`.
+pub fn apply_constants(
+    constants: &[(&str, &str)],
+    schema: Option<&EndpointSchema>,
+    body: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    for (key, value) in constants {
+        if body.contains_key(*key) {
+            continue;
+        }
+        let accepted = schema.is_none_or(|s| s.accepts(key));
+        if accepted {
+            body.insert(
+                (*key).to_string(),
+                serde_json::Value::String((*value).to_string()),
+            );
+        }
+    }
 }
 
 /// A scalar as the text an enum would spell it with.
@@ -576,6 +621,92 @@ mod tests {
         // on every single generation.
         preload("test/negative", None);
         assert_eq!(for_endpoint("test/negative"), None);
+    }
+
+    /// The H3 Max text-to-video input surface, as fal published it 2026-09-16.
+    const H3_MAX_T2V: &str = r#"{"components":{"schemas":{"H3MaxTextToVideoInput":{"properties":{
+        "prompt":{"type":"string"},
+        "prompt_expansion_mode":{"type":"string","default":"balanced","examples":["disabled","balanced","quality"]},
+        "resolution":{"type":"string","enum":["480P","768P","1080P"],"default":"768P"},
+        "aspect_ratio":{"type":"string","enum":["21:9","16:9","4:3","1:1","3:4","9:16"],"default":"16:9"},
+        "duration":{"type":"integer","minimum":5,"maximum":15,"default":5}},
+        "required":["prompt","prompt_expansion_mode"]}}}}"#;
+
+    #[test]
+    fn a_constant_is_written_when_the_schema_accepts_it() {
+        let schema = parsed(H3_MAX_T2V);
+        let mut body = serde_json::Map::new();
+        body.insert("prompt".into(), serde_json::json!("a red door"));
+        apply_constants(
+            &[("prompt_expansion_mode", "balanced")],
+            Some(&schema),
+            &mut body,
+        );
+        assert_eq!(
+            body.get("prompt_expansion_mode"),
+            Some(&serde_json::json!("balanced"))
+        );
+    }
+
+    #[test]
+    fn a_constant_never_overrides_a_user_value() {
+        // A value already in the body — set by the user or the binder — always
+        // wins; a constant only fills a gap.
+        let schema = parsed(H3_MAX_T2V);
+        let mut body = serde_json::Map::new();
+        body.insert("prompt_expansion_mode".into(), serde_json::json!("quality"));
+        apply_constants(
+            &[("prompt_expansion_mode", "balanced")],
+            Some(&schema),
+            &mut body,
+        );
+        assert_eq!(
+            body.get("prompt_expansion_mode"),
+            Some(&serde_json::json!("quality"))
+        );
+    }
+
+    #[test]
+    fn a_constant_is_dropped_when_the_schema_rejects_the_key() {
+        // An endpoint that does not declare the key would sweep it away anyway,
+        // and a strict endpoint 422s on it.
+        let schema = parsed(GEMINI_OMNI);
+        assert!(!schema.accepts("prompt_expansion_mode"));
+        let mut body = serde_json::Map::new();
+        apply_constants(
+            &[("prompt_expansion_mode", "balanced")],
+            Some(&schema),
+            &mut body,
+        );
+        assert!(!body.contains_key("prompt_expansion_mode"));
+    }
+
+    #[test]
+    fn a_constant_is_sent_when_no_schema_is_cached() {
+        // Offline: fal requires the key, so omitting it is a guaranteed 422.
+        let mut body = serde_json::Map::new();
+        apply_constants(&[("prompt_expansion_mode", "balanced")], None, &mut body);
+        assert_eq!(
+            body.get("prompt_expansion_mode"),
+            Some(&serde_json::json!("balanced"))
+        );
+    }
+
+    #[test]
+    fn resolution_case_matches_the_uppercase_members() {
+        // AC4: the app must send fal's exact UPPERCASE spelling. `coerce` is
+        // case-insensitive, and `reconcile` writes the enum's own member back.
+        let schema = parsed(H3_MAX_T2V);
+        assert_eq!(
+            schema.coerce("resolution", "1080p").as_deref(),
+            Some("1080P")
+        );
+        assert_eq!(schema.coerce("resolution", "768p").as_deref(), Some("768P"));
+        // A body already carrying "768P" reconciles to "768P" unchanged.
+        let mut body = serde_json::Map::new();
+        body.insert("resolution".into(), serde_json::json!("768P"));
+        reconcile(&schema, &mut body).unwrap();
+        assert_eq!(body.get("resolution"), Some(&serde_json::json!("768P")));
     }
 
     /// Build a schema that enumerates one field, the way fal publishes it.

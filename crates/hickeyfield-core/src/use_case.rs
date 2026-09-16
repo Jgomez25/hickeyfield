@@ -311,6 +311,13 @@ mod tests {
             ("nano_banana_pro_edit", UseCase::EditImage),
             ("nano_banana_2_edit", UseCase::EditImage),
             ("seedream_v5_pro_edit", UseCase::EditImage),
+            // H3 Max serves both modes: its image-to-video endpoint names the
+            // start frame `image_url`, which the binder writes (unlike Kling 3.0
+            // Pro's unbindable key), so no mode is hidden.
+            ("minimax_h3_max", UseCase::TextToVideo),
+            ("minimax_h3_max", UseCase::ImageToVideo),
+            ("minimax_h3_max_turbo", UseCase::TextToVideo),
+            ("minimax_h3_max_turbo", UseCase::ImageToVideo),
         ] {
             assert!(
                 supports(&reg[id], tab),

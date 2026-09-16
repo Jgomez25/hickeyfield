@@ -616,6 +616,9 @@ fn resolution_height(label: &str) -> Option<u32> {
         "480p" => Some(480),
         "540p" => Some(540),
         "720p" => Some(720),
+        // MiniMax H3 and H3 Max render a native 768p tier; without this the
+        // default resolution priced as "unknown" on the Generate button.
+        "768p" => Some(768),
         "1080p" => Some(1080),
         "1440p" => Some(1440),
         "2160p" | "4k" => Some(2160),
@@ -1749,6 +1752,23 @@ mod tests {
         assert_eq!(resolution_height("1080p"), Some(1080));
         assert_eq!(resolution_height("4K"), Some(2160));
         assert_eq!(resolution_height("2k"), Some(1440));
+    }
+
+    #[test]
+    fn the_768p_tier_is_reachable() {
+        // H3 Max defaults to fal's UPPERCASE "768P". The height map lowercases
+        // first, so both cases resolve; without the entry the default-resolution
+        // price would read "unknown" and the middle tier would be unreachable.
+        assert_eq!(resolution_height("768P"), Some(768));
+        assert_eq!(resolution_height("768p"), Some(768));
+        let s = SettingsDto {
+            resolution: Some("768P".into()),
+            aspect: Some("16:9".into()),
+            duration: Some(5.0),
+            ..Default::default()
+        };
+        let b = Billable::from(&s);
+        assert_eq!(b.height, Some(768), "768P must yield a billable height");
     }
 
     #[test]
