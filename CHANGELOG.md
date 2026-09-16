@@ -21,7 +21,9 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **fal's newest models are in the picker, and a 30-second clip is now possible.**
   Seedance 2.5 moved from a placeholder to a real, priced model and offers every
   length fal takes, up to a native 30 seconds — the longest single clip the app has
-  ever been able to ask for. Alongside it: Kling 3.0 Pro and Wan 3.0 Prime.
+  ever been able to ask for (text-to-video for now: fal's image-to-video endpoint
+  pins its aspect ratio in a way the app cannot yet honour). Alongside it: Kling 3.0
+  Pro and Wan 3.0 Prime.
   On the image side: GPT Image 2.5 in both of its tiers, Qwen Image 3, and — as
   their own entries, because they are separate endpoints — the edit paths for Nano
   Banana Pro, Nano Banana 2 and Seedream 5.0 Pro. Each was checked against the

@@ -1533,9 +1533,10 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
 ///
 /// **From fal's own index**, imported 2026-09-16 by `examples/fal_diff` and
 /// probed by `examples/audit_fal` before landing: Kling 3.0 Pro, Wan 3.0 Prime,
-/// LTX 2.5 Pro and its animate half, Veo 3.1 Extend, GPT Image 2.5 in both
-/// tiers with their edit paths, Qwen Image 3, the Nano Banana and Seedream 5
-/// edit endpoints. Their flags are transcribed from fal's published schema per
+/// GPT Image 2.5 in both tiers with their edit paths, Qwen Image 3, the Nano
+/// Banana and Seedream 5 edit endpoints. (LTX 2.5 and Veo 3.1 Extend were
+/// probed too and withdrawn: their schemas pin fields by `const` or integer
+/// enums the parser cannot yet read.) Their flags are transcribed from fal's published schema per
 /// endpoint — the only document that describes the API we actually call — and
 /// every enumerated option set is copied from it verbatim.
 fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
@@ -1549,6 +1550,9 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
     out.push(ModelSpec {
         constraints: vec![
             "fal serves 4-30s; 30s is the native maximum. `auto` lets the model choose."
+                .to_string(),
+            "Text-to-video only for now: fal's image-to-video endpoint pins `aspect_ratio` \
+             to `auto`, which the app cannot yet honour."
                 .to_string(),
         ],
         ..spec(
@@ -1996,8 +2000,8 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
 
     out.push(ModelSpec {
         constraints: vec![
-            "fal declares `duration` as a plain integer with no published ceiling, so the app \
-             offers it free-form and lets the endpoint judge."
+            "fal declares `duration` as a plain integer from 2 to 30 seconds (default 5), so the \
+             app offers it free-form and the endpoint enforces the range."
                 .to_string(),
         ],
         ..spec(

@@ -274,3 +274,251 @@ verified and stand. B1 and B2 are narrow: withdrawing three model ids (or fixing
 specs) resolves them without touching anything else that landed.
 
 VERDICT: FAIL
+
+---
+
+## RE-REVIEW (reduced 11-model set, 2026-09-16, HEAD 58e981c)
+
+Reviewer: independent, read-only. Nothing in the project was modified by this pass; the only
+file written is this one. Scope: `git diff main...HEAD` — `examples/fal_diff.rs` (new),
+`examples/audit_fal.rs`, `Cargo.toml`, `vendor/fal-catalogue-snapshot.json`,
+`src/fal_catalogue.rs`, `src/registry.rs`, `src/media.rs`, `src/use_case.rs`,
+`docs/FIRST-LIGHT.md`, `CHANGELOG.md`. The withdrawn `ltx_2_5` / `ltx_2_5_animate` /
+`veo3_1_extend` are not re-reviewed; they are verified gone (§3 below). The parser blind spot
+(prior B3) is out of scope — it is its own backlog slice.
+
+### 1. Gate, re-run here (real output)
+
+```
+$ cargo test --workspace            TEST exit=0
+test result: ok. 657 passed; 0 failed; 9 ignored   (hickeyfield-core lib)
+test result: ok.   2 passed; 0 failed              (examples/fal_diff)
+test result: ok. 120 passed; 0 failed; 1 ignored   (hickeyfield-tauri-lib)
+test result: ok.   0 passed …  (bin + 3 empty targets)          -> 779 passing, 0 failed
+$ cargo fmt --all --check           FMT exit=0   (no output)
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Finished `dev` profile … in 0.96s             CLIPPY exit=0 (no warnings)
+$ ./scripts/lint-provenance.py      PROV exit=0
+CDN hostnames      PASS  no third-party media hosts referenced
+Copy provenance    PASS  no shipped string matches the reference corpus (80015 shingles indexed)
+$ env -u hickeyfield_FAL_KEY -u FAL_KEY cargo run -q -p hickeyfield-core --example audit_fal
+=== SILENTLY IGNORED MEDIA (11) ===  === MISSING REQUIRED FIELDS (2) ===
+=== DROPPED SETTINGS (21) ===        === REJECTED OPTIONS (9) ===
+=== UNREACHABLE — fal serves no schema for this endpoint (0) ===
+=== CHECKED — fal answered with a schema (63) ===
+$ cargo run -q -p hickeyfield-core --example fal_diff -- --offline | head -1
+fal index: 1491 model(s), bundled snapshot of 2026-09-16. Registry reaches 63 fal endpoint(s).
+$ cd ui && pnpm test     Test Files 14 passed (14)   Tests 232 passed (232)
+$ cd ui && pnpm build    ✓ built in 897ms
+```
+
+`UNREACHABLE 0`, `CHECKED 63` — exactly the expected 66 − 3, matching
+`audit_fal-2026-09-16-reduced.log`. All 11 ids appear under `CHECKED` and in **no** finding
+section (counted mechanically over lines 1–98 of the run: every id `findings=0`). `first_light.rs`
+was not run; nothing in this pass was authenticated and nothing spent money.
+
+### 2. BLOCKER
+
+#### B4 — Seedance 2.5 on the Animate Image tab sends a value fal pins by `const`
+
+This is the *same defect class* as the withdrawn B2, on the slice's headline model, and it is
+still landed.
+
+`crates/hickeyfield-core/src/registry.rs:1572-1576`:
+
+```rust
+(
+    "aspect_ratio",
+    false,
+    en(&["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
+),
+```
+
+That enum is transcribed from `bytedance/seedance-2.5/**text**-to-video`. The comment above it
+(`registry.rs:1544`) claims it is "Transcribed from fal's own schema for
+`bytedance/seedance-2.5/*`" — the `*` is the error: the two endpoints do **not** agree. Fetched
+keyless this pass:
+
+```
+$ curl -s 'https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=bytedance/seedance-2.5/image-to-video'
+Seedance25ImageToVideoInput.properties.aspect_ratio =
+{ "default": "auto", "type": "string", "title": "Aspect Ratio",
+  "description": "The aspect ratio of the generated video. Always \"auto\" for image-to-video",
+  "const": "auto" }
+```
+
+and the model is offered on that tab: `media.rs:689-693` lists `bytedance/seedance-2.5` as
+`(false, [Text, Image])`, `use_case.rs:293` asserts the `ImageToVideo` tab, and
+`registry.rs:2830` asserts both endpoints resolve.
+
+Measured against the live schema through the shipped library (no key, no money):
+
+```
+spec aspects   = ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+default_aspect = None
+schema.accepts(aspect_ratio) = true
+schema.enums[aspect_ratio]   = None          <- `const` is not an `enum`, so nothing is recorded
+capability aspect axis        = Axis { support: Yes, values: [], default: None, … }
+requested  16:9 -> plan Sent("16:9") wire=Some("16:9")
+requested  9:16 -> plan Sent("9:16") wire=Some("9:16")
+```
+
+The chain, each link read in the code:
+
+1. `fal_schema::parse` (`src/fal_schema.rs:214-226`) records only `enum`, never `const`, so the
+   pin is invisible to everything downstream (unchanged by this slice — 0 lines in the diff).
+2. `src-tauri/src/app.rs:329-332` sets `aspect_key = Some("aspect_ratio")` because the endpoint
+   *declares* the field; `:336-351` then always sends an explicit value —
+   `AspectPlan::decide(true, requested, …)` returns `Sent(requested)` (`aspect.rs:57`).
+3. `requested` is never `"auto"` in practice: the app-wide default is `aspect: "16:9"`
+   (`ui/src/App.tsx:69`), and on attaching an image `App.tsx:342` *snaps* it to the nearest
+   `W:H` chip — `"auto"` is not a ratio and cannot be the snap target.
+4. `resolveSettings` (`ui/src/lib/variants.ts:143-147`) cannot clamp it back: the capability axis
+   for this endpoint has `values: []` (measured above), so the branch falls through to
+   `settings.aspect` unchanged. The UI also renders an aspect control with support `Yes` and zero
+   options.
+5. The unknown-key sweep in `app.rs` keeps the key (the endpoint declares it), and
+   `fal_schema::reconcile` has no enum to check it against.
+
+So every Animate-Image submit on Seedance 2.5 puts `"aspect_ratio": "16:9"` (or `"9:16"`, …) on
+the wire to an endpoint whose schema pins the literal `"auto"` — a 422 after the media upload,
+exactly the failure withdrawn `veo3_1_extend` was withdrawn for. As with B2 I cannot execute the
+authenticated request (no key, no money), so the 422 is an inference from `const` on a
+Pydantic-generated schema — the *same* inference the orchestrator already accepted as blocking
+for `veo3_1_extend`.
+
+**Why this is the slice's finding and not pre-existing noise.** The wire behaviour does predate
+the branch (the `[Text, Image]` row is on `main` at `media.rs:661`), but on `main`
+`seedance_2_5` was an explicitly hedged placeholder: prompt-only spec, no price, and a route note
+the UI shows containing "unverified" (`main:registry.rs:2489`). This slice removes the hedge
+(implement.md §6: `unverified_slugs_are_flagged_in_the_note_the_ui_shows` now asserts it does
+*not* claim to be unverified), prices it (`registry.rs:763-771`), asserts the Animate Image tab
+(`use_case.rs:293`), and ships the claim "Each was checked against the provider's published
+schema before being offered, **so a model that appears under a tab is one that can actually run
+there**" (`CHANGELOG.md`, Added bullet). That sentence is false for this tab.
+
+Standards violated: AC3 ("any slug that fails the gate is NOT added" — the rule the orchestrator
+just applied to three other models), AC4 ("no model advertises a [setting] fal will reject"), AC5
+(a tile under a tab must run there), and the CHANGELOG claim as written.
+
+Fix (pick one, all inside this slice):
+- **Narrowest, matches what the slice already did twice**: change `media.rs:689-693` to
+  `("bytedance/seedance-2.5", false, &[InputMode::Text])` and drop the
+  `("seedance_2_5", UseCase::ImageToVideo)` row from `use_case.rs:293`, exactly as
+  `kling3_0_pro` (`media.rs`) and `wan3_0_prime` were restricted for the `start_image_url`
+  mismatch, with the reason recorded in the comment. Text-to-video (including the 30s headline)
+  is unaffected and stays.
+- Or pin the value: make `app.rs` send `"auto"` when the endpoint `const`s the field — which
+  requires recording `const` in `EndpointSchema`, i.e. the already-logged
+  "fal-schema-const-and-int-enums" slice. Land that first, then re-land the Image mode.
+- Do **not** fix by reordering the spec enum so `"auto"` is first: `App.tsx:342` overrides it on
+  attach, so the tile would still fail.
+
+### 3. Withdrawal of the three models — verified complete
+
+`grep -rn -e ltx_2_5 -e 'ltx-2\.5' -e veo3_1_extend -e 'veo3\.1/extend' -e extend-video -e 'LTX 2\.5'`
+over `crates/ src-tauri/ ui/ docs/ CHANGELOG.md` (excluding the vendored snapshot, where the fal
+index rows legitimately remain) returns **no live code, route, job type, test or changelog
+reference**. Only:
+
+- `registry.rs:928`, `media.rs:612`, `media.rs:1614` — `xai/grok-imagine-video/extend-video`, a
+  different, pre-existing model. Correct.
+- `registry.rs:2229-2232` — the test comment that explains the `+27`. Correct and accurate.
+- `.forge/backlog.md:201-207` — the follow-up slice. Out of scope, correct.
+- Two stale comments, N1/N2 below.
+
+Counts all re-derived and consistent: `FAL_ROUTE_MODES: [...; 48]` (`media.rs:599`) = 38 + 10 new
+rows, and `every_exact_endpoint_is_a_route_the_registry_actually_has` (`media.rs:1658`) would fail
+on an orphan row — it passes. `IMPORTED_2026_09: [&str; 11]` (`registry.rs:2813`) lists exactly 11
+ids. `cat.len() - EXCLUSIONS.len() + 27` (`registry.rs:2233-2237`) = 11 imported − 1 promoted =
++10 on the previous +17. `audit_fal` CHECKED 63 and `fal_diff` "Registry reaches 63" both fell out
+of the code, not out of a literal — no hard-coded 66 survives anywhere.
+
+### 4. The other 10 models re-probed for the B1/B2 defect class — clean
+
+I fetched fal's OpenAPI keyless for all 12 endpoints the 11 models resolve to and scanned every
+input property for `const` and for non-string enum members (the two things
+`fal_schema.rs:216-219` cannot represent):
+
+| endpoint | `const` | non-string enum |
+|---|---|---|
+| `bytedance/seedance-2.5/text-to-video` | none | none (duration `'auto','4'…'30'`, all strings) |
+| `bytedance/seedance-2.5/image-to-video` | **`aspect_ratio: "auto"`** → B4 | none |
+| `fal-ai/kling-video/v3/pro/text-to-video` | none | none (duration `'3'…'15'`, strings) |
+| `alibaba/wan-3.0-prime/text-to-video` | none | none |
+| `openai/gpt-image-2.5/{flare,sunburst}/{text-to-image,edit}` | none | none |
+| `alibaba/qwen-image-3/text-to-image` | none | none |
+| `fal-ai/nano-banana-{pro,2}/edit` | none | none (`safety_tolerance '1'…'6'`, strings) |
+| `bytedance/seedream/v5/pro/edit` | none | none |
+
+So B4 is the only instance. Every enum the specs do declare I compared member-for-member against
+fal's list and they match verbatim (`kling3_0_pro` duration/aspect, `wan3_0_prime`
+resolution/aspect, `nano_banana_*_edit` resolution, `seedance_2_5` duration/resolution).
+
+### 5. Checked and found clean (silence is not clearance)
+
+- **The 11 remaining specs' wiring**: each has a fal `Route` *and* a `CostModel` in one
+  `priced_routes` arm, a `JOB_TYPES` placement, and a `FAL_ROUTE_MODES` row; `Exact = true` on the
+  eight already-suffixed vendor-namespaced endpoints, `Exact = false` on the two family roots.
+  Prices unchanged by the withdrawal and re-checked against the refreshed snapshot's prose.
+- **`kling3_0_pro` / `wan3_0_prime` restricted to `[Text]`** with the `start_image_url` reason
+  recorded (`media.rs:726-736`) and negative assertions in `use_case.rs:313-315` — the right call,
+  and the precedent B4's fix should follow.
+- **`seedance_2_5` text-to-video** is fully sound: duration enum mirrors fal exactly including
+  `"30"`, `seedance_2_5_offers_a_thirty_second_clip` (`registry.rs:2889`) passes, the per-token
+  cost model and its 1080p under-estimate note are unchanged from the prior review's verification.
+- **Tests were updated, not deleted, by the withdrawal**: `IMPORTED_2026_09` shrank to 11 and the
+  three driven tests (`every_imported_model_resolves_to_an_exact_fal_endpoint`,
+  `every_imported_model_has_a_fal_route_with_a_real_adapter`,
+  `the_models_imported_from_fal_land_on_the_right_tab`) still iterate it; the size assertion was
+  corrected rather than relaxed; no `#[ignore]` was added anywhere in the diff.
+- **`fal_diff`, `audit_fal`, `fal_catalogue` and the snapshot** are untouched by the repair and
+  their prior clearance stands (re-confirmed by the green run above).
+- **Docs**: `docs/FIRST-LIGHT.md` and the CHANGELOG bullet contain no reference to a withdrawn
+  model; provenance lint passes.
+
+### 6. Minor findings (new this pass — not blocking)
+
+- **N1 — stale doc comment naming withdrawn models.** `crates/hickeyfield-core/src/registry.rs:1536`:
+  "…imported 2026-09-16 …: Kling 3.0 Pro, Wan 3.0 Prime, **LTX 2.5 Pro and its animate half, Veo
+  3.1 Extend**, GPT Image 2.5 …". Those three no longer exist in the registry. A comment that
+  contradicts the code is how the next reader re-adds them. Fix: delete the two names from the
+  list.
+- **N2 — stale examples in the `FAL_ROUTE_MODES` block comment.** `crates/hickeyfield-core/src/media.rs:629-630`
+  describes the block's rows as split by "a tier (`…/text-to-video/pro`), a tiered name
+  (`…/flare/edit`) or a verb (`/extend-video`)" — but no `…/text-to-video/pro` row exists anywhere
+  in the file any more, and the only `/extend-video` row is the pre-existing xai one in a
+  different block. Fix: drop the two dead examples.
+- **N3 — prior M1 still open and still false.** `crates/hickeyfield-core/src/registry.rs:1999`
+  ships "fal declares `duration` as a plain integer with **no published ceiling**" to the user for
+  `wan3_0_prime`; fal publishes `{"anyOf":[{"type":"integer","minimum":2,"maximum":30},{"type":"null"}]}`
+  (re-fetched this pass). Fix: say 2–30s.
+- **N4 — "every enumerated option set is copied verbatim" is broader than the code.**
+  `registry.rs:2044`, `:2066` and the qwen/seedream specs declare `quality`, `background`,
+  `image_size`, `output_format` as free-form `ValueSpec::Text` although fal publishes closed enums
+  for all four. Harmless today — the UI surfaces none of them, so nothing is sent — but
+  implement.md §4's claim does not hold literally. Fix: transcribe the enums or narrow the claim.
+
+Prior review's M2–M7 stand as recorded and need no action in this slice.
+
+### 7. Scope note (not a finding, for the owner)
+
+After the withdrawal, AC3's named minimum set is only partly delivered: MiniMax H3 Max / H3 Max
+Turbo (deliberately refused, implement.md §8.1), LTX-2.5 and Veo 3.1 extend-video (withdrawn) are
+all absent, and Kling v3 Pro / Wan 3.0 Prime ship text-to-video only. Each omission has a recorded,
+defensible reason and AC3's own "a failing slug is not added" rule takes precedence — but the
+contract's minimum set is not met, and that is an owner decision to ratify, not something a
+reviewer can wave through silently.
+
+### 8. Blocking findings, restated
+
+- **B4** `crates/hickeyfield-core/src/registry.rs:1572-1576` (+ `media.rs:689-693`,
+  `use_case.rs:293`) — `seedance_2_5` on the Animate Image tab sends `aspect_ratio` to
+  `bytedance/seedance-2.5/image-to-video`, which pins it by `const: "auto"`; 422 on every submit
+  of the slice's headline model in one of its two advertised modes, while the slice removed the
+  "unverified" hedge and published the claim that every tab shown can run.
+
+Everything else re-verified above is at or above the bar, and the repair itself was executed
+cleanly: no dangling references, no stale counts, no relaxed tests.
+
+VERDICT: FAIL

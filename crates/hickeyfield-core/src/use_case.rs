@@ -289,8 +289,10 @@ mod tests {
         // endpoint names its start frame in a key the binder cannot write.
         let reg = registry();
         for (id, tab) in [
+            // `seedance_2_5` is text-to-video only for now: fal's image-to-video
+            // endpoint pins `aspect_ratio` by `const`, which the parser cannot
+            // yet honour (see `media::FAL_ROUTE_MODES`).
             ("seedance_2_5", UseCase::TextToVideo),
-            ("seedance_2_5", UseCase::ImageToVideo),
             ("kling3_0_pro", UseCase::TextToVideo),
             ("wan3_0_prime", UseCase::TextToVideo),
             ("gpt_image_2_5_flare", UseCase::TextToImage),

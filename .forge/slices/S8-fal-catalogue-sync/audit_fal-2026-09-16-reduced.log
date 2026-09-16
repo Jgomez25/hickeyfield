@@ -1,0 +1,167 @@
+   Compiling hickeyfield-core v0.1.0 (/Users/jorge/Documents/GitHub/hickeyfield/crates/hickeyfield-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.94s
+     Running `target/debug/examples/audit_fal`
+
+=== SILENTLY IGNORED MEDIA — bills for the wrong generation (11) ===
+  flux_2                     fal-ai/flux-2-pro
+      catalogue offers [image_references] but the endpoint takes none
+  gemini_omni                google/gemini-omni-flash
+      catalogue offers [image_references, video_references] but the endpoint takes none
+  gpt_image_2                openai/gpt-image-2
+      catalogue offers [image_references] but the endpoint takes none
+  grok_image                 xai/grok-imagine-image
+      catalogue offers [image_references] but the endpoint takes none
+  nano_banana_2              fal-ai/nano-banana-pro
+      catalogue offers [image_references] but the endpoint takes none
+  nano_banana_2_lite         google/nano-banana-2-lite
+      catalogue offers [image_references] but the endpoint takes none
+  nano_banana_flash          fal-ai/nano-banana-2
+      catalogue offers [image_references] but the endpoint takes none
+  seedream_v5_pro            bytedance/seedream/v5/pro/text-to-image
+      catalogue offers [image_references] but the endpoint takes none
+  veo3_1                     fal-ai/veo3.1
+      catalogue offers [start_image] but the endpoint takes none
+  veo3_1_fast                fal-ai/veo3.1/fast
+      catalogue offers [start_image] but the endpoint takes none
+  veo3_1_lite                fal-ai/veo3.1/lite
+      catalogue offers [end_image, start_image] but the endpoint takes none
+
+=== MISSING REQUIRED FIELDS — 422 after a round trip (2) ===
+  inworld_text_to_speech     fal-ai/inworld-tts
+      requires [text] which nothing in the app supplies
+  mirelo_text_to_audio       mirelo-ai/sfx1.6/text-to-audio
+      requires [text_prompt] which nothing in the app supplies
+
+=== DROPPED SETTINGS — the control has no effect (21) ===
+  flux_2                     fal-ai/flux-2-pro
+      UI offers `resolution` but the endpoint has no `resolution`
+  flux_2                     fal-ai/flux-2-pro
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  gemini_omni                google/gemini-omni-flash
+      UI offers `resolution` but the endpoint has no `resolution`
+  gpt_image_2                openai/gpt-image-2
+      UI offers `resolution` but the endpoint has no `resolution`
+  gpt_image_2                openai/gpt-image-2
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  kling-omni-flf             fal-ai/kling-video/o1/image-to-video
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  kling-v2-5-turbo           fal-ai/kling-video/v2.5-turbo/pro/text-to-video
+      UI offers `resolution` but the endpoint has no `resolution`
+  kling-v2-5-turbo           fal-ai/kling-video/v2.5-turbo/pro/image-to-video
+      UI offers `resolution` but the endpoint has no `resolution`
+  kling-v2-5-turbo           fal-ai/kling-video/v2.5-turbo/pro/image-to-video
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  kling2_6                   fal-ai/kling-video/v2.6/pro/image-to-video
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  kling3_0                   fal-ai/kling-video/v3/standard/image-to-video
+      UI offers `duration` but the endpoint has no `duration`
+  kling3_0                   fal-ai/kling-video/v3/standard/image-to-video
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  kling3_0                   fal-ai/kling-video/v3/standard/image-to-video
+      UI offers `audio` but the endpoint has no `generate_audio`
+  kling_o3_flf               fal-ai/kling-video/o3/pro/image-to-video
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  minimax_h3                 minimax/h3/image-to-video
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  nano_banana_2_lite         google/nano-banana-2-lite
+      UI offers `resolution` but the endpoint has no `resolution`
+  recraft_v4_1               fal-ai/recraft/v4.1/text-to-image
+      UI offers `resolution` but the endpoint has no `resolution`
+  recraft_v4_1               fal-ai/recraft/v4.1/text-to-image
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  seedream_v5_lite           bytedance/seedream/v5/lite/text-to-image
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  seedream_v5_pro            bytedance/seedream/v5/pro/text-to-image
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+  wan2_7                     fal-ai/wan/v2.7/image-to-video
+      UI offers `aspect` but the endpoint has no `aspect_ratio`
+
+=== REJECTED OPTIONS — the chip row offers invalid values (9) ===
+  grok_image                 xai/grok-imagine-image
+      offers aspect_ratio [auto] which the endpoint rejects (it takes [16:9, 19.5:9, 1:1, 1:2, 20:9, 2:1, 2:3, 3:2, 3:4, 4:3, 9:16, 9:19.5, 9:20])
+  nano_banana_2              fal-ai/nano-banana-pro
+      offers resolution [1k, 2k, 4k] which the endpoint rejects (it takes [1K, 2K, 4K])
+  nano_banana_flash          fal-ai/nano-banana-2
+      offers resolution [1k, 2k, 4k] which the endpoint rejects (it takes [0.5K, 1K, 2K, 4K])
+  seedance_2_0_fast          bytedance/seedance-2.0/fast/text-to-video
+      offers resolution [1080p, 4k] which the endpoint rejects (it takes [480p, 720p])
+  seedance_2_0_fast          bytedance/seedance-2.0/fast/image-to-video
+      offers resolution [1080p, 4k] which the endpoint rejects (it takes [480p, 720p])
+  veo3_1                     fal-ai/veo3.1
+      offers duration [4, 6, 8] which the endpoint rejects (it takes [4s, 6s, 8s])
+  veo3_1_fast                fal-ai/veo3.1/fast
+      offers duration [4, 6, 8] which the endpoint rejects (it takes [4s, 6s, 8s])
+  veo3_1_lite                fal-ai/veo3.1/lite
+      offers aspect_ratio [auto] which the endpoint rejects (it takes [16:9, 9:16])
+  veo3_1_lite                fal-ai/veo3.1/lite
+      offers duration [4, 6, 8] which the endpoint rejects (it takes [4s, 6s, 8s])
+
+=== UNREACHABLE — fal serves no schema for this endpoint (0) ===
+  none
+
+=== CHECKED — fal answered with a schema (63) ===
+  flux_2                       fal-ai/flux-2-pro
+  flux_kontext                 fal-ai/flux-pro/kontext
+  gemini_omni                  google/gemini-omni-flash
+  gpt_image_2                  openai/gpt-image-2
+  gpt_image_2_5_flare          openai/gpt-image-2.5/flare/text-to-image
+  gpt_image_2_5_flare_edit     openai/gpt-image-2.5/flare/edit
+  gpt_image_2_5_sunburst       openai/gpt-image-2.5/sunburst/text-to-image
+  gpt_image_2_5_sunburst_edit  openai/gpt-image-2.5/sunburst/edit
+  grok_edit_video              xai/grok-imagine-video/edit-video
+  grok_extend_video            xai/grok-imagine-video/extend-video
+  grok_image                   xai/grok-imagine-image
+  grok_video_v15               xai/grok-imagine-video/v1.5/text-to-video
+  grok_video_v15               xai/grok-imagine-video/v1.5/image-to-video
+  inworld_text_to_speech       fal-ai/inworld-tts
+  kling-omni-flf               fal-ai/kling-video/o1/image-to-video
+  kling-v2-5-turbo             fal-ai/kling-video/v2.5-turbo/pro/text-to-video
+  kling-v2-5-turbo             fal-ai/kling-video/v2.5-turbo/pro/image-to-video
+  kling2_6                     fal-ai/kling-video/v2.6/pro/text-to-video
+  kling2_6                     fal-ai/kling-video/v2.6/pro/image-to-video
+  kling3_0                     fal-ai/kling-video/v3/standard/text-to-video
+  kling3_0                     fal-ai/kling-video/v3/standard/image-to-video
+  kling3_0_pro                 fal-ai/kling-video/v3/pro/text-to-video
+  kling_o3_flf                 fal-ai/kling-video/o3/pro/text-to-video
+  kling_o3_flf                 fal-ai/kling-video/o3/pro/image-to-video
+  minimax_h3                   minimax/h3/text-to-video
+  minimax_h3                   minimax/h3/image-to-video
+  mirelo_text_to_audio         mirelo-ai/sfx1.6/text-to-audio
+  nano_banana_2                fal-ai/nano-banana-pro
+  nano_banana_2_edit           fal-ai/nano-banana-2/edit
+  nano_banana_2_lite           google/nano-banana-2-lite
+  nano_banana_flash            fal-ai/nano-banana-2
+  nano_banana_pro_edit         fal-ai/nano-banana-pro/edit
+  qwen_image_3                 alibaba/qwen-image-3/text-to-image
+  ray2_modify                  fal-ai/luma-dream-machine/ray-2/modify
+  recraft_v4_1                 fal-ai/recraft/v4.1/text-to-image
+  seed_audio                   bytedance/seed-audio-1.0
+  seedance1_5                  fal-ai/bytedance/seedance/v1.5/pro/text-to-video
+  seedance1_5                  fal-ai/bytedance/seedance/v1.5/pro/image-to-video
+  seedance_2_0                 bytedance/seedance-2.0/text-to-video
+  seedance_2_0                 bytedance/seedance-2.0/image-to-video
+  seedance_2_0_fast            bytedance/seedance-2.0/fast/text-to-video
+  seedance_2_0_fast            bytedance/seedance-2.0/fast/image-to-video
+  seedance_2_0_mini            bytedance/seedance-2.0/mini/text-to-video
+  seedance_2_0_mini            bytedance/seedance-2.0/mini/image-to-video
+  seedance_2_5                 bytedance/seedance-2.5/text-to-video
+  seedance_2_5                 bytedance/seedance-2.5/image-to-video
+  seedance_pro                 fal-ai/bytedance/seedance/v1/pro/text-to-video
+  seedance_pro                 fal-ai/bytedance/seedance/v1/pro/image-to-video
+  seedream_v5_lite             bytedance/seedream/v5/lite/text-to-image
+  seedream_v5_pro              bytedance/seedream/v5/pro/text-to-image
+  seedream_v5_pro_edit         bytedance/seedream/v5/pro/edit
+  sonilo_music                 sonilo/v1.1/text-to-music
+  veo3_1                       fal-ai/veo3.1
+  veo3_1_fast                  fal-ai/veo3.1/fast
+  veo3_1_lite                  fal-ai/veo3.1/lite
+  wan2_2_video                 fal-ai/wan/v2.2-a14b/text-to-video
+  wan2_2_video                 fal-ai/wan/v2.2-a14b/image-to-video
+  wan2_2_video                 fal-ai/wan/v2.2-a14b/video-to-video
+  wan2_5_video                 fal-ai/wan-25-preview
+  wan2_7                       fal-ai/wan/v2.7/text-to-video
+  wan2_7                       fal-ai/wan/v2.7/image-to-video
+  wan3_0_prime                 alibaba/wan-3.0-prime/text-to-video
+  wan_vace                     fal-ai/wan-vace-14b
+
+63 endpoint(s) audited against fal's own schema. A slug listed under CHECKED and under nothing else is one this registry can drive.

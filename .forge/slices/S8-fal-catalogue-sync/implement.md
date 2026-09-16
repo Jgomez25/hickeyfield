@@ -306,3 +306,17 @@ landed"), the orchestrator REMOVED these 3 from the registry/JOB_TYPES/FAL_ROUTE
 use_case tests/IMPORTED_2026_09 (14->11) and the CHANGELOG. 11 verified models remain. No agent
 was spawned for this repair (owner constraint); a fresh REVIEW+TEST pass over the reduced set is
 required before gate/merge.
+
+## ORCHESTRATOR ADDENDUM 2 (post RE-REVIEW/RE-TEST, 2026-09-16)
+Both fresh verifiers (review.md RE-REVIEW, test.md RE-TEST) independently found the same residual
+of the B2 class: `bytedance/seedance-2.5/image-to-video` pins `aspect_ratio` by `const:"auto"`,
+which `fal_schema::parse` cannot read, so the Animate-Image tab would send the settings' ratio and
+422. Repair (mirrors kling3_0_pro / wan3_0_prime): `media::FAL_ROUTE_MODES` row for
+`bytedance/seedance-2.5` is now `&[InputMode::Text]` with the reason recorded; the
+`use_case.rs` ImageToVideo assertion for `seedance_2_5` dropped; a constraint note added to the
+spec; CHANGELOG sentence qualified. Also fixed the minors both flagged: stale "LTX/Veo Extend"
+comment (registry.rs picker_only_specs doc), stale "`/extend-video` verb" comment (media.rs),
+and the false Wan 3.0 Prime "no published ceiling" constraint (fal: integer 2–30, default 5).
+Gate after repair: cargo test 779/0, fmt, clippy -D warnings, provenance all clean; pnpm 232/232,
+build ok. The native-30s text-to-video path is unaffected. Re-claiming Image for Seedance 2.5 and
+re-landing the 3 withdrawn models both belong to backlog slice `fal-schema-const-and-int-enums`.

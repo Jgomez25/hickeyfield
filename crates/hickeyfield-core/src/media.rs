@@ -626,9 +626,9 @@ const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 48] = [
     ),
     // Measured 2026-09-16 against fal's refreshed index. Each of these is a
     // complete endpoint whose family is split by something other than an input
-    // mode — a tier (`…/text-to-video/pro`), a tiered name (`…/flare/edit`) or
-    // a verb (`/extend-video`) — so the mode list is the one mode it serves and
-    // `Exact` is true. Suffixing any of them 404s.
+    // mode — a tier (`…/text-to-video/pro`) or a tiered name (`…/flare/edit`)
+    // — so the mode list is the one mode it serves and `Exact` is true.
+    // Suffixing any of them 404s.
     (
         "openai/gpt-image-2.5/flare/text-to-image",
         true,
@@ -686,11 +686,15 @@ const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 48] = [
         false,
         &[InputMode::Text, InputMode::Image],
     ),
-    (
-        "bytedance/seedance-2.5",
-        false,
-        &[InputMode::Text, InputMode::Image],
-    ),
+    // fal serves `/seedance-2.5/image-to-video` too, and it is deliberately
+    // not claimed here: that endpoint pins `aspect_ratio` to `"auto"` by
+    // `const` (its own description: always "auto" for image-to-video), and
+    // `fal_schema::parse` does not read `const`, so the app would send the
+    // settings' real ratio and be refused with a 422 on every submit. The
+    // 30s text-to-video path — the reason this model is here — is unaffected.
+    // Re-claim Image once the parser reads `const` (backlog:
+    // fal-schema-const-and-int-enums).
+    ("bytedance/seedance-2.5", false, &[InputMode::Text]),
     ("bytedance/seedream/v5/lite", false, &[InputMode::Text]),
     ("bytedance/seedream/v5/pro", false, &[InputMode::Text]),
     (

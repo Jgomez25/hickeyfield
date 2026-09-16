@@ -555,3 +555,420 @@ dimensions), F3 (`kling3_0` dead Animate-Image path + a fifth `audit_fal` media-
 F4 (`--dump --offline`), plus the four gaps `implement.md` §8 already declares.
 
 VERDICT: PASS
+
+---
+
+## RE-TEST (reduced 11-model set, 2026-09-16, HEAD 58e981c)
+
+Everything above this line is the earlier PASS over the 14-model set and is kept as history.
+It is **stale**: three of those fourteen (`ltx_2_5`, `ltx_2_5_animate`, `veo3_1_extend`) were
+withdrawn after REVIEW. This section re-runs every acceptance criterion from scratch against
+the reduced set and does not reuse a single figure from it or from `implement.md`.
+
+### 0. The claim under test
+
+From `implement.md`, ORCHESTRATOR ADDENDUM (verbatim):
+
+> ## ORCHESTRATOR ADDENDUM (post-REVIEW repair, 2026-09-16)
+> REVIEW (FAIL) proved 3 landed models cannot generate: `ltx_2_5`, `ltx_2_5_animate` (fal duration
+> enum {6,8,10,"auto"}; `fal_schema::parse` keeps only string members -> ["auto"] -> every submit
+> refused) and `veo3_1_extend` (fal pins duration/resolution by `const`; parser ignores const -> 422).
+> Root cause is the schema parser + audit blind spot, logged as its own slice
+> ("fal-schema-const-and-int-enums", backlog). Per the slice's own AC3 rule ("a failing slug is NOT
+> landed"), the orchestrator REMOVED these 3 from the registry/JOB_TYPES/FAL_ROUTE_MODES (51->48)/
+> use_case tests/IMPORTED_2026_09 (14->11) and the CHANGELOG. 11 verified models remain. No agent
+> was spawned for this repair (owner constraint); a fresh REVIEW+TEST pass over the reduced set is
+> required before gate/merge.
+
+and from `implement.md` §4:
+
+> **Every landed slug: CHECKED, zero findings, zero UNREACHABLE. Gate passed, no exceptions
+> taken.**
+
+and from `CHANGELOG.md` (the user-facing claim):
+
+> Each was checked against the provider's published schema before being offered, so a model that
+> appears under a tab is one that can actually run there.
+
+The eleven under test, from `registry.rs:2810` (`IMPORTED_2026_09`), read out of the file:
+
+```
+$ sed -n '2810,2827p' crates/hickeyfield-core/src/registry.rs
+    const IMPORTED_2026_09: [&str; 11] = [
+        "gpt_image_2_5_flare",
+        "gpt_image_2_5_flare_edit",
+        "gpt_image_2_5_sunburst",
+        "gpt_image_2_5_sunburst_edit",
+        "kling3_0_pro",
+        "nano_banana_2_edit",
+        "nano_banana_pro_edit",
+        "qwen_image_3",
+        "seedance_2_5",
+        "seedream_v5_pro_edit",
+        "wan3_0_prime",
+    ];
+```
+
+---
+
+## Commands
+
+Environment for every Rust command below:
+`source "$HOME/.cargo/env"` + the eight dummy `hickeyfield_*_KEY=x` exports. `audit_fal` was run
+with `env -u hickeyfield_FAL_KEY -u FAL_KEY` on top of that. `first_light.rs` was never run and
+nothing in this section submits a paid job.
+
+### AC7 — regression gate
+
+```
+$ cargo test --workspace
+test result: ok. 657 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 0.51s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 120 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 15.13s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+TEST_EXIT=0
+```
+Summed: **779 passed, 0 failed** — matches the expected figure.
+
+```
+$ cargo fmt --all --check
+FMT_EXIT=0                      (no output)
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.93s
+CLIPPY_EXIT=0
+
+$ ./scripts/lint-provenance.py
+CDN hostnames
+  PASS  no third-party media hosts referenced
+Copy provenance
+  PASS  no shipped string matches the reference corpus (80015 shingles indexed)
+PROV_EXIT=0
+```
+
+UI (Node 24 from the scratchpad toolchain, `cd ui`):
+
+```
+$ pnpm test
+ Test Files  14 passed (14)
+      Tests  232 passed (232)
+UITEST_EXIT=0
+
+$ pnpm build
+✓ built in 881ms
+UIBUILD_EXIT=0
+```
+
+`tauri build` / app launch not exercised (release phase), same exception the earlier section took.
+
+### AC1 — the diff tool, offline
+
+```
+$ cargo run -q -p hickeyfield-core --example fal_diff -- --offline | head -1
+fal index: 1491 model(s), bundled snapshot of 2026-09-16. Registry reaches 63 fal endpoint(s).
+...
+1080 of 1138 generation model(s) are outside the registry; 353 model(s) in other categories (training, audio, vision, …) are not shown.
+DIFF_EXIT=0
+```
+63, not the 66 `implement.md` §3 recorded — exactly the −3 the withdrawal should produce. The
+example's two fixture tests are the `2 passed` line in the workspace run above.
+
+### AC3 / AC7 — `audit_fal`, keyless
+
+```
+$ env -u hickeyfield_FAL_KEY -u FAL_KEY cargo run -q -p hickeyfield-core --example audit_fal
+=== SILENTLY IGNORED MEDIA — bills for the wrong generation (11) ===
+=== MISSING REQUIRED FIELDS — 422 after a round trip (2) ===
+=== DROPPED SETTINGS — the control has no effect (21) ===
+=== REJECTED OPTIONS — the chip row offers invalid values (9) ===
+=== UNREACHABLE — fal serves no schema for this endpoint (0) ===
+=== CHECKED — fal answered with a schema (63) ===
+AUDIT_EXIT=0
+```
+
+Per-imported-id tally, computed by splitting the log at the CHECKED header so a CHECKED line
+cannot be miscounted as a finding:
+
+```
+gpt_image_2_5_flare         findings=0 checked=1
+gpt_image_2_5_flare_edit    findings=0 checked=1
+gpt_image_2_5_sunburst      findings=0 checked=1
+gpt_image_2_5_sunburst_edit findings=0 checked=1
+kling3_0_pro                findings=0 checked=1
+nano_banana_2_edit          findings=0 checked=1
+nano_banana_pro_edit        findings=0 checked=1
+qwen_image_3                findings=0 checked=1
+seedance_2_5                findings=0 checked=2
+seedream_v5_pro_edit        findings=0 checked=1
+wan3_0_prime                findings=0 checked=1
+
+$ grep -c "ltx_2_5\|veo3_1_extend" audit.log
+0
+```
+UNREACHABLE 0, CHECKED 63, none of the eleven in any finding section, the three withdrawn ids
+absent entirely. **The gate as written passes.** §"Break attempts" B2 shows why that is not the
+same as the models being runnable.
+
+---
+
+## Break attempts
+
+### B1 — is the withdrawal complete?
+
+```
+$ grep -rniE 'ltx_2_5|ltx-2\.5|veo3_1_extend|veo3\.1/extend|extend-video' \
+    crates/ src-tauri/ ui/ docs/ CHANGELOG.md .forge/backlog.md | grep -v fal-catalogue-snapshot.json
+crates/hickeyfield-core/src/registry.rs:928:  "xai/grok-imagine-video/extend-video",
+crates/hickeyfield-core/src/registry.rs:2229:  // place, not added). Three probed-but-unrunnable imports (`ltx_2_5`,
+crates/hickeyfield-core/src/registry.rs:2230:  // `ltx_2_5_animate`, `veo3_1_extend`) were removed again before
+crates/hickeyfield-core/src/media.rs:612:     "xai/grok-imagine-video/extend-video",
+crates/hickeyfield-core/src/media.rs:630:  // a verb (`/extend-video`) — so the mode list is the one mode it serves and
+crates/hickeyfield-core/src/media.rs:1614:   "xai/grok-imagine-video/extend-video",
+.forge/backlog.md:206-207: the follow-up slice naming the three ids
+```
+No live code, route, mode entry, JOB_TYPES row, use_case test or CHANGELOG bullet survives for
+the three. The Grok hits are the pre-existing, unrelated `xai/grok-imagine-video/extend-video`.
+The snapshot JSON still lists the LTX/Veo rows, which is correct — it is fal's index, not ours.
+**Not broken**, with one cosmetic exception (F2 below).
+
+`git status --porcelain` before I wrote this file: only the untracked
+`audit_fal-2026-09-16-reduced.log` that was already there. I mutated nothing in the repo; all
+mutation work below ran in an rsync copy under the scratchpad.
+
+### B2 — the defect class that killed the other three, re-run against all 11 (**this breaks it**)
+
+I fetched fal's live OpenAPI keylessly for every endpoint the eleven resolve to and looked for
+exactly what killed `veo3_1_extend`: a field the app sends that fal pins with `const`, or a
+mixed/integer enum `fal_schema::parse` collapses.
+
+```
+$ for s in openai/gpt-image-2.5/flare/text-to-image openai/gpt-image-2.5/flare/edit \
+  openai/gpt-image-2.5/sunburst/text-to-image openai/gpt-image-2.5/sunburst/edit \
+  fal-ai/kling-video/v3/pro/text-to-video fal-ai/nano-banana-2/edit fal-ai/nano-banana-pro/edit \
+  alibaba/qwen-image-3/text-to-image bytedance/seedance-2.5/text-to-video \
+  bytedance/seedance-2.5/image-to-video bytedance/seedream/v5/pro/edit \
+  alibaba/wan-3.0-prime/text-to-video ; do
+    curl -s -o "$f.json" -w '%{http_code} ' "https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=$s"; echo "$s"; done
+200 openai/gpt-image-2.5/flare/text-to-image
+200 openai/gpt-image-2.5/flare/edit
+200 openai/gpt-image-2.5/sunburst/text-to-image
+200 openai/gpt-image-2.5/sunburst/edit
+200 fal-ai/kling-video/v3/pro/text-to-video
+200 fal-ai/nano-banana-2/edit
+200 fal-ai/nano-banana-pro/edit
+200 alibaba/qwen-image-3/text-to-image
+200 bytedance/seedance-2.5/text-to-video
+200 bytedance/seedance-2.5/image-to-video
+200 bytedance/seedream/v5/pro/edit
+200 alibaba/wan-3.0-prime/text-to-video
+```
+
+Scanning every input property of all twelve documents for `const`, exactly one hit:
+
+```
+$ python3 -c "import json;print(json.dumps(json.load(open('bytedance_seedance-2.5_image-to-video.json'))\
+  ['components']['schemas']['Seedance25ImageToVideoInput']['properties']['aspect_ratio'],indent=1))"
+{
+ "default": "auto",
+ "type": "string",
+ "title": "Aspect Ratio",
+ "description": "The aspect ratio of the generated video. Always \"auto\" for image-to-video",
+ "const": "auto"
+}
+```
+
+The same field on the *text*-to-video sibling is a seven-member string enum:
+
+```
+aspect_ratio  req=False default='auto' types=['string'] ENUM=[('string', ['auto','21:9','16:9','4:3','1:1','3:4','9:16'])]
+```
+
+The registry declares one `ModelSpec` for `seedance_2_5` covering both, with
+`aspect_ratio = en(&["auto","21:9","16:9","4:3","1:1","3:4","9:16"])` (registry.rs ~:1572), and
+`media::FAL_ROUTE_MODES` gives `bytedance/seedance-2.5` `&[InputMode::Text, InputMode::Image]`
+(media.rs:690), so the model is offered on the Animate tab:
+
+```
+$ cargo run -q -p hickeyfield-core --example probe_uc      # scratch copy, uses use_case::supports
+seedance_2_5 -> text-to-video
+seedance_2_5 -> image-to-video
+```
+
+I then ran the app's own submit-time aspect decision, using the real
+`capability::for_route` / `fal_schema::for_endpoint` / `AspectPlan::decide` from this HEAD (an
+example added only to the scratch copy; the repo was not touched), with `requested = "16:9"`
+because that is literally `DEFAULT_SETTINGS.aspect` in `ui/src/App.tsx:69`:
+
+```
+$ cargo run -q -p hickeyfield-core --example probe_aspect
+--- mode Text -> bytedance/seedance-2.5/text-to-video
+  aspect: support=Yes values=["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] default=None source=FalEndpoint
+  schema.accepts(aspect_ratio)=true
+  schema.enums[aspect_ratio]=Some(["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"])
+  AspectPlan::decide -> Sent("16:9") wire=Some("16:9")
+--- mode Image -> bytedance/seedance-2.5/image-to-video
+  aspect: support=Yes values=[] default=None source=FalEndpoint
+  schema.accepts(aspect_ratio)=true
+  schema.enums[aspect_ratio]=None
+  AspectPlan::decide -> Sent("16:9") wire=Some("16:9")
+```
+
+**The app decides to put `aspect_ratio: "16:9"` on the wire to an endpoint whose schema says that
+field must be the literal string `"auto"`.** fal generates these documents from pydantic
+`Literal[...]`, so a non-matching value is a 422 validation error — the identical failure the
+orchestrator withdrew `veo3_1_extend` for. Nothing downstream rescues it, and I checked each
+link by reading this HEAD:
+
+- `fal_schema::parse` (fal_schema.rs:213-226) builds `enums` from `prop["enum"]` only; `const`
+  is never read, so `schema.enums["aspect_ratio"]` is `None` on the i2v endpoint.
+- `capability::fal_axis` (capability.rs:603-619) therefore returns `values = []` with
+  `support = Yes` — "free-form axis". `ui/src/components/ChipRow.tsx:96` renders the aspect chip
+  only when `capabilities.aspects.length > 0`, so **the user is never shown the control and
+  never told it is locked.**
+- `ui/src/lib/variants.ts:145-147` (`resolveSettings`) leaves `settings.aspect` untouched when
+  `caps.aspects` is empty and `defaultAspect` is null — so the stale `"16:9"` survives the
+  switch to image mode instead of being clamped.
+- `spec()` in registry.rs sets `default: None` on every flag, so
+  `capabilities().default_aspect == None` and there is no `"auto"` fallback to save it.
+- `src-tauri/src/app.rs:329-369` asks `schema.accepts("aspect_ratio")` (true — `const` fields are
+  still properties, fal_schema.rs:45-47), gets `AspectPlan::Sent("16:9")` and inserts it.
+- The later sweep at app.rs:402-432 only drops keys the schema does **not** accept, and
+  `fal_schema::reconcile` (fal_schema.rs:146) only rewrites *enumerated* fields. A `const`
+  mismatch passes through both untouched.
+- `ui/src/App.tsx:332-351` makes it worse, not better: attaching an image auto-snaps the aspect
+  to the nearest of `capabilities.aspects`, and `nearestAspect` (ui/src/lib/media.ts:138) skips
+  any option that is not `w:h`, so `"auto"` can never be the snapped result.
+
+So the only way `"auto"` reaches the wire is if the user first selects `"auto"` on the
+text-to-video chip row and then attaches an image. The default path — open the Animate tab, pick
+Seedance 2.5, attach a photo, hit Generate — sends `"16:9"` and 422s.
+
+`audit_fal` reports `seedance_2_5 findings=0 checked=2` because check 4 compares the spec's
+option set against `schema.enums`, which is empty here. That is the same audit blind spot the
+backlog slice names; it means the clean audit above is **not** evidence that `seedance_2_5` can
+run in image mode.
+
+This is not a pre-existing defect the slice merely failed to fix. Before S8 (`b319c5d^`)
+`seedance_2_5` carried `CostModel::Unknown` and the route note *"unverified slug — announced
+2026-08-01 and not yet carried by any aggregator"*, plus the constraint *"this spec is a
+placeholder"*. S8 deleted both, added the seven-member `aspect_ratio` enum, priced it, and
+changed `unverified_slugs_are_flagged_in_the_note_the_ui_shows` to assert it does **not** claim
+to be unverified. The slice is what turns a tile the UI labelled unverified into one the
+CHANGELOG promises "can actually run there".
+
+### B3 — every other imported endpoint, same test
+
+No other `const` anywhere in the twelve documents, and every enum the app mirrors is a
+string enum whose members match the spec verbatim:
+
+| id → endpoint | duration | resolution | aspect_ratio | verdict |
+|---|---|---|---|---|
+| `kling3_0_pro` → `…/v3/pro/text-to-video` | enum `'3'…'15'` = spec | field absent → dropped with advisory | enum `16:9,9:16,1:1` = spec | clean |
+| `wan3_0_prime` → `alibaba/wan-3.0-prime/text-to-video` | `integer`, default 5 → spec free-form `Number` | enum `480p,720p,1080p` = spec | enum 6 members = spec | clean |
+| `seedance_2_5` → `…/text-to-video` | enum `auto,4…30` = spec | enum = spec | enum 7 = spec | clean |
+| `seedance_2_5` → `…/image-to-video` | enum `auto,4…30` = spec | enum = spec | **`const: "auto"`** | **broken, B2** |
+| `qwen_image_3`, `seedream_v5_pro_edit`, all four `gpt_image_2_5_*` | n/a | n/a | **no `aspect_ratio` field** → `AspectPlan` removes the key | clean |
+| `nano_banana_pro_edit` | n/a | enum `1K,2K,4K` = spec | enum incl. `16:9` | clean |
+| `nano_banana_2_edit` | n/a | enum `0.5K,1K,2K,4K` = spec | enum incl. `16:9` | clean |
+
+No integer or mixed enum anywhere in the eleven — the `ltx_2_5` failure mode does not recur.
+Required-with-no-default fields are `prompt` everywhere plus `image_urls` on the three edit
+endpoints and `image_url` on seedance i2v, all of which the specs declare. So B2 is the only
+endpoint-level break, but it is sufficient.
+
+### B4 — AC4 duration honesty
+
+`seedance_2_5`'s spec list is fal's list character for character on **both** endpoints
+(`auto,4,5,…,30`), so 30s is real and no offered length is one fal rejects. `wan3_0_prime` is a
+bare integer on fal and free-form `ValueSpec::Number` in the spec — uncapped in-app, as AC4
+requires. Mutation M3 below proves the 30s test has teeth. **AC4 not broken.**
+
+### B5 — AC5 picker / use-case coverage, tests updated not deleted
+
+`use_case::tests::the_models_imported_from_fal_land_on_the_right_tab` exists and asserts both
+directions — the positive tab for each id, and `!supports(kling3_0_pro, ImageToVideo)`,
+`!supports(wan3_0_prime, ImageToVideo)`, `!supports(qwen_image_3, EditImage)`. The array-length
+guards are present and intact, not deleted: `FAL_ROUTE_MODES: [...; 48]` (media.rs:599),
+`LAUNCH_FAMILIES: [...; 12]` (registry.rs:204) with `there_are_twelve_launch_families`
+(registry.rs:2390) and `the_unroutable_models_are_a_known_short_list` (registry.rs:2679), all
+green in the 779. **AC5 structurally not broken** — but the tab list it asserts includes
+`seedance_2_5` on image-to-video, which B2 shows is a tab the model cannot run on, so AC5's
+substance ("a model that appears under a tab is one that can actually run there") fails with B2.
+
+### B6 — mutation sanity (scratch copy only; repo untouched)
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | delete the `alibaba/wan-3.0-prime` row from `FAL_ROUTE_MODES` | `error[E0308]: mismatched types` — compile-time, cannot be skipped |
+| M2 | typo `alibaba/qwen-image-3/text-to-image` → `…image-33/…` | 3 failures: `every_imported_model_resolves_to_an_exact_fal_endpoint`, `every_exact_endpoint_is_a_route_the_registry_actually_has`, `the_models_imported_from_fal_land_on_the_right_tab` |
+| M3 | drop `"30"` from seedance's duration enum | `seedance_2_5_offers_a_thirty_second_clip` FAILED |
+| M4 | registry-size literal `+ 27` → `+ 28` | `registry_covers_the_catalogue_minus_its_exclusions` FAILED |
+| — | restore | `test result: ok. 657 passed; 0 failed` |
+
+The new tests are non-vacuous. They simply do not test the thing B2 breaks.
+
+### B7 — idempotency / re-run / cwd
+
+`fal_diff --offline` and `audit_fal` were each run twice from the repo root with identical
+output and exit 0; neither writes to the tree. `git status --porcelain` is unchanged apart from
+the pre-existing untracked audit log and this file.
+
+---
+
+## Findings
+
+**F1 (blocking) — `seedance_2_5` cannot generate in image-to-video mode.**
+`bytedance/seedance-2.5/image-to-video` pins `aspect_ratio` to `const: "auto"`; the registry
+declares a seven-member aspect enum for the single `seedance_2_5` spec; `fal_schema::parse`
+never reads `const`, so `capability::fal_axis` reports the axis as free-form, the chip row
+disappears, `resolveSettings` does not clear the stale value, and
+`AspectPlan::decide(true, Some("16:9"), None, true)` returns `Sent("16:9")`, which
+`src-tauri/src/app.rs:351-360` writes into the request body. Evidence: the raw fal schema, the
+`probe_aspect` run above, and the `probe_uc` run showing the model is offered on the
+image-to-video tab. This is the identical `const`-pin defect class that caused
+`veo3_1_extend` to be withdrawn — **the withdrawal was incomplete**, and it lands on the model
+the slice and the CHANGELOG lead with.
+
+**F2 (minor, documentation) — stale claim left behind by the withdrawal.**
+`crates/hickeyfield-core/src/registry.rs:1536`, the doc comment on `picker_only_specs`, still
+reads *"…Kling 3.0 Pro, Wan 3.0 Prime, **LTX 2.5 Pro and its animate half, Veo 3.1 Extend**, GPT
+Image 2.5…"*. Those three specs no longer exist. AC6 asks for docs that match reality.
+
+---
+
+## Root-cause diagnosis (for the repair loop)
+
+`fal_schema::parse` (crates/hickeyfield-core/src/fal_schema.rs:213-226) extracts only
+`properties[*].enum` and ignores `properties[*].const`. Every consumer therefore treats a
+`const`-pinned field as an unconstrained one: `capability::fal_axis`
+(crates/hickeyfield-core/src/capability.rs:603-619) reports `support=Yes, values=[]`,
+`EndpointSchema::accepts` returns true, `fal_schema::reconcile`
+(crates/hickeyfield-core/src/fal_schema.rs:146) skips it, and `AspectPlan::decide`
+(crates/hickeyfield-core/src/aspect.rs:43-73) sends whatever the UI staged. `audit_fal`'s
+"REJECTED OPTIONS" check is blind for the same reason, which is why all 11 read clean.
+
+The one landed model this currently breaks is `seedance_2_5` on
+`bytedance/seedance-2.5/image-to-video` (`aspect_ratio` `const "auto"`, verified live above).
+Any of these closes it, in increasing order of goodness:
+
+1. Narrowest, S8-scoped: withdraw `InputMode::Image` from the `bytedance/seedance-2.5` row in
+   `media::FAL_ROUTE_MODES` (48 → the array shrinks, `use_case` test updated), making
+   `seedance_2_5` text-to-video only — the same treatment `kling3_0_pro` and `wan3_0_prime`
+   already got for a comparable binder limitation, with the reason recorded. AC3's minimum set
+   still names Seedance 2.5 t2v+i2v, so this is a declared scope refusal, not a silent one.
+2. Teach `fal_schema::parse` to read `const` as a one-member enum. That makes `fal_axis` return
+   `values=["auto"]`, the chip row shows a single locked option, `reconcile` coerces, and
+   `audit_fal` starts reporting the whole class. This is the backlog slice
+   ("fal-schema-const-and-int-enums") and would also let the three withdrawn models return.
+3. Either way: re-run `audit_fal` and re-check the remaining ten, and fix F2.
+
+Until one of them lands, `CHANGELOG.md`'s "a model that appears under a tab is one that can
+actually run there" is false for the Animate tab, and `implement.md` §4's "Every landed slug:
+CHECKED, zero findings" is true of the audit but not of the app.
+
+AC1, AC2, AC4, AC6 and the mechanical half of AC7 are independently verified green above; AC3
+and AC5 fail on F1.
+
+VERDICT: FAIL
