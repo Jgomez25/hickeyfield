@@ -1,0 +1,152 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono&display=swap">
+  <style>
+    body { margin: 0; background: #131416; color: #ffffff; font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 16px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    a { color: #ff8a63; } a:hover { color: #ffc0ac; }
+    .t1 { background: linear-gradient(135deg, #2a2d32 0%, #1c1e21 60%, #401a10 100%); }
+    .t2 { background: linear-gradient(160deg, #23262a 0%, #35271f 55%, #611705 100%); }
+    .t3 { background: radial-gradient(circle at 30% 30%, #4a2f28 0%, #1c1e21 60%); }
+    .t4 { background: linear-gradient(200deg, #1c1e21 0%, #2b2a3a 50%, #14151a 100%); }
+    .t5 { background: linear-gradient(120deg, #1f2a2c 0%, #1c1e21 50%, #3a1f16 100%); }
+    .bevel { position: absolute; inset: 0; pointer-events: none; border-radius: inherit; box-shadow: -0.5px -0.5px 1px 0 rgba(255,255,255,0.12) inset, 0.8px 0.5px 0.5px 0 rgba(27,27,27,0.17) inset; }
+    .tile { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 10px; border-radius: 16px; background: #1c1e21; }
+    .tile-media { position: relative; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; }
+    .name { font-family: 'Space Grotesk', ui-sans-serif, sans-serif; font-weight: 700; letter-spacing: -0.04em; font-size: 15px; line-height: 1.2; }
+    .meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #828282; }
+    .prov { padding: 1px 6px; border-radius: 4px; background: #ffffff1a; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #ffffff; }
+    .price { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+    .tier { margin-left: auto; padding: 1px 6px; border-radius: 2px; background: #ff4a1c1a; color: #ff8a63; font-family: 'Space Grotesk', sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; }
+  </style>
+</helmet>
+<div style="width: 1440px; height: 900px; background: #131416; padding: 24px; display: grid; place-items: center; overflow: hidden;">
+  <!-- Overlay panel, full variant: 24px radius, glass -->
+  <div style="width: 1392px; height: 852px; display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 24px; background: #23262abf; box-shadow: inset 0 2px 3px 0 #ffffff0d, 0 2px 4px -0.5px #00000026; overflow: hidden;">
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <h2 style="margin: 0; font-family: 'Bebas Neue', 'Arial Narrow', sans-serif; font-size: 24px; font-weight: 400; line-height: 1; letter-spacing: 0.02em;">MODELS</h2>
+      <div style="display: flex; align-items: center; gap: 10px; flex: 1 1 auto; max-width: 420px; height: 40px; padding: 0 16px; border-radius: 9999px; background: #ffffff0d; color: #828282; font-size: 14px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+        <span>Search models</span>
+      </div>
+      <div style="display: inline-flex; align-items: center; gap: 2px; padding: 4px; border-radius: 12px; background: #ffffff0d;">
+        <span style="padding: 8px 12px; border-radius: 8px; background: #2a2d32; font-size: 12px; font-weight: 500;">Text to video</span>
+        <span style="padding: 8px 12px; border-radius: 8px; color: #828282; font-size: 12px; font-weight: 500;">Animate image</span>
+        <span style="padding: 8px 12px; border-radius: 8px; color: #828282; font-size: 12px; font-weight: 500;">Text to image</span>
+        <span style="padding: 8px 12px; border-radius: 8px; color: #828282; font-size: 12px; font-weight: 500;">Edit image</span>
+        <span style="padding: 8px 12px; border-radius: 8px; color: #828282; font-size: 12px; font-weight: 500;">Edit video</span>
+      </div>
+      <span style="margin-left: auto; display: inline-flex; width: 32px; height: 32px; border-radius: 8px; background: #ffffff0d; align-items: center; justify-content: center;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+      </span>
+    </div>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+      <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; background: #ff4a1c1a; color: #ff8a63; font-size: 12px; font-weight: 500; box-shadow: inset 0 0 0 1px #ff4a1c4d;">All providers</span>
+      <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; background: #ffffff0d; font-size: 12px; font-weight: 500;">Runnable only</span>
+      <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; background: #ffffff0d; font-size: 12px; font-weight: 500;">Audio</span>
+      <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; background: #ffffff0d; font-size: 12px; font-weight: 500;">30s capable</span>
+      <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; background: #ffffff0d; font-size: 12px; font-weight: 500;">Sort: price</span>
+    </div>
+
+    <!-- Tile grid: keeps li/button skeleton in S12; .model-item .model-item-main .model-item-name .chip-route + data-tier/data-unrunnable/data-unavailable -->
+    <div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; overflow: hidden;">
+
+      <div class="tile model-item" data-tier="frontier" style="box-shadow: 0 0 0 1.5px #ff4a1c80;">
+        <div class="tile-media t2"><div class="bevel"></div><span style="position: absolute; left: 8px; top: 8px; padding: 2px 8px; border-radius: 9999px; background: #00000099; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">4–30s</span></div>
+        <div class="model-item-main" style="display: flex; flex-direction: column; gap: 4px;">
+          <span class="model-item-name name">Seedance 2.5</span>
+          <span class="meta"><span class="chip-route prov">fal</span><span class="price">$0.021 / 1k tok</span><span class="tier">FRONTIER</span></span>
+        </div>
+      </div>
+
+      <div class="tile model-item" data-tier="frontier">
+        <div class="tile-media t1"><div class="bevel"></div><span style="position: absolute; left: 8px; top: 8px; padding: 2px 8px; border-radius: 9999px; background: #00000099; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">5–10s</span></div>
+        <div class="model-item-main" style="display: flex; flex-direction: column; gap: 4px;">
+          <span class="model-item-name name">Kling 3.0 Pro</span>
+          <span class="meta"><span class="chip-route prov">fal</span><span class="price">$0.14 / s</span><span class="tier">FRONTIER</span></span>
+        </div>
+      </div>
+
+      <div class="tile model-item" data-tier="frontier">
+        <div class="tile-media t5"><div class="bevel"></div><span style="position: absolute; left: 8px; top: 8px; padding: 2px 8px; border-radius: 9999px; background: #00000099; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">2–30s</span></div>
+        <div class="model-item-main" style="display: flex; flex-direction: column; gap: 4px;">
+          <span class="model-item-name name">Wan 3.0 Prime</span>
+          <span class="meta"><span class="chip-route prov">fal</span><span class="price">$0.10 / s</span><span class="tier">FRONTIER</span></span>
+        </div>
+      </div>
+
+      <div class="tile model-item" data-tier="frontier">
+        <div class="tile-media t3"><div class="bevel"></div><span style="position: absolute; left: 8px; top: 8px; padding: 2px 8px; border-radius: 9999px; background: #00000099; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">6 · 8 · 10s</span></div>
+        <div class="model-item-main" style="display: flex; flex-direction: column; gap: 4px;">
+          <span class="model-item-name name">LTX 2.5 Pro</span>
+          <span class="meta"><span class="chip-route prov">fal</span><span class="price">$0.12–0.17 / s</span><span class="tier">FRONTIER</span></span>
+        </div>
+      </div>
+
+      <div class="tile model-item" data-tier="standard">
+        <div class="tile-media t4"><div class="bevel"></div><span style="position: absolute; left: 8px; top: 8px; padding: 2px 8px; border-radius: 9999px; background: #00000099; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">8s</span></div>
+        <div class="model-item-main" style="display: flex; flex-direction: column; gap: 4px;">
+          <span class="model-item-name name">Veo 3.1</span>
+          <span class="meta"><span class="chip-route prov">fal</span><span class="price">$0.40 / s</span></span>
+        </div>
+      </div>
+
+      <div class="tile model-item" data-tier="standard">
+        <div class="tile-media t1"><div class="bevel"></div><span style="position: absolute; left: 8px; top: 8px; padding: 2px 8px; border-radius: 9999px; background: #00000099; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">5–15s</span></div>
+        <div class="model-item-main" style="display: flex; flex-direction: column; gap: 4px;">
+          <span class="model-item-name name">MiniMax H3</span>
+          <span class="meta"><span class="chip-route prov">fal</span><span class="price">$0.05–0.16 / s</span></span>
+        </div>
+      </div>
+
+      <div class="tile model-item" data-tier="standard">
+        <div class="tile-media t5"><div class="bevel"></div><span style="position: absolute; left: 8px; top: 8px; padding: 2px 8px; border-radius: 9999px; background: #00000099; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">5 · 10s</span></div>
+        <div class="model-item-main" style="display: flex; flex-direction: column; gap: 4px;">
+          <span class="model-item-name name">Grok Video 1.5</span>
+          <span class="meta"><span class="chip-route prov">fal</span><span class="price">$0.05 / s</span></span>
+        </div>
+      </div>
+
+      <!-- Unrunnable state: honest, not a dead Generate tile -->
+      <div class="tile model-item" data-unrunnable="true" style="opacity: 0.85;">
+        <div class="tile-media" style="background: #2a2d32;"><div class="bevel"></div><span style="position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; color: #828282; text-align: center; padding: 12px;">Needs a start frame this tab cannot send</span></div>
+        <div class="model-item-main" style="display: flex; flex-direction: column; gap: 4px;">
+          <span class="model-item-name name" style="color: #828282;">Kling 3.0 Pro · Animate</span>
+          <span class="meta"><span class="chip-route prov">fal</span><span style="color: #dfab01;">not runnable here</span></span>
+        </div>
+      </div>
+
+      <!-- Unavailable state: no key for the provider -->
+      <div class="tile model-item" data-unavailable="true" style="opacity: 0.85;">
+        <div class="tile-media" style="background: #2a2d32;"><div class="bevel"></div><span style="position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; color: #828282; text-align: center; padding: 12px;">Add a key to enable</span></div>
+        <div class="model-item-main" style="display: flex; flex-direction: column; gap: 4px;">
+          <span class="model-item-name name" style="color: #828282;">Hailuo 2.3</span>
+          <span class="meta"><span class="chip-route prov">vaig</span><span style="color: #828282;">unavailable · no key</span></span>
+        </div>
+      </div>
+
+      <div class="tile model-item" data-tier="standard">
+        <div class="tile-media t3"><div class="bevel"></div><span style="position: absolute; left: 8px; top: 8px; padding: 2px 8px; border-radius: 9999px; background: #00000099; font-family: 'IBM Plex Mono', monospace; font-size: 10px;">7s fixed</span></div>
+        <div class="model-item-main" style="display: flex; flex-direction: column; gap: 4px;">
+          <span class="model-item-name name">Veo 3.1 Extend</span>
+          <span class="meta"><span class="chip-route prov">fal</span><span class="price">$0.20 / s</span></span>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top: auto; display: flex; align-items: center; gap: 12px; padding-top: 12px; border-top: 1px solid #ffffff0d; font-size: 12px; color: #626262;">
+      <span>Prices are the app's estimate; the running spend uses what each finished job actually measured.</span>
+      <span style="margin-left: auto; font-family: 'IBM Plex Mono', ui-monospace, monospace;">66 routes · 62 verified today</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

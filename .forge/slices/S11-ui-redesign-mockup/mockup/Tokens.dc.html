@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono&display=swap">
+  <style>
+    body { margin: 0; background: #131416; color: #ffffff; font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    a { color: #ff8a63; } a:hover { color: #ffc0ac; }
+    h2 { margin: 0; font-family: 'Bebas Neue', 'Arial Narrow', sans-serif; font-size: 24px; font-weight: 400; line-height: 1; letter-spacing: 0.02em; }
+    table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    th { text-align: left; font-weight: 600; color: #828282; padding: 6px 8px; border-bottom: 1px solid #ffffff1a; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+    td { padding: 6px 8px; border-bottom: 1px solid #ffffff0d; vertical-align: top; }
+    .m { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+    .sw { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: middle; margin-right: 6px; border: 1px solid #ffffff1a; }
+    .keep { color: #2eb844; } .new { color: #ff8a63; }
+  </style>
+</helmet>
+<div style="width: 1440px; height: 900px; background: #131416; padding: 24px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; overflow: hidden;">
+
+  <div style="display: flex; flex-direction: column; gap: 16px;">
+    <h2>TOKENS: RE-VALUE, NOT REWRITE</h2>
+    <p style="margin: 0; color: #828282; font-size: 12px;">Everything on the three screens resolves to the current token sheet. The code slice changes values in one file and adds a handful of new names; component sheets are restyled after, never before.</p>
+    <table>
+      <tr><th>Token</th><th>Now</th><th>Proposed</th></tr>
+      <tr><td class="m">--bg-primary</td><td class="m"><span class="sw" style="background:#131416"></span>#131416</td><td class="m keep">keep</td></tr>
+      <tr><td class="m">--bg-secondary</td><td class="m"><span class="sw" style="background:#1c1e21"></span>#1c1e21</td><td class="m keep">keep</td></tr>
+      <tr><td class="m">--bg-tertiary</td><td class="m"><span class="sw" style="background:#2a2d32"></span>#2a2d32</td><td class="m keep">keep</td></tr>
+      <tr><td class="m">--accent</td><td class="m"><span class="sw" style="background:#ff4a1c"></span>#ff4a1c</td><td class="m keep">keep (the brand)</td></tr>
+      <tr><td class="m">--text-secondary</td><td class="m">#828282</td><td class="m new">#9a9a9a <span style="color:#626262">(+AA on cards)</span></td></tr>
+      <tr><td class="m">--text-tertiary</td><td class="m">#626262</td><td class="m new">#6e6e6e</td></tr>
+      <tr><td class="m">--radius-card</td><td class="m">—</td><td class="m new">1rem <span style="color:#626262">(tiles, meta cards)</span></td></tr>
+      <tr><td class="m">--radius-panel</td><td class="m">—</td><td class="m new">1.5rem <span style="color:#626262">(= --radius-600)</span></td></tr>
+      <tr><td class="m">--rail-settings</td><td class="m">410px</td><td class="m new">400px</td></tr>
+      <tr><td class="m">--rail-nav</td><td class="m">—</td><td class="m new">72px</td></tr>
+      <tr><td class="m">--rail-meta</td><td class="m">390px</td><td class="m keep">keep</td></tr>
+      <tr><td class="m">--tile-thumb-ratio</td><td class="m">—</td><td class="m new">16 / 9</td></tr>
+    </table>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 16px;">
+    <h2>TYPE SCALE, FINALLY USED</h2>
+    <div style="display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: 16px; background: #1c1e21;">
+      <span style="font-family: 'Bebas Neue', sans-serif; font-size: 40px; line-height: 1; letter-spacing: 0.02em;">H-MD · STAGE TITLES</span>
+      <span style="font-family: 'Bebas Neue', sans-serif; font-size: 24px; line-height: 1; letter-spacing: 0.02em;">H-XS · SECTION HEADS</span>
+      <span style="font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: -0.04em; font-size: 22px; line-height: 1.1;">Brand 22 · hero caption</span>
+      <span style="font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: -0.04em; font-size: 16px; line-height: 1.2;">Brand 16 · tile and card names</span>
+      <span style="font-size: 14px;">UI 14 · prompt body, buttons</span>
+      <span style="font-size: 12px; color: #828282;">UI 12 · metadata, chips</span>
+      <span style="font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #626262;">UI 10 caps · labels</span>
+      <span class="m" style="font-size: 12px; color: #828282;">Mono 12 · prices, durations, timers</span>
+    </div>
+    <table>
+      <tr><th>Slot</th><th>Face</th><th>Size / tracking</th></tr>
+      <tr><td>Stage / overlay title</td><td>Bebas Neue</td><td class="m">24px · +0.02em</td></tr>
+      <tr><td>Hero caption</td><td>Space Grotesk 700</td><td class="m">22px · −0.04em</td></tr>
+      <tr><td>Tile / card name</td><td>Space Grotesk 700</td><td class="m">15–16px · −0.04em</td></tr>
+      <tr><td>Prices, timers</td><td>IBM Plex Mono</td><td class="m">10–14px</td></tr>
+      <tr><td>Everything else</td><td>Inter</td><td class="m">12 / 14px</td></tr>
+    </table>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 16px;">
+    <h2>LAYOUT AND WHAT STAYS PINNED</h2>
+    <div style="display: flex; flex-direction: column; gap: 8px; padding: 16px; border-radius: 16px; background: #1c1e21; font-size: 12px;">
+      <span style="font-weight: 600;">Desktop ≥ 1200px</span>
+      <div style="display: grid; grid-template-columns: 72px 400px minmax(0, 1fr) 390px; gap: 6px; height: 60px;">
+        <div style="border-radius: 6px; background: #2a2d32; display: grid; place-items: center; font-size: 10px; color: #828282;">nav</div>
+        <div style="border-radius: 6px; background: #2a2d32; display: grid; place-items: center; font-size: 10px; color: #828282;">composer</div>
+        <div style="border-radius: 6px; background: #ff4a1c1a; display: grid; place-items: center; font-size: 10px; color: #ff8a63;">stage / gallery</div>
+        <div style="border-radius: 6px; background: #2a2d32; display: grid; place-items: center; font-size: 10px; color: #828282;">meta</div>
+      </div>
+      <span style="color: #626262;">Studio hides the meta rail (details live on the stage caption and the Library); Library hides the composer. The 3-column grid and its scrollIntoView pairing stay; a fourth 72px track is added on the left.</span>
+      <span style="font-weight: 600; margin-top: 8px;">Narrow &lt; 1200px (first breakpoint, additive)</span>
+      <div style="display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px; height: 60px;">
+        <div style="border-radius: 6px; background: #2a2d32; display: grid; place-items: center; font-size: 10px; color: #828282;">nav</div>
+        <div style="border-radius: 6px; background: #ff4a1c1a; display: grid; place-items: center; font-size: 10px; color: #ff8a63;">composer over stage, meta as a sheet</div>
+      </div>
+    </div>
+    <table>
+      <tr><th>Pinned by tests</th><th>Where it lives on the mockup</th></tr>
+      <tr><td class="m">.model-item .model-item-main .model-item-name</td><td>Composer model tile; every picker tile</td></tr>
+      <tr><td class="m">.chip-route</td><td>Provider chip on tiles</td></tr>
+      <tr><td class="m">data-tier / data-unrunnable / data-unavailable</td><td>Picker tiles: FRONTIER badge, the two honest dead states</td></tr>
+      <tr><td class="m">.generate-button</td><td>Sticky bar at the composer's foot</td></tr>
+      <tr><td class="m">.enhancer-picker .enhancer-model .enhancer-backend</td><td>Inside "Enhance: on" (opens the existing picker)</td></tr>
+      <tr><td class="m">.prompt-preview-text .prompt-preview-retry</td><td>"Preview rewrite" panel, unchanged anatomy</td></tr>
+      <tr><td>Legal notice</td><td>Composer foot, always visible, 10px tertiary</td></tr>
+      <tr><td>Fixes first</td><td>ConfirmDelete out of the titlebar button; drop ModelBrowser.tsx + browser.css; --color-vermilion → --accent; .btn-quiet</td></tr>
+    </table>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

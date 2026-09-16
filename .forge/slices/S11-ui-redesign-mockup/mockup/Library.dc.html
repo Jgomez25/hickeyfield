@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono&display=swap">
+  <style>
+    body { margin: 0; background: #131416; color: #ffffff; font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 16px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    a { color: #ff8a63; } a:hover { color: #ffc0ac; }
+    .t1 { background: linear-gradient(135deg, #2a2d32 0%, #1c1e21 60%, #401a10 100%); }
+    .t2 { background: linear-gradient(160deg, #23262a 0%, #35271f 55%, #611705 100%); }
+    .t3 { background: radial-gradient(circle at 30% 30%, #4a2f28 0%, #1c1e21 60%); }
+    .t4 { background: linear-gradient(200deg, #1c1e21 0%, #2b2a3a 50%, #14151a 100%); }
+    .t5 { background: linear-gradient(120deg, #1f2a2c 0%, #1c1e21 50%, #3a1f16 100%); }
+    .bevel { position: absolute; inset: 0; pointer-events: none; border-radius: inherit; box-shadow: -0.5px -0.5px 1px 0 rgba(255,255,255,0.12) inset, 0.8px 0.5px 0.5px 0 rgba(27,27,27,0.17) inset; }
+    .g { position: relative; border-radius: 12px; overflow: hidden; }
+    .cap { position: absolute; left: 10px; bottom: 8px; display: flex; flex-direction: column; gap: 1px; text-shadow: 0 1px 8px rgba(0,0,0,0.55); }
+    .cap-t { font-family: 'Space Grotesk', ui-sans-serif, sans-serif; font-weight: 700; letter-spacing: -0.04em; font-size: 13px; line-height: 1.2; }
+    .cap-s { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #ffffffb2; }
+    .row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+    .k { color: #626262; }
+    .v { margin-left: auto; font-family: 'IBM Plex Mono', ui-monospace, monospace; color: #ffffff; }
+  </style>
+</helmet>
+<div style="width: 1440px; height: 900px; display: grid; grid-template-rows: 52px minmax(0, 1fr); background: #131416; overflow: hidden;">
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid #ffffff0d;">
+    <div style="display: flex; align-items: center; gap: 24px;">
+      <span style="font-family: 'Bebas Neue', 'Arial Narrow', sans-serif; font-size: 18px; letter-spacing: 0.08em;">HICKEYFIELD</span>
+      <nav style="display: flex; align-items: center; gap: 4px;">
+        <span style="padding: 6px 12px; border-radius: 8px; color: #828282; font-size: 12px; font-weight: 500;">Studio</span>
+        <span style="padding: 6px 12px; border-radius: 8px; background: #2a2d32; font-size: 12px; font-weight: 500;">Library</span>
+        <span style="padding: 6px 12px; border-radius: 8px; color: #828282; font-size: 12px; font-weight: 500;">Storyboard</span>
+      </nav>
+    </div>
+    <div style="display: flex; align-items: center; gap: 12px; font-size: 12px; color: #626262; font-family: 'IBM Plex Mono', ui-monospace, monospace;">
+      <span>spend today $3.42 actual</span>
+      <span style="display: inline-flex; width: 32px; height: 32px; border-radius: 9999px; background: #2a2d32;"></span>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 12px; min-height: 0; padding: 12px; overflow: hidden;">
+
+    <!-- Gallery grid (feed.css becomes a grid; lightbox on click) -->
+    <div style="display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow: hidden; padding: 8px 16px 0;">
+      <div style="display: flex; align-items: baseline; gap: 12px;">
+        <h1 style="margin: 0; font-family: 'Bebas Neue', 'Arial Narrow', sans-serif; font-size: 24px; font-weight: 400; line-height: 1; letter-spacing: 0.02em;">LIBRARY</h1>
+        <span style="font-size: 12px; color: #626262;">48 items · 3 unpriced</span>
+        <div style="margin-left: auto; display: flex; gap: 8px;">
+          <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; background: #ff4a1c1a; color: #ff8a63; font-size: 12px; font-weight: 500; box-shadow: inset 0 0 0 1px #ff4a1c4d;">All</span>
+          <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; background: #ffffff0d; font-size: 12px; font-weight: 500;">Video</span>
+          <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; background: #ffffff0d; font-size: 12px; font-weight: 500;">Image</span>
+          <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; background: #ffffff0d; font-size: 12px; font-weight: 500;">Failed</span>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; overflow: hidden;">
+        <div class="g t2" style="aspect-ratio: 16 / 9; box-shadow: 0 0 0 1.5px #ff4a1c80;"><div class="bevel"></div><div class="cap"><span class="cap-t">Lighthouse at dusk</span><span class="cap-s">10s · 1080p · $0.41</span></div></div>
+        <div class="g t1" style="aspect-ratio: 16 / 9;"><div class="bevel"></div><div class="cap"><span class="cap-t">Night market</span><span class="cap-s">8s · 720p · $0.12</span></div></div>
+        <div class="g t3" style="aspect-ratio: 16 / 9;"><div class="bevel"></div><div class="cap"><span class="cap-t">Glass corridor</span><span class="cap-s">7s · 720p · $1.40</span></div></div>
+        <div class="g t4" style="aspect-ratio: 16 / 9;"><div class="bevel"></div><div class="cap"><span class="cap-t">Rain on brass</span><span class="cap-s">image · 1K · $0.03</span></div></div>
+        <div class="g t5" style="aspect-ratio: 16 / 9;"><div class="bevel"></div><div class="cap"><span class="cap-t">Tide pool</span><span class="cap-s">6s · 1080p · $1.02</span></div></div>
+        <div class="g t1" style="aspect-ratio: 16 / 9;"><div class="bevel"></div><div class="cap"><span class="cap-t">Station clock</span><span class="cap-s" style="color: #dfab01;">unpriced</span></div></div>
+        <div class="g t2" style="aspect-ratio: 16 / 9;"><div class="bevel"></div><div class="cap"><span class="cap-t">Paper lantern</span><span class="cap-s">5s · 720p · $0.30</span></div></div>
+        <div class="g" style="aspect-ratio: 16 / 9; border: 1px solid #ff54624d; background: #ff54621f;"><div class="cap"><span class="cap-t" style="color: #ff5462;">Refused by provider</span><span class="cap-s">retry · $0.00 charged</span></div></div>
+        <div class="g t3" style="aspect-ratio: 16 / 9;"><div class="bevel"></div><div class="cap"><span class="cap-t">Foundry sparks</span><span class="cap-s">10s · 1080p · $0.65</span></div></div>
+        <div class="g t4" style="aspect-ratio: 16 / 9;"><div class="bevel"></div><div class="cap"><span class="cap-t">Harbour fog</span><span class="cap-s">12s · 720p · $0.60</span></div></div>
+        <div class="g t5" style="aspect-ratio: 16 / 9;"><div class="bevel"></div><div class="cap"><span class="cap-t">Copper kettle</span><span class="cap-s">image · 1K · $0.03</span></div></div>
+        <div class="g t1" style="aspect-ratio: 16 / 9;"><div class="bevel"></div><div class="cap"><span class="cap-t">Snow on rails</span><span class="cap-s">9s · 1080p · $0.38</span></div></div>
+      </div>
+    </div>
+
+    <!-- Meta rail: spend meter + the selected job's MetaCard with estimated vs actual -->
+    <div style="display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden;">
+      <div style="display: flex; align-items: baseline; gap: 10px; padding: 12px 16px; border-radius: 12px; background: #23262abf;">
+        <span style="font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #626262;">Spend today</span>
+        <span style="margin-left: auto; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 14px;">$3.42</span>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #626262;">actual · est. $3.61</span>
+        <span style="font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; color: #dfab01;">+3 unpriced</span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid #ff4a1c66; border-radius: 16px; background: #1c1e21;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #2eb844;">Done</span>
+          <span style="font-family: 'Space Grotesk', ui-sans-serif, sans-serif; font-weight: 700; letter-spacing: -0.04em; font-size: 16px;">Lighthouse at dusk</span>
+          <span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #626262;">14:02</span>
+        </div>
+        <div class="t2" style="position: relative; aspect-ratio: 16 / 9; border-radius: 10px;"><div class="bevel"></div></div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div class="row"><span class="k">Model</span><span class="v">Seedance 2.5 · fal</span></div>
+          <div class="row"><span class="k">Requested</span><span class="v">10s · 1080p · 16:9</span></div>
+          <div class="row"><span class="k">Settled</span><span class="v">10.0s · 1920×1080</span></div>
+          <div class="row"><span class="k">Estimated</span><span class="v">$0.43</span></div>
+          <div class="row"><span class="k">Actual</span><span class="v" style="color: #2eb844;">$0.41 · −$0.02</span></div>
+          <div class="row"><span class="k">Priced from</span><span class="v" style="color: #828282;">literal · 2026-09-16</span></div>
+        </div>
+        <div style="display: flex; gap: 8px; padding-top: 8px; border-top: 1px solid #ffffff0d;">
+          <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid #ffffff1a; font-size: 12px; font-weight: 500;">Reveal file</span>
+          <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid #ffffff1a; font-size: 12px; font-weight: 500;">Extend</span>
+          <span style="display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid #ffffff1a; font-size: 12px; font-weight: 500;">Reuse prompt</span>
+          <span style="margin-left: auto; display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; color: #ff5462; font-size: 12px; font-weight: 500;">Delete</span>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; background: #1c1e21;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #ff8a63;">Running</span>
+          <span style="font-family: 'Space Grotesk', ui-sans-serif, sans-serif; font-weight: 700; letter-spacing: -0.04em; font-size: 16px;">Glass corridor · extend</span>
+          <span style="margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #ff8a63;">00:41</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div class="row"><span class="k">Model</span><span class="v">Veo 3.1 Extend · fal</span></div>
+          <div class="row"><span class="k">Fixed by provider</span><span class="v">7s · 720p</span></div>
+          <div class="row"><span class="k">Estimated</span><span class="v">$2.80 · audio on</span></div>
+          <div class="row"><span class="k">Actual</span><span class="v" style="color: #626262;">pending</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

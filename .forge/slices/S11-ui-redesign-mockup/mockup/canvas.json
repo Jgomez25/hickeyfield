@@ -1,0 +1,13 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "title": "Studio", "x": 0, "y": 0, "w": 1440, "h": 900 },
+    { "file": "ModelPicker.dc.html", "title": "Model picker", "x": 1540, "y": 0, "w": 1440, "h": 900 },
+    { "file": "Library.dc.html", "title": "Library", "x": 0, "y": 1040, "w": 1440, "h": 900 },
+    { "file": "Tokens.dc.html", "title": "Tokens and layout", "x": 1540, "y": 1040, "w": 1440, "h": 900 }
+  ],
+  "annotations": [
+    { "id": "brief", "x": 0, "y": -160, "w": 520, "text": "Hickeyfield redesign, one direction: dense dark studio. Layout only borrows the shape of modern generation studios (use-case nav, stage, tile pickers, sticky generate); every string and image here is original placeholder art. Tokens keep the vermilion brand; type scale gets used." },
+    { "id": "ask", "x": 1540, "y": -160, "w": 520, "text": "For you to mark up: 1) stage-first Studio vs. the old results feed; 2) 72px icon nav vs. a labelled 200px nav; 3) hide the meta rail on Studio or keep it; 4) anything in the Tokens table you would not change." }
+  ],
+  "launch": { "view": "canvas" }
+}
