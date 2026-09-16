@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S9-fal-schema-const-and-int-enums",
+  "currentSlice": "S10-pricing-accuracy-and-cost-tracker",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -72,6 +72,12 @@
       "status": "released",
       "started": "2026-09-15",
       "branch": "forge/s9-fal-schema-const"
+    },
+    {
+      "id": "S10-pricing-accuracy-and-cost-tracker",
+      "title": "pricing-accuracy-and-cost-tracker",
+      "status": "in-progress",
+      "started": "2026-09-15"
     }
   ]
 }
