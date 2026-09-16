@@ -104,8 +104,9 @@
     {
       "id": "S14-minimax-h3-max-constant-fields",
       "title": "minimax-h3-max-constant-fields",
-      "status": "in-progress",
-      "started": "2026-09-16"
+      "status": "released",
+      "started": "2026-09-16",
+      "branch": "forge/s14-h3-max"
     }
   ]
 }

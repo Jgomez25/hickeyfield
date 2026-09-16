@@ -248,3 +248,7 @@ mandatory slice; tracked here for prioritization.
   (two tiles at one shot_index — cosmetic; mirrors Rerun); `generate_storyboard` does not dedupe
   within-batch `shot_indices` (local webview only); a retry's plan is not compared with the group's
   stored plan; storyboard JSON hit-rate measured only on llama3.2:3b. Fold into S15 render or a hygiene slice.
+
+- **S14 minors (non-blocking):** `examples/audit_fal.rs` ~:230-260 doc comment now sits above the wrong
+  function (`pin_conflicts` undocumented); H3 Max / Turbo routes are PROSE in `prices::audit` (hand-verified
+  2026-09-16; promotional rates — re-check when fal ends the promotion). Constant-fields item CLOSED.
