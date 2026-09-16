@@ -111,8 +111,9 @@
     {
       "id": "S15-storyboard-render",
       "title": "storyboard-render",
-      "status": "in-progress",
-      "started": "2026-09-16"
+      "status": "released",
+      "started": "2026-09-16",
+      "branch": "forge/s15-storyboard-render"
     }
   ]
 }

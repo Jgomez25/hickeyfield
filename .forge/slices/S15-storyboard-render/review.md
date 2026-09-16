@@ -135,3 +135,30 @@ No unresolved blocker or major on a critical path. The money invariants, the exa
 scheduler, and the no-charge render all hold and are backed by real tests.
 
 VERDICT: PASS
+
+## RE-REVIEW (HEAD 1139b13)
+
+Re-reviewed the coordinator's fix for minor finding 3 (`git show 1139b13` — UI-only, 3 lines in
+`ui/src/App.tsx` `onRenderStoryboard`).
+
+**Delta confirmed correct, introduces nothing new.** The `.catch` now takes `(e: unknown)` and calls
+`setSubmitError(e instanceof Error ? e.message : String(e))` before clearing the render progress; the
+misleading "surfaces via the standard toast path" comment is gone. `setSubmitError` is the app's
+shared error state (App.tsx:142), rendered at App.tsx:875 with a dismiss handler — the exact banner
+every other refused action already uses (generate at :469/:511, chain/submit at :617/:723), and the
+error-coercion expression is character-identical to those sites. No new state, no new surface, no new
+control flow. Money/scheduler/render invariants are untouched (no Rust changed). Re-ran the UI gate at
+HEAD 1139b13: **pnpm test 292/292 passed, pnpm build green.** Findings 1, 2, and 4 from the first pass
+stand unchanged (all minor, non-blocking); the per-join overlap follow-up is unaffected.
+
+**Is the banner the right surface for a Library-view action?** Yes — acceptable and, on balance, the
+right call. The banner is rendered in the always-visible workspace chrome (not tab-scoped), so it is
+seen from the Library, and using it keeps every refused action in one predictable place rather than
+inventing a one-off error surface for renders. A Library-local inline message (near the Render button
+of the set that failed) would be marginally better for locality — it ties the error to the specific
+set — but it costs a new per-set error state and a new UI affordance for a single action, and it would
+diverge from the app's established one-banner convention. Recommendation: keep the shared banner now;
+consider a per-set inline error only if/when the Library grows other set-scoped failures worth
+localising. Non-blocking.
+
+VERDICT: PASS
