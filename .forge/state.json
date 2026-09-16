@@ -62,8 +62,9 @@
     {
       "id": "S8-fal-catalogue-sync",
       "title": "fal-catalogue-sync",
-      "status": "in-progress",
-      "started": "2026-09-15"
+      "status": "released",
+      "started": "2026-09-15",
+      "branch": "forge/s8-fal-catalogue-sync"
     }
   ]
 }

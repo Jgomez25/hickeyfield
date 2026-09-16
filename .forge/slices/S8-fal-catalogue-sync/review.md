@@ -643,3 +643,85 @@ carried as follow-ups — N5 in particular, because it is one line and it is wha
 regressing.
 
 VERDICT: PASS
+
+---
+
+## RE-REVIEW 3 (HEAD 55aa32f)
+
+Read-only, independent. Scope: the delta only — `git show 55aa32f` restricted to source
+(3 files, 9 lines: `media.rs` comment, `registry.rs` two flags → a comment, `use_case.rs` one
+assertion). Everything cleared in RE-REVIEW 1 and 2 stands.
+
+### 1. Gate, re-run here (real output)
+
+```
+$ cargo test --workspace     TEST exit=0
+test result: ok. 657 passed; 0 failed; 9 ignored   (hickeyfield-core lib)
+test result: ok.   2 passed; 0 failed              (examples/fal_diff)
+test result: ok. 120 passed; 0 failed; 1 ignored   (hickeyfield-tauri-lib)   -> 779 passing, 0 failed
+$ cargo fmt --all --check                                  FMT exit=0  (no output)
+$ cargo clippy --workspace --all-targets -- -D warnings     CLIPPY exit=0, 0 occurrences of "warning"
+$ ./scripts/lint-provenance.py                              PROV exit=0  (both checks PASS)
+$ env -u hickeyfield_FAL_KEY -u FAL_KEY cargo run -q -p hickeyfield-core --example audit_fal
+=== SILENTLY IGNORED MEDIA — bills for the wrong generation (11) ===
+=== MISSING REQUIRED FIELDS (2) ===  === DROPPED SETTINGS (21) ===  === REJECTED OPTIONS (9) ===
+=== UNREACHABLE — fal serves no schema for this endpoint (0) ===
+=== CHECKED — fal answered with a schema (62) ===
+  seedance_2_5   bytedance/seedance-2.5/text-to-video        (line 144 — its only appearance)
+$ cd ui && pnpm test    Test Files 14 passed (14)   Tests 232 passed (232)
+$ cd ui && pnpm build   ✓ built in 5.31s
+```
+
+Diffing the section headers of this run against RE-REVIEW 2's run, **exactly one line changed**:
+
+```
+< === SILENTLY IGNORED MEDIA — bills for the wrong generation (12) ===
+> === SILENTLY IGNORED MEDIA — bills for the wrong generation (11) ===
+```
+
+N6 is closed and nothing else moved: the other three finding buckets are byte-identical at 2 / 21 /
+9, `UNREACHABLE` stays 0, `CHECKED` stays 62, and `seedance_2_5` now appears only under `CHECKED`.
+The 11 remaining entries are the pre-existing baseline on models this slice did not touch. The
+implement.md addendum's restated claim matches what I measured.
+
+### 2. The three fixes, checked
+
+- **N5 closed.** `crates/hickeyfield-core/src/use_case.rs:317`:
+  `assert!(!supports(&reg["seedance_2_5"], UseCase::ImageToVideo));`, beside its `kling3_0_pro`
+  and `wan3_0_prime` siblings. Worth stating precisely what it pins, since the same commit also
+  removed the media flags: `route_serves` (`use_case.rs:213-224`) short-circuits on
+  `resolve_endpoint(...).is_err()`, and then `can_bind` (`media.rs:464`) requires the role's flag —
+  so `supports` is now false for two independent reasons. The assertion therefore does **not** fire
+  on a partial restore of `InputMode::Image` alone, but does fire on a real re-land (mode + flags),
+  which is the moment it needs to. A mode restored without the flags cannot produce a broken tile
+  either, so the gap is inert. This is the right guard, correctly placed.
+- **N6 closed at the source, not by suppressing the report.** `registry.rs:1564-1565` drops
+  `start_image`/`end_image` and leaves a comment tying their return to `InputMode::Image` and the
+  parser fix. No orphan left behind: `grep` for the seedance-2.5 keys shows the end-frame key table
+  (`media.rs:1895-1899`) covers only Seedance 2.0 / v1 / v1.5, and `NO_MEDIA_MODELS`,
+  `FAL_MISSING_ROUTES` and `NO_END_FRAME` never named `seedance_2_5`. The text-to-video path takes
+  no media, so nothing on the live path changes. Residual behaviour if an old recipe carries a start
+  frame for this model: `media::bind` returns `BindError::UnsupportedRole` (`media.rs:464-469`), a
+  clear refusal before any request — same class as the `resolve_endpoint` refusal it already hit
+  since 9e53dfd, and still no money spent.
+- **N2 fully closed.** `media.rs:628-630` now cites `…/flare/text-to-image` and `…/flare/edit`, both
+  of which are rows in that very block (`media.rs:632-641`). `grep -n "text-to-video/pro"` across
+  `media.rs` and `registry.rs` now returns nothing.
+
+### 3. Nothing new introduced
+
+The delta adds no code path, no dependency, no test relaxation and no `#[ignore]`; it removes two
+spec flags, adds one assertion and rewrites two comments. `fmt` accepts the lone comment inside the
+flag array, `clippy -D warnings` is silent, and the workspace count is unchanged at 779/0 — the new
+assertion lives inside an existing test, which is why the number did not move. The only remaining
+open items on this slice are the unchanged backlog minors (first review's M2–M7, RE-REVIEW 1's N4,
+and the ~103-column doc-comment line at `registry.rs:1538`), none of which is on a critical path,
+plus the owner's scope ratification noted in RE-REVIEW 1 §7.
+
+### 4. Verdict
+
+B4 is fixed, regression-guarded, honestly documented in the code, the constraint, the CHANGELOG and
+the backlog, and the audit evidence now matches the claim made for it. No blocker, no major, and the
+delta introduces nothing new.
+
+VERDICT: PASS

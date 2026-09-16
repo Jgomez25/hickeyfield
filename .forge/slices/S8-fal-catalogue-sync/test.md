@@ -1230,3 +1230,252 @@ AC1, AC2, AC4, AC5's named guards, AC6 and AC7's mechanical gate are all indepen
 green at 9e53dfd. AC3 fails on F3; the durability of the F1 repair fails on F4.
 
 VERDICT: FAIL
+
+---
+
+## RE-TEST 3 (HEAD 55aa32f)
+
+Scope: the `55aa32f` delta only, plus a full gate re-run. RE-TEST 2's F3 and F4 were the
+blocking findings; this section tries to break their repair. Everything above is history.
+
+The source delta, from `git show 55aa32f -- crates/ src-tauri/ ui/ docs/ CHANGELOG.md` — three
+hunks, nothing else:
+
+```
+ use_case.rs   +assert!(!supports(&reg["seedance_2_5"], UseCase::ImageToVideo));   (line 317)
+ registry.rs   -("start_image", false, ValueSpec::Media),
+               -("end_image",   false, ValueSpec::Media),
+               +// `start_image` / `end_image` return with `InputMode::Image`
+               +// once the parser reads fal's `const` (see `FAL_ROUTE_MODES`).
+ media.rs      comment only: the withdrawn `…/text-to-video/pro` example replaced
+```
+
+## Commands
+
+```
+$ cargo test --workspace
+test result: ok. 657 passed; 0 failed; 9 ignored; ... finished in 0.63s
+test result: ok.   2 passed; 0 failed; 0 ignored; ... finished in 0.00s
+test result: ok. 120 passed; 0 failed; 1 ignored; ... finished in 15.13s
+test result: ok.   0 passed; 0 failed; ... (x3 bin/doc targets)
+TEST_EXIT=0
+```
+Summed: **779 passed, 0 failed.**
+
+```
+$ cargo fmt --all --check                                   FMT_EXIT=0   (no output)
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.08s
+                                                            CLIPPY_EXIT=0
+$ ./scripts/lint-provenance.py
+CDN hostnames      PASS  no third-party media hosts referenced
+Copy provenance    PASS  no shipped string matches the reference corpus (80015 shingles indexed)
+                                                            PROV_EXIT=0
+$ cargo run -q -p hickeyfield-core --example fal_diff -- --offline | head -1
+fal index: 1491 model(s), bundled snapshot of 2026-09-16. Registry reaches 62 fal endpoint(s).
+                                                            DIFF_EXIT=0
+$ cd ui && pnpm test                                        (node v24.8.0)
+ Test Files  14 passed (14)
+      Tests  232 passed (232)                               UITEST_EXIT=0
+$ cd ui && pnpm build
+✓ built in 878ms                                            UIBUILD_EXIT=0
+```
+
+### F3 re-test — `audit_fal`, keyless, my own run
+
+```
+$ env -u hickeyfield_FAL_KEY -u FAL_KEY cargo run -q -p hickeyfield-core --example audit_fal
+=== SILENTLY IGNORED MEDIA — bills for the wrong generation (11) ===
+=== MISSING REQUIRED FIELDS — 422 after a round trip (2) ===
+=== DROPPED SETTINGS — the control has no effect (21) ===
+=== REJECTED OPTIONS — the chip row offers invalid values (9) ===
+=== UNREACHABLE — fal serves no schema for this endpoint (0) ===
+=== CHECKED — fal answered with a schema (62) ===
+AUDIT_EXIT=0
+```
+Back to **11**, from the 12 that RE-TEST 2 measured. The only `seedance_2_5` line in the whole
+log is at line 144, inside the CHECKED section (which starts at line 99). Per-id tally, computed
+by splitting the log at the CHECKED header:
+
+```
+gpt_image_2_5_flare         findings=0 checked=1
+gpt_image_2_5_flare_edit    findings=0 checked=1
+gpt_image_2_5_sunburst      findings=0 checked=1
+gpt_image_2_5_sunburst_edit findings=0 checked=1
+kling3_0_pro                findings=0 checked=1
+nano_banana_2_edit          findings=0 checked=1
+nano_banana_pro_edit        findings=0 checked=1
+qwen_image_3                findings=0 checked=1
+seedance_2_5                findings=0 checked=1
+seedream_v5_pro_edit        findings=0 checked=1
+wan3_0_prime                findings=0 checked=1
+```
+
+I diffed my fresh run against the log committed at
+`.forge/slices/S8-fal-catalogue-sync/audit_fal-2026-09-16-reduced.log`:
+
+```
+$ diff <(grep -v 'Compiling\|Finished\|Running' audit_fal-2026-09-16-reduced.log) my-audit.log
+IDENTICAL to the committed log
+```
+The evidence file is not a summary of a run I have to take on trust; it reproduces byte for byte.
+**F3 fixed.** `implement.md`'s "every landed slug: CHECKED, zero findings, zero UNREACHABLE" is
+true again, and I have now measured it rather than read it.
+
+Behaviour behind the flag removal, probed rather than assumed (scratch copy of 55aa32f):
+
+```
+$ cargo run -q -p hickeyfield-core --example probe_roles
+  Start          can_bind=false
+  End            can_bind=false
+  Reference      can_bind=false
+  Video          can_bind=false
+  VideoReference can_bind=false
+  Audio          can_bind=false
+  AudioReference can_bind=false
+media_flags  = []
+takes_prompt = true
+required     = ["prompt"]
+```
+A prompt-only text-to-video model that binds no media role — which is exactly what
+`FAL_ROUTE_MODES` now claims, so `media::can_bind`, `CapabilitiesDto::unsupported_roles`,
+`use_case::route_serves` and `audit_fal` all tell the same story. Nothing user-facing is lost:
+`UseCase::TextToVideo => slots() = &[]` (use_case.rs:131), so the New Video tab never drew an
+attachment box for it in the first place.
+
+### F4 re-test — B8 mutation, both directions (**now caught**)
+
+Run in `scratchpad/copy3`, an rsync copy of 55aa32f outside the repo.
+
+**B8a — restore only the mode** (literally the line the previous repair removed):
+
+```
+697:    ("bytedance/seedance-2.5", false, &[InputMode::Text, InputMode::Image]),
+
+$ cargo test -q -p hickeyfield-core
+---- use_case::tests::the_models_imported_from_fal_land_on_the_right_tab stdout ----
+thread '...' panicked at crates/hickeyfield-core/src/use_case.rs:317:9:
+assertion failed: !supports(&reg["seedance_2_5"], UseCase::ImageToVideo)
+test result: FAILED. 656 passed; 1 failed; 9 ignored; 0 measured; 0 filtered out
+```
+
+**B8b — restore the mode *and* both media flags** (the complete revert to the state that
+produced the original 422 defect). I ran this separately because the new assertion goes through
+`supports` → `route_serves`, which is guarded by both the mode list *and* `can_bind`; a guard
+that only fired when both were reverted would be weaker than it looks:
+
+```
+$ cargo test -q --workspace
+---- use_case::tests::the_models_imported_from_fal_land_on_the_right_tab stdout ----
+test result: FAILED. 656 passed; 1 failed; 9 ignored; 0 measured; 0 filtered out
+```
+
+**Both directions fail the build.** The guard is non-vacuous against a partial revert and
+against a full one. Restoring the pristine files returns the suite to green:
+
+```
+$ cargo test -q -p hickeyfield-core
+test result: ok. 657 passed; 0 failed; 9 ignored; ... finished in 0.43s
+test result: ok.   2 passed; 0 failed; ...
+```
+**F4 fixed.**
+
+### F1 / AC4 — still fixed, re-measured not re-read
+
+```
+$ cargo test -p hickeyfield-core seedance_2_5_offers_a_thirty_second_clip
+test registry::tests::seedance_2_5_offers_a_thirty_second_clip ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 665 filtered out
+
+$ cargo run -q -p hickeyfield-core --example probe_aspect
+-- resolve_endpoint --
+  Text  -> Ok("bytedance/seedance-2.5/text-to-video")
+  Image -> Err(UnsupportedMode { wanted: Image, supported: [Text] })
+  Video -> Err(UnsupportedMode { wanted: Video, supported: [Text] })
+-- use_case::supports (picker tabs) --
+  text-to-video -> true      image-to-video -> false   edit-video -> false
+  text-to-image -> false     edit-image -> false
+-- submit-time aspect decision (requested = DEFAULT_SETTINGS.aspect) --
+  Text -> bytedance/seedance-2.5/text-to-video
+     aspect values=["auto","21:9","16:9","4:3","1:1","3:4","9:16"] accepts=true
+     plan=Sent("16:9") wire=Some("16:9")
+  Image: no endpoint -- unreachable, nothing is sent
+-- 30s still on text-to-video --
+  durations = [4.0, 5.0, ..., 29.0, 30.0]   contains 30.0 = true
+  live fal axis: ["auto","4",...,"29","30"]
+```
+The `const`-pinned endpoint is unreachable at three independent layers (resolver, picker,
+and `src-tauri/src/app.rs:277-286`, which converts a `resolve_endpoint` error into
+`JobError::Permanent` before the provider is called — no round trip, no spend). The `"16:9"`
+that still goes on the wire goes to the endpoint that enumerates `16:9`. The 30s option is
+present and matches fal's live enum exactly. **AC4's headline holds.**
+
+### B12 — did the flag removal break anything else?
+
+`cargo test --workspace` is 779/0 including `the_unroutable_models_are_a_known_short_list`,
+`editing_a_clip_offers_only_models_that_take_one`, `every_imported_model_resolves_to_an_exact_fal_endpoint`,
+`registry_covers_the_catalogue_minus_its_exclusions` (`+27`), `there_are_twelve_launch_families`,
+and the compile-time `FAL_ROUTE_MODES: [...; 48]`. `seedance_2_5` is not in `NO_MEDIA_MODELS`,
+which is harmless: `supports` returns false for all four media tabs anyway via `can_bind`
+(probed above), so the two paths agree. `fal_diff --offline` and `audit_fal` were each run twice
+with identical output and exit 0; neither writes to the tree. **Not broken.**
+
+### B13 — repo state
+
+`git status --porcelain` before writing this file showed only
+`.forge/slices/S8-fal-catalogue-sync/review.md`, modified by the concurrent REVIEW agent, not by
+me. All mutation work ran in `scratchpad/copy3`. The only file I wrote is this one.
+
+---
+
+## Verdict on the acceptance criteria (reduced 11-model set, HEAD 55aa32f)
+
+| AC | Verdict | Evidence in this file |
+|---|---|---|
+| AC1 — reusable fal→registry diff tool, no key, fixture tests | **PASS** | `fal_diff --offline` runs (62 endpoints reached), 2 example tests inside the workspace gate |
+| AC2 — snapshot refreshed and committed | **PASS** | 1,491 rows, `snapshot_date` 2026-09-16, `fal_catalogue` constants green in the 779 |
+| AC3 — curated import, routed + priced + `audit_fal`-clean before landing | **PASS** | 11/11 `findings=0 checked=1`, `UNREACHABLE 0`, my run byte-identical to the committed log |
+| AC4 — duration honest; native 30s | **PASS** | spec list == fal's live enum for seedance t2v incl. 30; Wan note now matches fal's `2..30` |
+| AC5 — picker tabs correct; array-length guards updated not deleted | **PASS** | `the_models_imported_from_fal_land_on_the_right_tab` with 3+1 negative assertions, all non-vacuous (B8a/B8b, M2); `[...; 48]`, `[...; 12]` intact |
+| AC6 — stale docs corrected, CHANGELOG, provenance lint | **PASS** | FIRST-LIGHT/backlog updated, CHANGELOG qualified for the i2v restriction, provenance PASS |
+| AC7 — full regression gate | **PASS** | 779/0, fmt, clippy `-D warnings`, provenance, UI 232/232 + build |
+
+### What this PASS does and does not say
+
+It says: at 55aa32f, all eleven landed models are routed, priced, probed against fal's live
+schema, offered only on tabs they can actually run on, and the gate is green — and I verified
+each of those by running it, not by reading `implement.md`. The three findings I raised
+(F1 const-pinned aspect, F3 phantom media flags, F4 unguarded repair) are each closed and each
+re-broken-and-re-caught above.
+
+It does not say the slice delivered its full headline scope. Four declared refusals stand, all
+of them under AC3's own rule ("a slug that fails the audit is NOT added"), all disclosed in
+code comments, `implement.md` §8 + addenda, the backlog and the CHANGELOG:
+
+- MiniMax H3 Max / H3 Max Turbo — never imported (required `prompt_expansion_mode` with no
+  default; needs a constant-fields mechanism). The slice's own one-line summary names H3 Max
+  first, so this is a real scope shortfall.
+- `ltx_2_5`, `ltx_2_5_animate`, `veo3_1_extend` — withdrawn (integer/mixed enums and `const`).
+- Seedance 2.5 image-to-video — withdrawn (`const`), the model still ships text-to-video with
+  the native 30s that is the slice's other headline.
+- Kling 3.0 Pro / Wan 3.0 Prime — text-to-video only (`start_image_url` the binder cannot write).
+
+All four converge on one root cause that is already a separate backlog slice
+(`fal-schema-const-and-int-enums`): `fal_schema::parse` reads only `properties[*].enum`, so
+`const` and integer enum members are invisible to the capability layer, to `reconcile` and to
+`audit_fal`'s own checks. Whether S8 releases with that much of its minimum set deferred is an
+owner decision above this gate, and it is recorded here so it is made knowingly rather than by
+default.
+
+One non-blocking observation, comment-only and pre-existing in kind: the `FAL_ROUTE_MODES`
+block comment at `media.rs:627-631` still generalises these rows as "split by something other
+than an input mode", which is loose for `alibaba/qwen-image-3/text-to-image`,
+`fal-ai/nano-banana-*/edit` and `bytedance/seedream/v5/pro/edit` — those are plain, already
+applied mode suffixes. The actionable half of the comment ("the mode list is the one mode it
+serves and `Exact` is true. Suffixing any of them 404s") is correct for every row in the block,
+and `55aa32f` only replaced a dead example. Worth a word at DOCUMENT; not a defect.
+
+I tried to break this three times and succeeded twice. The third attempt found nothing that
+changes what the app does, what it bills, or what it tells the user.
+
+VERDICT: PASS

@@ -26,6 +26,7 @@ generator being trustworthy).
 | 8 | video-edit-usecase | The user selects the Edit Video use case, attaches a clip, and generation routes end-to-end to an edit-capable model. | pending |
 | 9 | provider-tool-seam | A stub adapter/edit-op registers through a clean provider/tool abstraction seam and dispatches without editing the core dispatch match (groundwork for a future Runway adapter — the seam, not the adapter). | pending |
 | 10 | release-readiness-doc | A release-readiness doc records the personal/local-build state and the deferred public-release gates (ffmpeg educational-use license, missing GPL texts, macOS notarization, updater, Windows CI-only). | pending |
+| S8 | fal-catalogue-sync | fal's current frontier models (11, each verified keyless against fal's live schema) are in the picker, incl. Seedance 2.5's native 30s clip, plus a reusable fal→registry diff tool and a refreshed snapshot. | released |
 
 Statuses: pending -> in-progress -> released (or blocked).
 
