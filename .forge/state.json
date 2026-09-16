@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S10-pricing-accuracy-and-cost-tracker",
+  "currentSlice": "S11-ui-redesign-mockup",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -79,6 +79,12 @@
       "status": "released",
       "started": "2026-09-15",
       "branch": "forge/s10-pricing"
+    },
+    {
+      "id": "S11-ui-redesign-mockup",
+      "title": "ui-redesign-mockup",
+      "status": "in-progress",
+      "started": "2026-09-15"
     }
   ]
 }
