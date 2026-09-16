@@ -1,5 +1,10 @@
 # HANDOFF — hickeyfield FORGE session → next session (updated 2026-09-16, evening)
 
+## INCIDENT + RULE (2026-09-16): a test that stripped the dummy key env fell through to the macOS
+keychain and spent $0.36 on fal (9 qwen stills). Fixed: vault blocks the keychain under cfg(test) /
+HICKEYFIELD_NO_KEYCHAIN=1 (45f2416). Every agent command must export the dummy `hickeyfield_*_KEY=x`
+vars AND `HICKEYFIELD_NO_KEYCHAIN=1`. S17 paused (partial WIP on forge/s17-keyframe; UI mid-edit).
+
 ## State now
 main = S1–S12 released and installed (S8 catalogue sync, S9 schema const/int-enums, S10 pricing audit +
 actual cost, S11 redesign mockup https://claude.ai/artifact/2des9awBapmx8rSZN8wvAe, S12 redesign code).

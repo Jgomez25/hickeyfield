@@ -158,3 +158,17 @@ hand-edit a verdict. (3) `python3 .forge/gate.py` → release.md → ff-merge to
 slices per owner order: fal-schema-const-and-int-enums (re-land the 3 + re-probe all routes),
 S9 pricing+tracker, S10 redesign, Storyboard. Owner prefs: agents `model:"opus"` by default,
 `fable` only when necessary; owner is context-limited — keep agent count low.
+
+## INCIDENT 2026-09-16 15:39 PDT — real spend from a unit test (fixed structurally)
+The S17 implementer's test `keyframe_generate_holds_the_shots_and_stores_the_boundaries` (brief
+"a 30s cold-brew ad") STRIPPED the dummy `hickeyfield_*_KEY` env, so `vault::get` fell through to the
+macOS keychain (owner's REAL fal testing key) and `submit_one` submitted the 3 keyframe stills to
+`alibaba/qwen-image-3/text-to-image` for real; the suite ran 3× → 9 requests × $0.04 ≈ $0.36. Caught
+by the owner on fal's dashboard; the orchestrator wrongly denied it first (checked only the app DB —
+tests use a temp store). FIX (commit 45f2416): `vault::keychain_blocked()` — the keychain is never
+consulted under `cfg(test)` or `HICKEYFIELD_NO_KEYCHAIN=1`; two tests prove it. RULES from now on:
+every agent command exports the dummy keys AND `HICKEYFIELD_NO_KEYCHAIN=1`; tests never strip env;
+any spend report is checked against the provider dashboard + agent transcripts, never the app DB alone.
+S17 state: PAUSED pending owner — Rust side green (945 tests) on `forge/s17-keyframe`; the UI was
+mid-edit when the implementer was stopped (Library.tsx: 6 failing vitest, build broken ON THE BRANCH
+ONLY; main is unaffected). Resume = fresh implementer under the new rule, starting from the branch.
