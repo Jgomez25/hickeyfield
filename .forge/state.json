@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S16-duration-range-and-continuity-prompting",
+  "currentSlice": "S17-keyframe-anchored-mode",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -121,6 +121,12 @@
       "status": "released",
       "started": "2026-09-16",
       "branch": "forge/s16-continuity"
+    },
+    {
+      "id": "S17-keyframe-anchored-mode",
+      "title": "keyframe-anchored-mode",
+      "status": "in-progress",
+      "started": "2026-09-16"
     }
   ]
 }
