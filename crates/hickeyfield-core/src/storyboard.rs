@@ -561,6 +561,41 @@ const CUT_WORDS: [&str; 5] = ["cut to", "smash cut", "meanwhile", "elsewhere", "
 /// The minimum word count for a `world` block to hold identity across a cut.
 const MIN_WORLD_WORDS: usize = 5;
 
+/// Whether `hay` contains `needle` as a whole word/phrase — bounded on each side
+/// by a non-alphanumeric character or a string edge. So the short cut word
+/// `later` does not fire inside `slater`, and `elsewhere` does not fire inside a
+/// longer token or a URL. `needle` is a lowercase ASCII word/phrase; `hay` is
+/// already lowercased by the caller.
+fn contains_word(hay: &str, needle: &str) -> bool {
+    let mut from = 0;
+    while let Some(rel) = hay[from..].find(needle) {
+        let start = from + rel;
+        let end = start + needle.len();
+        let before_ok = start == 0
+            || !hay[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric());
+        let after_ok = end == hay.len()
+            || !hay[end..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
+/// Whether an action ends on a hold — the v2 prompt dictates "static hold", but
+/// a model may write "hold", "holds on", or "static hold", so any whole-word
+/// `hold`/`holds` counts (the phrase "static hold" contains the word "hold").
+fn ends_on_hold(action: &str) -> bool {
+    contains_word(action, "hold") || contains_word(action, "holds")
+}
+
 /// The continuity rules on a multi-shot **continuous** plan (memo D-E), pure.
 ///
 /// Continuity is **opt-in through a non-empty `world`**: the v2 prompt requires
@@ -589,7 +624,7 @@ pub fn validate_continuity(world: &str, shots: &[Shot]) -> Result<(), PlanError>
     for (i, shot) in shots.iter().enumerate() {
         let hay =
             format!("{} {}", shot.action.as_deref().unwrap_or(""), shot.prompt).to_lowercase();
-        if let Some(word) = CUT_WORDS.iter().find(|w| hay.contains(*w)) {
+        if let Some(word) = CUT_WORDS.iter().find(|w| contains_word(&hay, w)) {
             return Err(PlanError::CutWords {
                 shot: i,
                 word: (*word).to_string(),
@@ -608,7 +643,7 @@ pub fn validate_continuity(world: &str, shots: &[Shot]) -> Result<(), PlanError>
             .as_deref()
             .unwrap_or(&shot.prompt)
             .to_lowercase();
-        if !action.contains("static hold") {
+        if !ends_on_hold(&action) {
             return Err(PlanError::NoHoldEnding { shot: i });
         }
     }
@@ -1619,6 +1654,47 @@ mod tests {
             matches!(err, PlanError::CutWords { shot: 0, .. }),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn a_cut_word_matches_only_whole_words() {
+        // The short cut word `later` must not fire inside `slater`, and
+        // `elsewhere` must not fire inside `elsewheres`/a longer token.
+        assert!(contains_word("meanwhile the label shifts", "meanwhile"));
+        assert!(contains_word("it holds, then later it moves", "later"));
+        assert!(!contains_word("mr slater walks in", "later"));
+        assert!(!contains_word("the elsewheres of the frame", "elsewhere"));
+        assert!(contains_word("cut to black", "cut to"));
+    }
+
+    #[test]
+    fn hold_ending_accepts_several_phrasings() {
+        assert!(ends_on_hold("ends on a static hold of the can"));
+        assert!(ends_on_hold("the can holds on the centre"));
+        assert!(ends_on_hold("it comes to a hold"));
+        assert!(!ends_on_hold("the can spins wildly with no pause"));
+        // Not fooled by a longer word that merely contains "hold".
+        assert!(!ends_on_hold("the household is quiet"));
+    }
+
+    #[test]
+    fn a_holds_on_ending_passes() {
+        let model = h3_max();
+        let plan_json = format!(
+            r#"{{"world":"{WORLD}","shots":[
+  {{"title":"A","action":"The can beads with condensation, then holds on the centred can.","seconds":15,"camera":null,"modelId":"{model}","role":"start"}},
+  {{"title":"B","action":"Opens on the same static hold, then the drop falls.","seconds":15,"camera":null,"modelId":"{model}","role":"end"}}
+]}}"#
+        );
+        let out = plan(
+            &fake(&plan_json),
+            "sys",
+            "b",
+            30.0,
+            UseCase::ImageToVideo,
+            &[model.to_string()],
+        );
+        assert!(out.is_ok(), "got {out:?}");
     }
 
     #[test]

@@ -10,7 +10,8 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **A model's duration control now offers the provider's real range instead of a generic
   ladder capped at 12 seconds.** MiniMax H3 Max offers 5–15 seconds, Wan 3.0 Prime 2–30, and
-  every free-form-duration model its actual ceiling; switching to a model clamps a staged
+  every model whose provider publishes or documents a range its real ceiling (models that
+  publish neither still use the generic ladder); switching to a model clamps a staged
   duration into its range, and a value outside the range is clamped with an advisory before
   anything is priced, so the estimate is for what will actually render. The keyless model
   audit gains a check that a model's documented range never exceeds the range fal publishes.

@@ -72,9 +72,10 @@ and flags a low one, and a below-floor join can be regenerated from the same fra
 shown first — or, with an optional toggle, retried automatically up to twice. Drafting is
 free on local Ollama and costs one short completion on a hosted key; no clip is generated
 until the summed total is shown, and a shot with no published price is marked rather than
-counted as free. Duration controls offer each model's real range (H3 Max 5–15s, Wan 3.0
-Prime 2–30s) rather than a generic ladder, and a value outside the range is clamped with an
-advisory before it is priced.
+counted as free. Duration controls offer the range a model's provider publishes or documents
+(H3 Max 5–15s, Wan 3.0 Prime 2–30s) rather than a generic ladder — models that publish neither
+fall back to the generic ladder — and a value outside the range is clamped with an advisory
+before it is priced.
 
 Everything a request depends on is checked against the provider's own published
 schema before anything is sent: which inputs the endpoint accepts, which values

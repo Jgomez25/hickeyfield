@@ -74,21 +74,21 @@ export function ladderFromRange(
   for (let v = min; v <= max; v++) all.push(v);
 
   const MAX_CHIPS = 12;
-  let kept = all;
-  if (all.length > MAX_CHIPS) {
-    // Thin by an even stride, then force the endpoints back in so the ceiling
-    // (the whole point of the range) is always offered.
-    const stride = (all.length - 1) / (MAX_CHIPS - 1);
-    const picks = new Set<number>();
-    for (let i = 0; i < MAX_CHIPS; i++) picks.add(all[Math.round(i * stride)]);
-    picks.add(min);
-    picks.add(max);
-    kept = [...picks];
-  }
+  // A range that already fits needs no thinning; the default (when in range) is
+  // already among the whole-second values.
+  if (all.length <= MAX_CHIPS) return all;
 
   const d = defaultDuration;
-  if (d != null && d >= min && d <= max && !kept.includes(d)) kept.push(d);
-  return kept.sort((a, b) => a - b);
+  // The endpoints and the default (when in range) are mandatory — they consume
+  // from the budget FIRST so adding the default can never push the ladder to a
+  // thirteenth chip. Whatever budget is left is filled by an even stride.
+  const kept = new Set<number>([min, max]);
+  if (d != null && d >= min && d <= max) kept.add(d);
+  const stride = (all.length - 1) / (MAX_CHIPS - 1);
+  for (let i = 0; i < MAX_CHIPS && kept.size < MAX_CHIPS; i++) {
+    kept.add(all[Math.round(i * stride)]);
+  }
+  return [...kept].sort((a, b) => a - b).slice(0, MAX_CHIPS);
 }
 
 /**

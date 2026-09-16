@@ -215,3 +215,80 @@ UI toggle `.storyboard-autoretry-toggle` (shown only when chaining). Tests:
   (`a_local_rewrite_completes_against_a_real_daemon` needs Ollama; `live_feeds_answer...` needs
   the live pricing network). They are pre-existing and outside this slice; all **ffmpeg sidecar**
   `--ignored` tests pass.
+
+---
+
+## REPAIR ROUND 1
+
+Surgical fixes for review findings M1 (dormant Major, money) plus minors m1/m2/m3/m4/m5.
+Every gate re-run below with the dummy-key env and Node 24 (results at the end).
+
+### M1 — regenerate/auto-retry admit an in-flight below-floor shot (double-bill)
+`src-tauri/src/commands.rs` — the regenerate guard (`generate_storyboard_inner`, loop at
+`:1557`) keyed only on the stored `joins_json` `pass == Some(false)`. Between submitting a
+regenerate and its settle the join still reads `pass == false` while a Queued/Running job
+already exists at that index, so a second regenerate was admitted — a duplicate in-flight job.
+- New shared helper `shot_in_flight(jobs, idx)` (`commands.rs:1086`): true iff a job at that
+  index is **non-terminal** (`!JobStatus::is_terminal()`), i.e. queued or running.
+- Guard restructured so the below-floor relaxation only fires for a **settled** low-join shot:
+  a started shot not in `below_floor` still errors `already started` (message preserved, so the
+  existing `a_retry_of_an_already_started_shot_is_rejected` stays green); a below-floor index
+  with an in-flight job now errors `still in flight` before it can resubmit.
+- **Auto-retry uses the same guard.** `src-tauri/src/chain.rs:408` (`maybe_auto_retry`): after
+  loading the set it calls `crate::commands::shot_in_flight(&jobs, i)` and returns without
+  submitting when a job at that index is still in flight (the attempt-bump still bounds the loop
+  across settles).
+- Tests (`commands.rs`): `a_below_floor_join_that_is_still_in_flight_is_refused` — Queued → refused
+  (`still in flight`), InProgress → refused (second regenerate while running), Completed below-floor
+  → admitted once (no in-flight/already-started refusal); `shot_in_flight_reads_only_non_terminal_rows`
+  — queued/running are in flight, Completed/Failed are not, a terminal row does not mask an in-flight
+  one at the same index. The pre-existing `a_below_floor_join_may_be_regenerated_but_a_passing_one_may_not`
+  and `a_retry_of_an_already_started_shot_is_rejected` remain green.
+
+### m5 — score scratch frame not cleaned up
+`src-tauri/src/chain.rs:319` (`score_join`): the `first{i}.png` scratch frame the score reads is
+now `std::fs::remove_file`'d after `first_frame`+`continuity_score` run (Ok or Err), while the
+`shot{i-1}.png` continuity frame the chain/render need is left in place.
+- Test (`--ignored`, real sidecar): `score_join_cleans_up_the_scratch_first_frame` synthesises a
+  prev frame + clip, scores the join, and asserts the frames dir has **no** `first*.png` while
+  `shot0.png` survives. Passes with the bundled `ffmpeg-aarch64-apple-darwin`.
+
+### m1 — ladder could emit 13 chips
+`ui/src/lib/variants.ts:66` (`ladderFromRange`): rewritten so the endpoints and the default (when
+in range) are mandatory and **consume from the 12-chip budget first**, then an even stride fills the
+remainder only while `size < MAX_CHIPS`. `<= 12` is now guaranteed by construction, deterministic,
+and always includes min/max/default. H3 Max `[5,15]` (unthinned) and Wan `[2,30]` unchanged.
+- vitest: `never emits more than twelve chips when the default is not a stride pick` — range
+  `[1,100]` default `6` (old code produced 13); asserts `<= 12`, endpoints + default present, all
+  in range, and determinism (same inputs → same ladder).
+
+### m2/m3 — cut-word/hold matching is a raw substring
+`crates/hickeyfield-core/src/storyboard.rs`: new `contains_word(hay, needle)` (`:569`) matches a
+whole word/phrase (bounded by a non-alphanumeric char or a string edge), used for `CUT_WORDS`
+(`:624`); new `ends_on_hold(action)` (`:595`) accepts whole-word `hold`/`holds` (so "static hold",
+"holds on", "comes to a hold" all pass) at the `NoHoldEnding` check (`:643`).
+- Tests: `a_cut_word_matches_only_whole_words` (`later` fires in prose but not inside `slater`;
+  `elsewhere` not inside `elsewheres`; `meanwhile`/`cut to` still fire), `hold_ending_accepts_several_phrasings`
+  (`household` does NOT count), `a_holds_on_ending_passes` (a "holds on" ending plans clean). The
+  existing `a_cut_word_is_rejected` / `a_non_final_shot_without_a_hold_is_rejected` remain green.
+
+### m4 — doc overstatement
+`CHANGELOG.md:12` and `README.md:75`: "every free-form-duration model its actual ceiling" / "each
+model's real range" → "every model whose provider publishes or documents a range its real ceiling
+(models that publish neither still use the generic ladder)". Provenance still PASS.
+
+### Repair-round gate (this machine, dummy-key env, Node 24)
+- `cargo fmt --all --check` → clean (`FMT_OK`).
+- `cargo test --workspace` → **924 passed, 0 failed** (749 core + 6 + 2 + 167 tauri; 16+1+... ignored).
+- `cargo clippy --workspace --all-targets -- -D warnings` → clean.
+- `cargo test -p hickeyfield-core --lib ffmpeg -- --ignored` → **7 passed** (real sidecar).
+- `cargo test -p hickeyfield-tauri --lib score_join_cleans_up_the_scratch_first_frame -- --ignored`
+  → **1 passed** (real sidecar, no leftover `first*.png`).
+- `./scripts/lint-provenance.py` → PASS.
+- keyless `audit_fal` → **RANGE MISMATCH (0)**, CHECKED (70), checks 1–6 unchanged (11/2/21/0/0).
+- `cd ui && pnpm test` → **302 passed** (+1); `pnpm build` → built (exit 0).
+
+### Known limitations after this round (not hidden)
+- The manual "Regenerate from frame" button is still deferred UI polish (unchanged from the base
+  claim); the M1 money-path guard it will call is now correct and tested.
+- Thresholds remain reasoned, not measured (Q6/N2) — unchanged, human-run calibration.

@@ -1077,6 +1077,17 @@ fn fmt_secs(v: f64) -> String {
     }
 }
 
+/// Whether any job for this storyboard shot index is still in flight — queued
+/// or running, i.e. not [`JobStatus::is_terminal`]. A regenerate or an
+/// auto-retry MUST refuse while one is in flight: a second submit at the same
+/// index would mint a duplicate in-flight job and double-bill the shot (M1).
+/// A `Completed`/`Failed`/`Canceled`/moderation-refused row is terminal, so it
+/// does not block a legitimate regenerate of a settled low-join shot.
+pub(crate) fn shot_in_flight(jobs: &[JobSet], idx: u32) -> bool {
+    jobs.iter()
+        .any(|j| j.shot_index == Some(idx) && !j.status.is_terminal())
+}
+
 pub(crate) fn submit_one(
     store: &Arc<crate::store::SqliteStore>,
     prices: &Arc<crate::pricing::Prices>,
@@ -1547,9 +1558,28 @@ fn generate_storyboard_inner(
                 let started = existing_jobs.iter().any(|j| {
                     j.shot_index == Some(idx) && j.status != hickeyfield_core::JobStatus::Failed
                 });
-                if started && !below_floor.contains(&idx) {
+                if !started {
+                    continue;
+                }
+                // A started shot is only regenerable via the below-floor
+                // relaxation; a passing/unscored started shot is still refused.
+                if !below_floor.contains(&idx) {
                     return Err(format!(
                         "shot {} has already started — refusing to resubmit it.",
+                        idx + 1
+                    ));
+                }
+                // M1: the below-floor verdict comes from `joins_json`, which is
+                // only refreshed when a shot settles and is re-scored. Between
+                // submitting a regenerate and its settle the join still reads
+                // `pass == false` while a Queued/Running job already exists at
+                // this index — so admitting a second regenerate would mint a
+                // duplicate in-flight job (a double-bill). Only a **settled**
+                // (terminal) low-join shot is eligible; an in-flight job at this
+                // index refuses.
+                if shot_in_flight(&existing_jobs, idx) {
+                    return Err(format!(
+                        "shot {} is still in flight — refusing to resubmit it.",
                         idx + 1
                     ));
                 }
@@ -3196,6 +3226,118 @@ mod tests {
             err.contains("already started"),
             "a passing join must not resubmit: {err}"
         );
+    }
+
+    #[test]
+    fn a_below_floor_join_that_is_still_in_flight_is_refused() {
+        // M1: the below-floor relaxation keys on the stored join verdict, which
+        // is only refreshed when a shot re-settles. If a regenerate is already
+        // in flight (Queued/InProgress) at that index the join still reads
+        // pass==false, so a second regenerate would mint a duplicate in-flight
+        // job — a double-bill. An in-flight job at the index MUST refuse before
+        // the relaxation is considered; only a settled (terminal) low-join shot
+        // is eligible, and a second call while it is in flight is refused.
+        let below = crate::store::JoinRecord {
+            index: 2,
+            kind: "continuity".into(),
+            applied: true,
+            ssim: Some(0.4),
+            psnr: Some(20.0),
+            dy: Some(2.0),
+            du: Some(1.0),
+            dv: Some(1.0),
+            pass: Some(false),
+            attempt: 0,
+        };
+        let make_state = |status: hickeyfield_core::JobStatus| {
+            let state = test_state();
+            let sid = "sb-inflight".to_string();
+            let joins = serde_json::to_string(&vec![below.clone()]).unwrap();
+            state
+                .store
+                .upsert_storyboard(&crate::store::Storyboard {
+                    id: sid.clone(),
+                    brief: "b".into(),
+                    target_seconds: 20.0,
+                    plan_json: kling_plan_json(4, 5.0),
+                    created_at: now_secs(),
+                    chained: true,
+                    shots_json: None,
+                    overlap_seconds: Some(0.0),
+                    joins_json: Some(joins),
+                    auto_retry: false,
+                })
+                .unwrap();
+            let mut job = blank_job("inflight-2");
+            job.storyboard_id = Some(sid.clone());
+            job.shot_index = Some(2);
+            job.status = status;
+            state.store.upsert(&job).unwrap();
+            (state, sid)
+        };
+        let input = |sid: &str| StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 20.0,
+            plan_json: Some(kling_plan_json(4, 5.0)),
+            shot_indices: Some(vec![2]),
+            storyboard_id: Some(sid.to_string()),
+            chained: false,
+            overlap_seconds: None,
+            shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
+            auto_retry: false,
+        };
+
+        // Queued in flight → refused with "still in flight" (never admitted).
+        let (state, sid) = make_state(hickeyfield_core::JobStatus::Queued);
+        let err = generate_storyboard_inner(&state, input(&sid)).unwrap_err();
+        assert!(err.contains("still in flight"), "queued must refuse: {err}");
+
+        // InProgress in flight → refused (a second regenerate while the prior
+        // one is running).
+        let (state, sid) = make_state(hickeyfield_core::JobStatus::InProgress);
+        let err = generate_storyboard_inner(&state, input(&sid)).unwrap_err();
+        assert!(
+            err.contains("still in flight"),
+            "in-progress must refuse: {err}"
+        );
+
+        // Terminal (Completed) below-floor → NOT refused by the guard (the one
+        // eligible case). It may still fail later at submit, but never with an
+        // in-flight or already-started refusal.
+        let (state, sid) = make_state(hickeyfield_core::JobStatus::Completed);
+        if let Err(e) = generate_storyboard_inner(&state, input(&sid)) {
+            assert!(
+                !e.contains("still in flight") && !e.contains("already started"),
+                "a settled low join must be regenerable once: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn shot_in_flight_reads_only_non_terminal_rows() {
+        // The shared guard helper: a queued/running row is in flight; a
+        // Completed/Failed/Canceled row is not (terminal).
+        let mut queued = blank_job("q");
+        queued.shot_index = Some(1);
+        queued.status = hickeyfield_core::JobStatus::Queued;
+        let mut running = blank_job("r");
+        running.shot_index = Some(1);
+        running.status = hickeyfield_core::JobStatus::InProgress;
+        let mut done = blank_job("d");
+        done.shot_index = Some(1);
+        done.status = hickeyfield_core::JobStatus::Completed;
+        let mut failed = blank_job("f");
+        failed.shot_index = Some(1);
+        failed.status = hickeyfield_core::JobStatus::Failed;
+
+        assert!(shot_in_flight(&[queued.clone()], 1));
+        assert!(shot_in_flight(&[running.clone()], 1));
+        assert!(!shot_in_flight(&[done.clone()], 1));
+        assert!(!shot_in_flight(&[failed.clone()], 1));
+        // A terminal row does not mask an in-flight one at the same index.
+        assert!(shot_in_flight(&[done.clone(), running.clone()], 1));
+        // A different index is not in flight.
+        assert!(!shot_in_flight(&[queued], 2));
     }
 
     #[test]

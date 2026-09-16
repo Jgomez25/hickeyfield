@@ -173,6 +173,27 @@ describe("durationLadder", () => {
     expect(ladder.every((v) => v >= 2 && v <= 30)).toBe(true);
   });
 
+  it("never emits more than twelve chips when the default is not a stride pick", () => {
+    // A wide range whose even stride lands on exactly twelve distinct chips
+    // that do NOT include the default (6): the old code pushed the default on
+    // top for a thirteenth chip. The default and both endpoints must still be
+    // present, and the ladder must stay <= 12.
+    const ladder = durationLadder(
+      caps4({ durations: [], durationRange: [1, 100], defaultDuration: 6 }),
+    );
+    expect(ladder.length).toBeLessThanOrEqual(12);
+    expect(ladder[0]).toBe(1);
+    expect(ladder[ladder.length - 1]).toBe(100);
+    expect(ladder).toContain(6);
+    expect(ladder.every((v) => v >= 1 && v <= 100)).toBe(true);
+    // Deterministic: the same inputs always yield the same ladder.
+    expect(
+      durationLadder(
+        caps4({ durations: [], durationRange: [1, 100], defaultDuration: 6 }),
+      ),
+    ).toEqual(ladder);
+  });
+
   it("keeps the generic ladder when no range is known", () => {
     expect(
       durationLadder(caps4({ durations: [], durationRange: null })),

@@ -310,9 +310,14 @@ pub fn score_join(
                     .join(&sid)
                     .join("frames")
                     .join(format!("first{i}.png"));
-                match ffmpeg::first_frame(&bin, Path::new(&clip), &first, None)
-                    .and_then(|_| ffmpeg::continuity_score(&bin, &prev_frame, &first))
-                {
+                let scored = ffmpeg::first_frame(&bin, Path::new(&clip), &first, None)
+                    .and_then(|_| ffmpeg::continuity_score(&bin, &prev_frame, &first));
+                // The `first{i}.png` frame is a scratch input to the score only
+                // — unlike `shot{i}.png` (the continuity frame the chain and the
+                // render still need), nothing reads it again, so remove it once
+                // scored so attempts of a long set do not leave disk cruft.
+                let _ = std::fs::remove_file(&first);
+                match scored {
                     Ok(m) => JoinScore {
                         ssim: Some(m.ssim),
                         psnr: Some(m.psnr),
@@ -394,6 +399,16 @@ pub fn maybe_auto_retry(
         return;
     }
     let i = record.index;
+    // M1: use the same in-flight guard as the manual regenerate path. If a job
+    // at this index is still queued or running (e.g. a prior auto-retry attempt
+    // has not settled yet), a second submit would mint a duplicate in-flight
+    // job and double-bill the shot. Only a settled (terminal) low-join shot is
+    // eligible; the bumped `attempt` below still bounds the loop across settles.
+    if let Ok(jobs) = store.jobs_in_storyboard(&sid) {
+        if crate::commands::shot_in_flight(&jobs, i as u32) {
+            return;
+        }
+    }
     // The conditioning frame is the previous shot's continuity frame, kept on
     // disk since it was extracted (identical pixels — a regenerate changes only
     // the seed).
@@ -815,6 +830,91 @@ mod tests {
         assert_eq!(rec.pass, None, "unscored is not a failed join");
         // And it does not warrant an auto-retry even with the toggle on.
         assert!(!should_auto_retry(&rec, true));
+    }
+
+    #[test]
+    #[ignore = "spawns the bundled sidecar; run with --ignored"]
+    fn score_join_cleans_up_the_scratch_first_frame() {
+        // m5: `first{i}.png` is a scratch input to the score only — nothing
+        // reads it again — so a scored join must not leave it behind, while the
+        // `shot{i-1}.png` continuity frame the chain/render need must survive.
+        use std::process::Command;
+        let sidecar_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+        let bin =
+            ffmpeg::locate(&sidecar_dir).expect("bundled sidecar; run scripts/fetch-ffmpeg.sh");
+
+        let root = std::env::temp_dir().join(format!("hf-scorejoin-{}", std::process::id()));
+        let frames = root.join("sid").join("frames");
+        std::fs::create_dir_all(&frames).unwrap();
+        // The previous shot's continuity frame (kept on disk) and a real clip
+        // for shot 1 to score its first frame against.
+        let prev = frames.join("shot0.png");
+        let synth_png = |out: &std::path::Path| {
+            let ok = Command::new(&bin)
+                .args([
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc=duration=1:size=320x240:rate=5",
+                    "-frames:v",
+                    "1",
+                ])
+                .arg(out)
+                .status()
+                .expect("synth png")
+                .success();
+            assert!(ok, "synth png failed");
+        };
+        synth_png(&prev);
+        let clip = root.join("shot1.mp4");
+        let ok = Command::new(&bin)
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=1:size=320x240:rate=5",
+            ])
+            .arg(&clip)
+            .status()
+            .expect("synth clip")
+            .success();
+        assert!(ok, "synth clip failed");
+
+        let store: Arc<SqliteStore> = Arc::new(SqliteStore::in_memory().unwrap());
+        let model = an_i2v_model();
+        chained_board(&store, "sid", &model.id, 2);
+        let mut shot1 = settled_shot("sid", 1);
+        shot1.results = vec![Output {
+            url: "https://x/c.mp4".into(),
+            kind: OutputKind::Video,
+            local_path: Some(clip.to_string_lossy().into_owned()),
+        }];
+        shot1.media.push(MediaRef::local(
+            MediaRole::Start,
+            prev.to_string_lossy().into_owned(),
+        ));
+
+        let rec = score_join(&store, &sidecar_dir, &root, &shot1)
+            .expect("a continuity join records something");
+        assert!(rec.ssim.is_some(), "the real sidecar should score the join");
+
+        // The scratch first frame is gone; the continuity frame survives.
+        let leftovers: Vec<_> = std::fs::read_dir(&frames)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("first"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no first*.png scratch frame must remain, found {leftovers:?}"
+        );
+        assert!(
+            prev.is_file(),
+            "the shot0.png continuity frame must survive"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
