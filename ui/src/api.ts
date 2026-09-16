@@ -718,6 +718,13 @@ export async function generateStoryboard(input: {
   targetSeconds: number;
   planJson: string;
   shots: SubmitInput[];
+  /** The plan index each submitted shot maps to. Omitted on the first
+   * generate-all (the shots are the whole plan in order); on a retry it carries
+   * the original indices of the failed shots. */
+  shotIndices?: number[];
+  /** An existing storyboard to write a retry into, so retried shots join the
+   * original group instead of starting a new one. */
+  storyboardId?: string;
 }): Promise<StoryboardResult> {
   try {
     return await invoke<StoryboardResult>("generate_storyboard", {

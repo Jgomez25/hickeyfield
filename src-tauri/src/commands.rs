@@ -1207,11 +1207,27 @@ pub fn plan_storyboard(
 pub struct StoryboardGenerateInput {
     pub brief: String,
     pub target_seconds: f64,
-    /// The serialised `StoryboardPlan` the UI holds, stored for S14. Optional so
-    /// a caller that only has shots still records a group.
+    /// The serialised `StoryboardPlan` the UI holds, stored for S14. On a retry
+    /// this is the FULL original plan (every shot the user saw and that
+    /// validated), NOT the failed subset — the server re-validates it whole.
     #[serde(default)]
     pub plan_json: Option<String>,
+    /// The shots to actually submit this call. On the first generate-all this is
+    /// every shot; on a retry it is only the failed subset.
     pub shots: Vec<SubmitInput>,
+    /// The plan index each entry in `shots` maps to. `None` means "the shots are
+    /// the whole plan in order" (`0..shots.len()`), the first-generate case. On a
+    /// retry this carries the original indices of the failed shots, so each
+    /// resubmitted shot is matched to its plan index (model/duration per index)
+    /// and tagged with its original `shot_index`.
+    #[serde(default)]
+    pub shot_indices: Option<Vec<u32>>,
+    /// An existing storyboard group to write into. `None` mints a fresh group
+    /// (first generate-all); `Some` makes a retry write its new job rows into the
+    /// original set with their original `shot_index`, instead of starting a
+    /// separate group.
+    #[serde(default)]
+    pub storyboard_id: Option<String>,
 }
 
 /// One shot's fate in a generate-all batch. A shot that failed (a refusal, a
@@ -1294,11 +1310,32 @@ fn generate_storyboard_inner(
         ));
     }
 
+    let reg = registry();
+
+    // The plan index each submitted shot maps to. `None` (first generate-all)
+    // means the shots ARE the whole plan in order; a retry carries the failed
+    // shots' original indices so each resubmit is matched to its plan slot.
+    let is_retry_subset = input.shot_indices.is_some();
+    let indices: Vec<u32> = match &input.shot_indices {
+        Some(ix) => ix.clone(),
+        None => (0..input.shots.len() as u32).collect(),
+    };
+    if indices.len() != input.shots.len() {
+        return Err(format!(
+            "shot_indices has {} entries but {} shots were submitted.",
+            indices.len(),
+            input.shots.len()
+        ));
+    }
+
     // Re-validate the plan the UI showed, server-side, via the same
     // `storyboard::validate` the draft path used — so a tampered/direct caller
-    // cannot submit shots the composer would have refused. When a plan is
-    // present it is authoritative: the submitted shot list must match it exactly
-    // (no shot injected beyond the plan the user saw and priced).
+    // cannot submit shots the composer would have refused. On a retry the FULL
+    // original plan is sent and re-validated whole (3..=8 shots, ±10% sum); each
+    // submitted shot is then matched to its plan index by model, duration, and
+    // route, and only that subset is submitted. This closes M2: a retry of
+    // fewer than 3 shots is no longer re-count/re-sum-gated against a shrunken
+    // list — the full validated plan is the authority.
     if let Some(plan_json) = input.plan_json.as_deref() {
         let plan: hickeyfield_core::storyboard::StoryboardPlan = serde_json::from_str(plan_json)
             .map_err(|e| format!("plan is not a valid storyboard: {e}"))?;
@@ -1306,45 +1343,115 @@ fn generate_storyboard_inner(
             .ok_or_else(|| format!("plan names an unknown use case: {}", plan.use_case))?;
         hickeyfield_core::storyboard::validate(&plan.shots, plan.target_seconds, uc)
             .map_err(|e| e.to_string())?;
-        if plan.shots.len() != input.shots.len() {
+        // On the first generate-all (no explicit indices) the submitted list is
+        // the whole plan: it must match one-for-one, so no shot is injected
+        // beyond the plan the user saw and priced.
+        if !is_retry_subset && plan.shots.len() != input.shots.len() {
             return Err(format!(
                 "submitted {} shots but the plan has {} — refusing to generate a set that does not match the plan.",
                 input.shots.len(),
                 plan.shots.len()
             ));
         }
-        for (i, shot) in input.shots.iter().enumerate() {
-            if shot.model_id != plan.shots[i].model_id {
+        // Pin each submitted shot to its plan slot: model, priced duration, and
+        // (when set) route must all come from the plan — so the total that bills
+        // is the total the re-validated plan implies, not a tampered magnitude.
+        for (shot, &idx) in input.shots.iter().zip(indices.iter()) {
+            let pi = idx as usize;
+            let planned = plan.shots.get(pi).ok_or_else(|| {
+                format!(
+                    "shot index {idx} is out of range for a plan of {} shots.",
+                    plan.shots.len()
+                )
+            })?;
+            if shot.model_id != planned.model_id {
                 return Err(format!(
                     "shot {} submits model {}, which is not in the plan (plan shot {} is {}).",
-                    i + 1,
+                    idx + 1,
                     shot.model_id,
-                    i + 1,
-                    plan.shots[i].model_id
+                    idx + 1,
+                    planned.model_id
                 ));
+            }
+            // Priced duration must equal the plan's clamped seconds for this
+            // index (±0), so a direct caller cannot pass validate with a cheap
+            // in-catalogue duration while billing an inflated one.
+            if shot.settings.duration != Some(planned.seconds) {
+                return Err(format!(
+                    "shot {} submits duration {:?}s but the plan clamped it to {}s.",
+                    idx + 1,
+                    shot.settings.duration,
+                    planned.seconds
+                ));
+            }
+            // A pinned route must belong to the plan's model.
+            if let Some(route_id) = shot.route_id.as_deref() {
+                let model = reg
+                    .get(&planned.model_id)
+                    .ok_or_else(|| format!("plan shot {} names an unknown model.", idx + 1))?;
+                if !model.routes.iter().any(|r| r.id() == route_id) {
+                    return Err(format!(
+                        "shot {} route {} does not belong to the plan model {}.",
+                        idx + 1,
+                        route_id,
+                        planned.model_id
+                    ));
+                }
             }
         }
     }
 
-    let sid = mint_storyboard_id();
-    let storyboard = crate::store::Storyboard {
-        id: sid.clone(),
-        brief: input.brief.clone(),
-        target_seconds: input.target_seconds,
-        // Fall back to a minimal object so a group is always readable, but the
-        // UI normally sends the full edited plan (roles + continuity) for S14.
-        plan_json: input.plan_json.clone().unwrap_or_else(|| "{}".to_string()),
-        created_at: now_secs(),
+    // Determine the group id: a retry writes into the existing set, so its new
+    // job rows join the original storyboard; a first generate mints a fresh group.
+    let sid = match input.storyboard_id.clone() {
+        Some(existing) => {
+            if state
+                .store
+                .storyboard(&existing)
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                return Err(format!("no such storyboard to retry into: {existing}"));
+            }
+            // A shot that already started (a non-Failed row at that index) must
+            // never be resubmitted — a successful shot cannot be double-billed.
+            let existing_jobs = state
+                .store
+                .jobs_in_storyboard(&existing)
+                .map_err(|e| e.to_string())?;
+            for &idx in &indices {
+                if existing_jobs.iter().any(|j| {
+                    j.shot_index == Some(idx) && j.status != hickeyfield_core::JobStatus::Failed
+                }) {
+                    return Err(format!(
+                        "shot {} has already started — refusing to resubmit it.",
+                        idx + 1
+                    ));
+                }
+            }
+            existing
+        }
+        None => {
+            let sid = mint_storyboard_id();
+            let storyboard = crate::store::Storyboard {
+                id: sid.clone(),
+                brief: input.brief.clone(),
+                target_seconds: input.target_seconds,
+                // Fall back to a minimal object so a group is always readable, but
+                // the UI normally sends the full edited plan (roles + continuity).
+                plan_json: input.plan_json.clone().unwrap_or_else(|| "{}".to_string()),
+                created_at: now_secs(),
+            };
+            state
+                .store
+                .upsert_storyboard(&storyboard)
+                .map_err(|e| e.to_string())?;
+            sid
+        }
     };
-    state
-        .store
-        .upsert_storyboard(&storyboard)
-        .map_err(|e| e.to_string())?;
 
-    let reg = registry();
     let mut outcomes = Vec::with_capacity(input.shots.len());
-    for (i, shot) in input.shots.iter().enumerate() {
-        let idx = i as u32;
+    for (shot, &idx) in input.shots.iter().zip(indices.iter()) {
         let outcome = match reg.get(&shot.model_id) {
             None => ShotOutcome {
                 shot_index: idx,
@@ -2247,6 +2354,8 @@ mod tests {
             // re-validation (which would reject unknown models *before* the loop)
             // is covered separately by `generate_rejects_a_plan_with_a_bad_model`.
             plan_json: None,
+            shot_indices: None,
+            storyboard_id: None,
             shots: vec![shot_input("no-such-model-a"), shot_input("no-such-model-b")],
         };
         // Call the inner logic directly with a plain &AppState (the #[command]
@@ -2278,6 +2387,8 @@ mod tests {
             brief: "b".into(),
             target_seconds: 24.0,
             plan_json: None,
+            shot_indices: None,
+            storyboard_id: None,
             shots: vec![
                 shot_input("nope-a"),
                 shot_input("nope-b"),
@@ -2391,6 +2502,8 @@ mod tests {
             brief: "x".repeat(MAX_BRIEF_BYTES + 1),
             target_seconds: 30.0,
             plan_json: None,
+            shot_indices: None,
+            storyboard_id: None,
             shots: vec![shot_input("nope")],
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
@@ -2405,6 +2518,8 @@ mod tests {
             brief: "b".into(),
             target_seconds: 30.0,
             plan_json: Some("x".repeat(MAX_PLAN_JSON_BYTES + 1)),
+            shot_indices: None,
+            storyboard_id: None,
             shots: vec![shot_input("nope")],
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
@@ -2420,6 +2535,8 @@ mod tests {
             brief: "b".into(),
             target_seconds: 30.0,
             plan_json: None,
+            shot_indices: None,
+            storyboard_id: None,
             shots: (0..9).map(|_| shot_input("nope")).collect(),
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
@@ -2441,6 +2558,8 @@ mod tests {
             brief: "b".into(),
             target_seconds: 30.0,
             plan_json: Some(bad_plan.into()),
+            shot_indices: None,
+            storyboard_id: None,
             shots: vec![
                 shot_input("no-such-model"),
                 shot_input("no-such-model"),
@@ -2486,9 +2605,217 @@ mod tests {
             brief: "b".into(),
             target_seconds: 30.0,
             plan_json: Some(plan),
+            shot_indices: None,
+            storyboard_id: None,
             shots: (0..4).map(|_| shot_input(&model)).collect(),
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("does not match the plan"), "got: {err}");
+    }
+
+    /// A full, valid `text-to-video` plan of `n` `kling3_0` shots of `secs`
+    /// seconds each, summing to `n*secs` (the target the tests pass). `kling3_0`
+    /// is runnable for the tab and carries both a fal route (has an adapter) and
+    /// a Vaig route (`vaig:klingai/kling-v3.0`, no adapter) — the latter lets a
+    /// retry test drive `submit_one` to a deterministic, offline `PinUnusable`
+    /// error instead of a network POST.
+    fn kling_plan_json(n: usize, secs: f64) -> String {
+        let shots: Vec<String> = (0..n)
+            .map(|_| {
+                format!(
+                    r#"{{"title":"t","prompt":"p","seconds":{secs},"camera":null,"modelId":"kling3_0","role":"middle"}}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"brief":"b","targetSeconds":{},"useCase":"text-to-video","shots":[{}]}}"#,
+            (n as f64) * secs,
+            shots.join(",")
+        )
+    }
+
+    fn kling_shot(secs: f64, route_id: Option<&str>) -> SubmitInput {
+        SubmitInput {
+            model_id: "kling3_0".into(),
+            route_id: route_id.map(str::to_string),
+            prompt: "a shot".into(),
+            preset_id: None,
+            settings: SettingsDto {
+                enhance: false,
+                duration: Some(secs),
+                ..Default::default()
+            },
+            media: Vec::new(),
+            rewriter: None,
+            final_prompt: Some("a shot, wide.".into()),
+        }
+    }
+
+    #[test]
+    fn a_retry_subset_plan_is_rejected_with_a_clear_error() {
+        // M2 (the old bug): repair-1's retry sent a `plan_json` built from ONLY
+        // the failed subset with the full target, so the server re-ran
+        // `storyboard::validate` on a sub-3-shot list and rejected the retry with
+        // an unrelated `ShotCount`/`DurationSum` error. This asserts that a
+        // subset plan (fewer than 3 shots) IS still rejected — the fix's contract
+        // is that the UI must instead send the FULL plan (proven by the next
+        // test), so a subset plan reaching here is a tampered/legacy caller and
+        // the error must be the honest count error, not a silent accept.
+        let state = test_state();
+        let input = StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 5.0,
+            plan_json: Some(kling_plan_json(1, 5.0)),
+            shot_indices: Some(vec![0]),
+            storyboard_id: None,
+            shots: vec![kling_shot(5.0, None)],
+        };
+        let err = generate_storyboard_inner(&state, input).unwrap_err();
+        assert!(err.contains("3 to 8 shots"), "got: {err}");
+        // Offline: rejected before any store write.
+        assert_eq!(state.store.all().unwrap().len(), 0, "nothing was written");
+    }
+
+    #[test]
+    fn a_retry_with_the_full_plan_targets_the_existing_group_and_only_the_failed_index() {
+        // M2 fix. A 4-shot plan where shot 2 failed: the retry sends the FULL
+        // original plan (all 4 shots, so `validate` passes: count 4, sum 20 ==
+        // target) plus `shot_indices=[2]` and the existing `storyboard_id`. The
+        // server re-validates the full plan, matches shot 2 to plan index 2 by
+        // model + duration, and submits ONLY that one shot into the SAME group
+        // with `shot_index` 2 — no new storyboard is minted, and shots 0/1/3 are
+        // untouched. The single submit is driven offline via the pinned Vaig
+        // route (no adapter → `PinUnusable`, no network POST), so the outcome is
+        // an honest error but its index and group targeting are exactly right.
+        let state = test_state();
+        let sid = mint_storyboard_id();
+        state
+            .store
+            .upsert_storyboard(&crate::store::Storyboard {
+                id: sid.clone(),
+                brief: "b".into(),
+                target_seconds: 20.0,
+                plan_json: kling_plan_json(4, 5.0),
+                created_at: now_secs(),
+            })
+            .unwrap();
+        // Seed the first-generate outcome: shots 0/1/3 started (Queued), shot 2
+        // failed. Shot 2's Failed row is retryable; the others must be left alone.
+        for idx in 0..4u32 {
+            let mut job = blank_job(&format!("first-{idx}"));
+            job.storyboard_id = Some(sid.clone());
+            job.shot_index = Some(idx);
+            job.status = if idx == 2 {
+                hickeyfield_core::JobStatus::Failed
+            } else {
+                hickeyfield_core::JobStatus::Queued
+            };
+            state.store.upsert(&job).unwrap();
+        }
+
+        let input = StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 20.0,
+            plan_json: Some(kling_plan_json(4, 5.0)),
+            shot_indices: Some(vec![2]),
+            storyboard_id: Some(sid.clone()),
+            // The pinned Vaig route belongs to `kling3_0` (so the route-pin
+            // passes) but has no adapter, so `route::resolve` fails offline.
+            shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
+        };
+        let out = generate_storyboard_inner(&state, input).expect("retry is accepted");
+
+        // No new group was minted: the retry wrote into the existing storyboard.
+        assert_eq!(out.storyboard_id, sid, "retry joined the original group");
+        // Exactly one shot was targeted, and it is the failed index 2.
+        assert_eq!(out.shots.len(), 1, "only the failed shot was submitted");
+        assert_eq!(
+            out.shots[0].shot_index, 2,
+            "the failed index, not a re-based 0"
+        );
+        // It reached the submit stage (offline `PinUnusable`, not a validation
+        // rejection): the retry is no longer blocked by count/sum re-gating.
+        let err = out.shots[0].error.as_deref().unwrap_or("");
+        assert!(
+            err.contains("client") || err.contains("key") || err.contains("provider"),
+            "reached submit_one's route resolve, got: {err}"
+        );
+        // The first-generate rows are untouched: still 4 originals + nothing new
+        // written (the pinned route fails before submit_one's own upsert).
+        let rows = state.store.jobs_in_storyboard(&sid).unwrap();
+        assert_eq!(rows.len(), 4, "the successful shots were not disturbed");
+    }
+
+    #[test]
+    fn a_retry_of_an_already_started_shot_is_rejected() {
+        // M2 fix, money honesty: a successful shot must never be resubmitted. If
+        // a retry names an index whose row already started (a non-Failed job in
+        // the set), the server refuses it BEFORE any submit — so a shot cannot be
+        // double-billed even by a direct caller.
+        let state = test_state();
+        let sid = mint_storyboard_id();
+        state
+            .store
+            .upsert_storyboard(&crate::store::Storyboard {
+                id: sid.clone(),
+                brief: "b".into(),
+                target_seconds: 20.0,
+                plan_json: kling_plan_json(4, 5.0),
+                created_at: now_secs(),
+            })
+            .unwrap();
+        // Shot 2 already STARTED (Queued, not Failed).
+        let mut job = blank_job("started-2");
+        job.storyboard_id = Some(sid.clone());
+        job.shot_index = Some(2);
+        job.status = hickeyfield_core::JobStatus::Queued;
+        state.store.upsert(&job).unwrap();
+
+        let input = StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 20.0,
+            plan_json: Some(kling_plan_json(4, 5.0)),
+            shot_indices: Some(vec![2]),
+            storyboard_id: Some(sid.clone()),
+            shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
+        };
+        let err = generate_storyboard_inner(&state, input).unwrap_err();
+        assert!(err.contains("already started"), "got: {err}");
+    }
+
+    #[test]
+    fn a_retry_shot_whose_duration_does_not_match_the_plan_is_rejected() {
+        // Security L4: the priced duration must equal the plan's clamped seconds
+        // for that index (±0), so a direct caller cannot pass `validate` with a
+        // cheap in-catalogue duration while billing an inflated one.
+        let state = test_state();
+        let sid = mint_storyboard_id();
+        state
+            .store
+            .upsert_storyboard(&crate::store::Storyboard {
+                id: sid.clone(),
+                brief: "b".into(),
+                target_seconds: 20.0,
+                plan_json: kling_plan_json(4, 5.0),
+                created_at: now_secs(),
+            })
+            .unwrap();
+        let mut job = blank_job("first-2");
+        job.storyboard_id = Some(sid.clone());
+        job.shot_index = Some(2);
+        job.status = hickeyfield_core::JobStatus::Failed;
+        state.store.upsert(&job).unwrap();
+
+        let input = StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 20.0,
+            plan_json: Some(kling_plan_json(4, 5.0)),
+            shot_indices: Some(vec![2]),
+            storyboard_id: Some(sid.clone()),
+            // Plan clamped shot 2 to 5s, but this submits 30s.
+            shots: vec![kling_shot(30.0, None)],
+        };
+        let err = generate_storyboard_inner(&state, input).unwrap_err();
+        assert!(err.contains("clamped it to 5"), "got: {err}");
     }
 }

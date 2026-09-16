@@ -62,6 +62,8 @@ export function Storyboard({
     targetSeconds: number;
     planJson: string;
     shots: SubmitInput[];
+    shotIndices?: number[];
+    storyboardId?: string;
   }) => Promise<StoryboardResult>;
   /** Called after a successful generate-all (App switches to the Library). */
   onGenerated: (result: StoryboardResult) => void;
@@ -227,14 +229,27 @@ export function Storyboard({
   // Submit the shots at `indices` (in order) through the money-gated bridge and
   // return the per-shot result. Shared by generate-all and retry-failed so both
   // run the identical estimate + S6 guard + S7 verbatim-prompt path per shot.
+  //
+  // The `planJson` always carries the FULL plan (every shot the user saw and
+  // that validated), NEVER the submitted subset — the server re-validates the
+  // whole plan (3..=8 shots, ±10% sum) and then matches each submitted shot to
+  // its plan index. Sending a subset plan was the M2 bug: a sub-3-shot retry
+  // tripped the server's count/sum gate and never resubmitted.
+  //
+  // On the first generate-all every shot is submitted in order, so the shots ARE
+  // the plan and no `shotIndices`/`storyboardId` are sent (the server treats the
+  // list positionally, exactly as before). On a RETRY only the failed subset is
+  // submitted, so `retryStoryboardId` is passed: that makes the call send
+  // `shotIndices` (the original plan index of each submitted shot) and write the
+  // new job rows into the ORIGINAL group instead of minting a fresh one.
   const submitBatch = useCallback(
-    async (indices: number[]): Promise<StoryboardResult> => {
-      const batch = indices.map((i) => shots[i]);
+    async (indices: number[], retryStoryboardId?: string): Promise<StoryboardResult> => {
+      const isRetry = retryStoryboardId !== undefined;
       const plan: StoryboardPlan = {
         brief,
         targetSeconds,
         useCase: tab,
-        shots: batch,
+        shots, // the FULL plan, not just `indices`
       };
       const shotInputs: SubmitInput[] = indices.map((i) => {
         const s = shots[i];
@@ -254,6 +269,8 @@ export function Storyboard({
         targetSeconds,
         planJson: JSON.stringify(plan),
         shots: shotInputs,
+        shotIndices: isRetry ? indices : undefined,
+        storyboardId: retryStoryboardId,
       });
     },
     [shots, brief, targetSeconds, tab, models, settings, enhancer, finalPrompts, onGenerate],
@@ -288,16 +305,14 @@ export function Storyboard({
     setGenerating(true);
     setError(null);
     try {
-      // Resubmit ONLY the failed shots. The retried result's shotIndex is
-      // 0..indices.length-1; map it back onto the original shot indices so the
-      // merged outcome still speaks in the card numbering the user sees.
-      const retried = await submitBatch(indices);
-      const remapped = retried.shots.map((s) => ({
-        ...s,
-        shotIndex: indices[s.shotIndex],
-      }));
+      // Resubmit ONLY the failed shots, into the ORIGINAL storyboard group, and
+      // with the FULL plan so the server re-validates the whole plan (not the
+      // failed subset). The server tags each retried shot with its original plan
+      // index, so `retried.shots` already speak in the card numbering the user
+      // sees — no re-basing needed.
+      const retried = await submitBatch(indices, outcome?.storyboardId);
       // Merge: a previously-failed shot that now started replaces its old entry.
-      const byIndex = new Map(remapped.map((s) => [s.shotIndex, s]));
+      const byIndex = new Map(retried.shots.map((s) => [s.shotIndex, s]));
       const merged: StoryboardResult = {
         storyboardId: outcome?.storyboardId ?? retried.storyboardId,
         shots: (outcome?.shots ?? []).map((s) => byIndex.get(s.shotIndex) ?? s),

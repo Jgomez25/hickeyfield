@@ -722,19 +722,25 @@ export function mockPlanStoryboard(args: {
   };
 }
 
-/** Submit each mock shot as a job and report a per-shot outcome. */
+/** Submit each mock shot as a job and report a per-shot outcome. On a retry the
+ * caller passes `shotIndices` (the original plan index of each submitted shot)
+ * and `storyboardId` (the existing group), so the mock mirrors the server:
+ * outcomes carry the real plan indices and the batch joins the original group. */
 export function mockGenerateStoryboard(input: {
   brief: string;
   shots: SubmitInput[];
+  shotIndices?: number[];
+  storyboardId?: string;
 }): StoryboardResult {
-  const storyboardId = `sb-mock-${Date.now()}`;
+  const storyboardId = input.storyboardId ?? `sb-mock-${Date.now()}`;
   const shots = input.shots.map((shot, i) => {
+    const shotIndex = input.shotIndices?.[i] ?? i;
     try {
       const jobSetId = mockSubmit(shot);
-      return { shotIndex: i, jobSetId, error: null };
+      return { shotIndex, jobSetId, error: null };
     } catch (e) {
       return {
-        shotIndex: i,
+        shotIndex,
         jobSetId: null,
         error: e instanceof Error ? e.message : String(e),
       };

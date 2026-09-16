@@ -331,3 +331,116 @@ only Rust command logic + TS view logic + CSS; the S12 bundle path is unchanged.
 - Everything from the original claim's limitations list still stands (no
   render/stitch/last-frame — S14; continuity recorded not applied; no hosted
   JSON mode; `store::storyboard`/`jobs_in_storyboard` are the S14 surface).
+
+---
+
+## REPAIR ROUND 2
+
+Repair round 2 of 2 (the last). Fixed the re-review's **M2** (retry-failed rejected
+by the same-commit server re-validation) properly, and closed security **L4** (priced
+duration/route not pinned to the plan) since it was under ~20 lines. Working tree only,
+no commit. Full gate re-run and pasted at the end.
+
+### M2 (Major, AC6 retry path) — retry now sends the FULL plan + a subset of indices
+
+The bug: repair-1's `retryFailed`/`submitBatch` built `plan_json` from ONLY the failed
+subset (with the full `targetSeconds`), so `generate_storyboard_inner`'s round-1
+re-validation re-ran `storyboard::validate` on that shrunken list and rejected any retry
+of fewer than 3 shots (`ShotCount`) or with a subset sum outside ±10% (`DurationSum`).
+The vitest passed only because the old `vi.fn` ignored `planJson`.
+
+Fix — server (`src-tauri/src/commands.rs`, `StoryboardGenerateInput` + `generate_storyboard_inner`):
+- Added two optional fields to the command input:
+  - `shot_indices: Option<Vec<u32>>` — the plan index each submitted shot maps to.
+    `None` means "the shots ARE the whole plan, in order" (the first generate-all, exactly
+    as before). `Some` (a retry) carries the original indices of the failed shots.
+  - `storyboard_id: Option<String>` — an existing group to write a retry into, so retried
+    shots join the ORIGINAL storyboard set instead of a fresh group (closes the round-1
+    "separate group" gap).
+- The re-validation now runs `storyboard::validate` on the **FULL** plan carried in
+  `plan_json` (still 3..=8 shots, ±10% sum), then matches **each submitted shot to its plan
+  index** (`indices` maps submitted shot k → plan slot `idx`), checking `idx` is in range and
+  the model matches the plan slot. Only that subset is submitted. A sub-3-shot retry is no
+  longer re-count/re-sum-gated — the full validated plan is the authority.
+- The first-generate contract is unchanged: with `shot_indices == None` the old length-match
+  ("does not match the plan") check still fires, so no shot is injected beyond a 1:1 plan.
+- Group id: a retry (`storyboard_id: Some`) verifies the group exists and writes its new job
+  rows into it (same `shot_index`); a first generate mints a fresh group as before. A retry
+  that names an index whose row **already started** (a non-`Failed` job at that index) is
+  rejected before any submit — a successful shot is never resubmitted / double-billed.
+
+Fix — UI (`ui/src/components/Storyboard.tsx`, `submitBatch`/`generate`/`retryFailed`):
+- `submitBatch(indices, retryStoryboardId?)` now always sends the **full** plan in `planJson`
+  (`shots`, not the subset). On the first generate-all it sends no `shotIndices`/`storyboardId`
+  (positional, as before). On a retry it passes `retryStoryboardId`, which makes it send
+  `shotIndices = indices` and the existing `storyboardId`.
+- `retryFailed` resubmits only the failed indices into `outcome.storyboardId`; the server now
+  returns the real plan indices, so the old 0-based re-mapping was removed.
+- `api.ts generateStoryboard` and `mock.ts mockGenerateStoryboard` carry/honour the two new
+  optional fields (the mock now keys outcomes off `shotIndices` and reuses `storyboardId`).
+
+Tests:
+- Rust (`commands.rs`):
+  - `a_retry_with_the_full_plan_targets_the_existing_group_and_only_the_failed_index` — a
+    4-shot `kling3_0` plan where shot 2 failed; retry with the FULL plan + `shot_indices=[2]`
+    + the existing `storyboard_id` is **accepted**, mints no new group (`out.storyboard_id ==
+    sid`), submits exactly one shot at `shot_index 2`, and leaves the 3 successful rows
+    untouched. The single submit is driven **offline** by pinning `kling3_0`'s Vaig route
+    (belongs to the model so the route-pin passes, but has no adapter → `route::resolve`
+    `PinUnusable`, never a network POST).
+  - `a_retry_of_an_already_started_shot_is_rejected` — a retry naming an index whose row is
+    `Queued` is refused ("already started") before any submit.
+  - `a_retry_subset_plan_is_rejected_with_a_clear_error` — a 1-shot subset plan (the old bug)
+    is rejected with the honest count error ("3 to 8 shots"), and nothing is written.
+  - `a_retry_shot_whose_duration_does_not_match_the_plan_is_rejected` — the L4 duration pin.
+- UI (`Storyboard.test.tsx`, "a partial failure shows the failed shots and retry submits only
+  those") — the `onGenerate` mock is now **server-faithful**: it parses `planJson`, enforces
+  the 3..=8 count rule, and honours `shotIndices`/`storyboardId`. So a subset plan would throw
+  (the mock can no longer mask the integration gap). The test asserts the subset retry total is
+  shown before submit, and that the retry call passes a **4-shot** `planJson`, `shotIndices ==
+  [2]`, and `storyboardId == "sb1"`.
+
+### Security L4 (Low, residual of L1) — priced duration/route pinned to the plan (~15 lines)
+
+In the plan re-validation loop, each submitted shot's `settings.duration` must equal the
+plan's clamped `seconds` for its index (±0), and any pinned `route_id` must belong to the
+plan model — else a typed `Err(String)` before any submit. So a direct/tampered caller can no
+longer pass `validate` with cheap in-catalogue durations while billing an inflated magnitude.
+Since the UI rebuilds `plan_json` from the current shots, a legitimate user's edits still pass
+(plan seconds == submitted seconds by construction). Tested by
+`a_retry_shot_whose_duration_does_not_match_the_plan_is_rejected`.
+
+### Money / invariants held
+`submit_one` is still byte-for-byte the audited single-job body (unchanged this round). Every
+shot — generate and retry — goes through it (S6 guard + S7 verbatim `final_prompt` + S10
+estimate + `route::resolve`). The UI shows the subset total before a retry. No hosted LLM/fal
+call with a key; `first_light.rs` never run; no money spent. Test-locked class names intact
+(only additive assertions). Provenance passes.
+
+### Gate — every command, observed output
+```
+cargo fmt --all --check                         → FMT_CLEAN (exit 0)
+cargo clippy --workspace --all-targets -- -D warnings → Finished, 0 warnings
+cargo test --workspace (8 dummy keys + FAL_KEY=x)
+  core lib 704 ; live_fal_pricing 0/1 ign ; audit_fal 3 ; fal_diff 2 ; shell lib 143
+  → 704 + 3 + 2 + 143 = 852 passed, 0 failed (>= 848)
+./scripts/lint-provenance.py                    → CDN PASS, Copy provenance PASS (80015 shingles)
+env -u hickeyfield_FAL_KEY -u FAL_KEY cargo run -q -p hickeyfield-core --example audit_fal
+                                                → PINNED 0, UNREACHABLE 0 (unchanged)
+cd ui && pnpm test                              → 23 files, 285 passed (>= 285)
+cd ui && pnpm build                             → tsc + vite ✓ built (dist emitted)
+```
+`tauri build` (8-min bundle) NOT re-run — no native/tooling change this round (Rust command
+logic + TS view logic + one CHANGELOG line only); the S12 bundle path is unchanged.
+
+### Known limitations not fixed (not hidden)
+- **The successful generate/retry submit loop is still not unit-tested against a live
+  provider** (a real submit needs a paid POST agents never make). The new retry test drives
+  the retry to `submit_one`'s route-resolve stage offline via the Vaig-pin, proving the
+  routing/targeting decision (correct group, correct single index, reached submit) but not a
+  provider-accepted job row. The store-level write-once/ordering is covered separately by the
+  existing `same_model_shots_survive_as_distinct_rows_in_the_store` and migration-8 tests.
+- Everything from the round-1 limitations list still stands **except** the retry-into-a-new-
+  group gap, which this round closes (a retry now writes into the original `storyboard_id`).
+- Still S14's job: rendering/stitching/last-frame extraction; continuity recorded, not applied;
+  no hosted JSON/structured-output mode.

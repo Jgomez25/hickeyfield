@@ -40,8 +40,11 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every shot as one linked set through the same money path a single generation uses, so
   nothing is submitted without the total shown. The Library groups a generated set under its
   brief. Drafting is free on local Ollama and costs one short completion on a hosted key; no
-  clip is generated until you see the total. (Rendering and stitching the set into one film
-  comes in a later release — this slice plans and generates the shots.)
+  clip is generated until you see the total. If a shot fails (a refusal, a missing key), the
+  others still start and you can retry just the failed ones — the retry re-uses the same full
+  plan and its subset total, and lands the retried shots back in the original set rather than
+  a new group. (Rendering and stitching the set into one film comes in a later release — this
+  slice plans and generates the shots.)
 
 - **Every finished job now records what it actually cost, next to what we quoted.** When
   a generation completes and its file is saved, the app measures the seconds, resolution

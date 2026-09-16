@@ -230,24 +230,37 @@ describe("Storyboard", () => {
 
   it("a partial failure shows the failed shots and retry submits only those", async () => {
     const onGenerated = vi.fn();
-    const onGenerate = vi.fn(async (input: { shots: unknown[] }) => {
-      if (input.shots.length === 4) {
-        // Shot 3 (index 2) is refused; the rest start.
+    // A server-faithful mock: it re-validates the FULL plan carried in
+    // `planJson` exactly as `generate_storyboard` does (3..=8 shots — the very
+    // gate that the M2 bug tripped when a subset plan was sent), and honours
+    // `shotIndices` + `storyboardId`. If the retry sent a 1-shot subset plan
+    // (the old bug), this throws "3 to 8 shots" and the test would fail — so the
+    // mock cannot mask the integration defect the way the previous vi.fn did.
+    const onGenerate = vi.fn(
+      async (input: {
+        planJson: string;
+        shots: unknown[];
+        shotIndices?: number[];
+        storyboardId?: string;
+      }) => {
+        const plan = JSON.parse(input.planJson) as { shots: unknown[] };
+        if (plan.shots.length < 3 || plan.shots.length > 8) {
+          throw new Error("a storyboard needs 3 to 8 shots");
+        }
+        const indices = input.shotIndices ?? input.shots.map((_, i) => i);
+        const isRetry = Boolean(input.storyboardId);
         return {
-          storyboardId: "sb1",
-          shots: [0, 1, 2, 3].map((i) => ({
-            shotIndex: i,
-            jobSetId: i === 2 ? null : `j${i}`,
-            error: i === 2 ? "the model declined this shot" : null,
+          storyboardId: input.storyboardId ?? "sb1",
+          shots: indices.map((idx) => ({
+            shotIndex: idx,
+            // On the first generate shot index 2 is refused; on the retry
+            // (storyboardId set) it now starts.
+            jobSetId: idx === 2 && !isRetry ? null : `j${idx}`,
+            error: idx === 2 && !isRetry ? "the model declined this shot" : null,
           })),
         };
-      }
-      // The retry of the single failed shot now succeeds.
-      return {
-        storyboardId: "sb2",
-        shots: [{ shotIndex: 0, jobSetId: "j2", error: null }],
-      };
-    });
+      },
+    );
     const props = base({ onGenerate, onGenerated });
     render(<Storyboard {...props} />);
     typeInto(
@@ -273,6 +286,11 @@ describe("Storyboard", () => {
     expect(fails[0].getAttribute("data-shot-index")).toBe("2");
     expect(onGenerated).not.toHaveBeenCalled();
 
+    // The subset (retry) total is shown BEFORE any resubmit — money honesty.
+    const retryTotal = container.querySelector(".storyboard-outcome-retry-total");
+    expect(retryTotal).not.toBeNull();
+    expect(retryTotal!.textContent?.trim().length).toBeGreaterThan(0);
+
     // Retry submits ONLY the failed shot.
     await act(async () => {
       container.querySelector<HTMLButtonElement>("button.storyboard-retry")!.click();
@@ -280,8 +298,20 @@ describe("Storyboard", () => {
     await flush();
 
     expect(onGenerate).toHaveBeenCalledTimes(2);
-    const retryArg = onGenerate.mock.calls[1][0] as { shots: unknown[] };
+    const retryArg = onGenerate.mock.calls[1][0] as {
+      planJson: string;
+      shots: unknown[];
+      shotIndices?: number[];
+      storyboardId?: string;
+    };
+    // Exactly the one failed shot is resubmitted...
     expect(retryArg.shots.length).toBe(1);
+    // ...but the FULL 4-shot plan is sent (the M2 fix — a subset plan would be
+    // rejected by the server's 3..=8 count gate)...
+    expect((JSON.parse(retryArg.planJson) as { shots: unknown[] }).shots.length).toBe(4);
+    // ...and the retry targets the original failed index and the original group.
+    expect(retryArg.shotIndices).toEqual([2]);
+    expect(retryArg.storyboardId).toBe("sb1");
     // All shots now succeeded → hand off to the Library, summary cleared.
     expect(onGenerated).toHaveBeenCalledTimes(1);
     expect(container.querySelector(".storyboard-outcome")).toBeNull();
