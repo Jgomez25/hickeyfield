@@ -12,6 +12,17 @@ Veo 3.1 Extend and Seedance i2v withdrawn → S9)** · **S9 fal-schema-const-and
 Tests 801 Rust / 232 UI at S9 · **S10 pricing-accuracy-and-cost-tracker (released 2026-09-16:
 hermetic price audit, 2 literals fixed, settled actual cost + migration 7, UI delta)**. Tests 820 / 245 at S10.
 
+## IN FLIGHT: S11-ui-redesign-mockup — branch `forge/s11-redesign` (mockup published, awaiting owner)
+Canvas: https://claude.ai/artifact/2des9awBapmx8rSZN8wvAe (4 boards: Studio, Model picker, Library,
+Tokens). Working files `.forge/slices/S11-ui-redesign-mockup/mockup/*.dc.html` + canvas.json; re-seed
+with the design skill helper after any edit, republish same path with contract 0.1.31. Second-look
+review PASS. BLOCKED on AC5: owner answers the 4 questions on the canvas sticky notes (stage-first vs
+feed; 72px icon nav vs 200px labelled; hide meta rail on Studio; Tokens table). Then: DOCUMENT with
+the decisions, gate, release S11 (no source change), open S12 code slice from the approved boards
+(seams in design.md), then Storyboard (S13+).
+Rules added this session: Opus 4.8 = OMIT Agent `model` param (frontmatter pins claude-opus-4-8);
+max two repair rounds per slice then escalate to owner.
+
 ## NUMBERING NOTE (2026-09-16): `new-slice.sh` numbers by state.json count, so the parser slice
 is **S9-fal-schema-const-and-int-enums**; "S9 pricing" below is therefore S10, "S10 redesign" is
 S11, Storyboard S12+. Owner order unchanged.
