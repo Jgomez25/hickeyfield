@@ -27,3 +27,10 @@ tracing.workspace = true
 [[example]]
 name = "fal_diff"
 test = true
+
+# Same reason: `audit_fal`'s `pin_conflicts` fixture test is the only check on
+# the const-vs-spec logic, and it must run in `cargo test --workspace` rather
+# than on demand.
+[[example]]
+name = "audit_fal"
+test = true

@@ -276,6 +276,9 @@ pub const JOB_TYPES: [(&str, &[&str]); 16] = [
             "wan_vace",
             "grok_edit_video",
             "grok_extend_video",
+            // Extending a clip is instruction-following for the same reason:
+            // the prompt says what happens next, not how to shoot it.
+            "veo3_1_extend",
         ],
     ),
     // Every text-to-video and image-to-video path, which is exactly what
@@ -298,6 +301,8 @@ pub const JOB_TYPES: [(&str, &[&str]); 16] = [
             "kling3_0_pro",
             "kling3_0_turbo",
             "kling_o3_flf",
+            "ltx_2_5",
+            "ltx_2_5_animate",
             "minimax_h3",
             "minimax_hailuo",
             "seedance1_5",
@@ -922,6 +927,36 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
             ),
             per_second(0.05),
         )],
+        // Imported from fal's index 2026-09-16, landed once the schema parser
+        // could read a `const`. fal publishes a 4K tier at $0.30/s that the
+        // `["720p","1080p"]` enum makes unselectable — a tier the estimator
+        // cannot reach is better than a price it would get wrong.
+        "ltx_2_5" | "ltx_2_5_animate" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                if id == "ltx_2_5" {
+                    "lightricks/ltx-2.5/text-to-video/pro"
+                } else {
+                    "lightricks/ltx-2.5/image-to-video/pro"
+                },
+                "$0.12/s at 720p, $0.17/s at 1080p; fal's 4K tier is not offered",
+            ),
+            CostModel::PerSecondTiered {
+                tiers: vec![(720, 0.12), (1080, 0.17)],
+            },
+        )],
+        // fal pins this endpoint to 7 seconds, so the per-second model always
+        // bills 7 x $0.20 = $1.40, or $2.80 with audio — fal's own published
+        // pair. A flat $1.40 was considered and rejected: it cannot express the
+        // audio doubling and would under-quote by 2x on every audio-on extend.
+        "veo3_1_extend" => vec![(
+            Route::noted(
+                ProviderId::Fal,
+                "fal-ai/veo3.1/extend-video",
+                "$0.20/s audio-off, $0.40/s audio-on; fixed at 7s, so $1.40 or $2.80",
+            ),
+            per_second_audio(0.20, 2.0),
+        )],
         "grok_extend_video" => vec![(
             Route::noted(
                 ProviderId::Fal,
@@ -1533,12 +1568,14 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
 ///
 /// **From fal's own index**, imported 2026-09-16 by `examples/fal_diff` and
 /// probed by `examples/audit_fal` before landing: Kling 3.0 Pro, Wan 3.0 Prime,
-/// GPT Image 2.5 in both tiers with their edit paths, Qwen Image 3, the Nano
-/// Banana and Seedream 5 edit endpoints. (LTX 2.5 and Veo 3.1 Extend were
-/// probed too and withdrawn: their schemas pin fields by `const` or integer
-/// enums the parser cannot yet read.) Their flags are transcribed from fal's published schema per
-/// endpoint — the only document that describes the API we actually call — and
-/// every enumerated option set is copied from it verbatim.
+/// LTX 2.5 Pro and its animate half, Veo 3.1 Extend, GPT Image 2.5 in both
+/// tiers with their edit paths, Qwen Image 3, the Nano Banana and Seedream 5
+/// edit endpoints. (LTX 2.5 and Veo 3.1 Extend missed that release by one
+/// parser bug — their schemas pin fields with `const` or enumerate integers,
+/// and `fal_schema::parse` read neither. It reads both now.) Their flags are
+/// transcribed from fal's published schema per endpoint — the only document
+/// that describes the API we actually call — and every enumerated option set is
+/// copied from it verbatim.
 fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
     let mut out = Vec::new();
 
@@ -1551,8 +1588,8 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
         constraints: vec![
             "fal serves 4-30s; 30s is the native maximum. `auto` lets the model choose."
                 .to_string(),
-            "Text-to-video only for now: fal's image-to-video endpoint pins `aspect_ratio` \
-             to `auto`, which the app cannot yet honour."
+            "Animating a still always renders at the source image's own shape; only \
+             text-to-video lets you pick a ratio."
                 .to_string(),
         ],
         ..spec(
@@ -1561,8 +1598,8 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
             Modality::Video,
             &[
                 ("prompt", true, ValueSpec::Text),
-                // `start_image` / `end_image` return with `InputMode::Image`
-                // once the parser reads fal's `const` (see `FAL_ROUTE_MODES`).
+                ("start_image", false, ValueSpec::Media),
+                ("end_image", false, ValueSpec::Media),
                 (
                     "duration",
                     false,
@@ -1573,11 +1610,18 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
                     ]),
                 ),
                 ("resolution", false, en(&["480p", "720p", "1080p"])),
-                (
-                    "aspect_ratio",
-                    false,
-                    en(&["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
-                ),
+                // One model, two endpoints that DISAGREE: text-to-video takes
+                // seven ratios, image-to-video pins `aspect_ratio` to `auto`
+                // with `const`. A spec is per-model, so it cannot state both —
+                // and the only value valid on *every* endpoint this model
+                // serves is `auto`. That is what goes here, because this list
+                // is read in exactly one situation: fal's schema endpoint is
+                // unreachable and the app must still choose. Choosing `16:9`
+                // there is a guaranteed 422 on the animate half. When the
+                // schema IS reachable — the normal case — `capability::from_fal`
+                // reads it per endpoint and the text-to-video chip row shows
+                // all seven.
+                ("aspect_ratio", false, en(&["auto"])),
                 ("generate_audio", false, ValueSpec::Boolean),
                 ("bitrate_mode", false, ValueSpec::Text),
             ],
@@ -2023,6 +2067,85 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
         )
     });
 
+    // LTX 2.5 Pro, both halves. fal publishes one document per endpoint and the
+    // two DIFFER: text-to-video takes `aspect_ratio` of 16:9 or 9:16, while
+    // image-to-video adds `auto` (it reads the shape off the attached still).
+    // Sharing one flag list would offer a ratio one of them rejects, so they are
+    // two specs — the aspect axis is left to the per-endpoint schema on both.
+    //
+    // `duration` is the reason this pair missed the 2026-09-16 release: fal
+    // declares it as the MIXED list `[6, 8, 10, "auto"]`, and a parser that kept
+    // only string members recorded `["auto"]` alone and refused every length the
+    // UI could produce. Copied here as fal writes it. There is no `default`
+    // field: `resolveSettings` clamps the app-wide default 5 to the nearest
+    // offered value, which is 6.
+    out.push(ModelSpec {
+        constraints: vec![
+            "fal renders 6, 8 or 10 seconds; `auto` lets the model choose. 1080p costs \
+             $0.17/s against $0.12/s at 720p."
+                .to_string(),
+        ],
+        ..spec(
+            "ltx_2_5",
+            "LTX 2.5 Pro",
+            Modality::Video,
+            &[
+                ("prompt", true, ValueSpec::Text),
+                ("duration", false, en(&["6", "8", "10", "auto"])),
+                ("resolution", false, en(&["720p", "1080p"])),
+            ],
+        )
+    });
+
+    out.push(ModelSpec {
+        constraints: vec![
+            "Animates a still. A second image becomes the last frame and the clip \
+             transitions between them."
+                .to_string(),
+            "fal renders 6, 8 or 10 seconds; `auto` lets the model choose. 1080p costs \
+             $0.17/s against $0.12/s at 720p."
+                .to_string(),
+        ],
+        ..spec(
+            "ltx_2_5_animate",
+            "LTX 2.5 Pro Animate",
+            Modality::Video,
+            &[
+                ("prompt", true, ValueSpec::Text),
+                ("start_image", false, ValueSpec::Media),
+                ("end_image", false, ValueSpec::Media),
+                ("duration", false, en(&["6", "8", "10", "auto"])),
+                ("resolution", false, en(&["720p", "1080p"])),
+            ],
+        )
+    });
+
+    // Veo 3.1 Extend. fal FIXES two of its settings with `const` —
+    // `duration: "7s"` and `resolution: "720p"` — and will 422 anything else.
+    // They are declared here as one-member enums rather than dropped, so the
+    // OFFLINE capability path (which reads this spec when fal's schema endpoint
+    // is unreachable) agrees with the online one. That agreement is what keeps
+    // the price right: `PerSecond` bills the 7 seconds fal will actually render.
+    out.push(ModelSpec {
+        constraints: vec![
+            "Continues an existing clip rather than changing it. fal fixes this endpoint \
+             at 7 seconds and 720p; the length you add is not adjustable."
+                .to_string(),
+        ],
+        ..spec(
+            "veo3_1_extend",
+            "Veo 3.1 Extend",
+            Modality::Video,
+            &[
+                ("prompt", true, ValueSpec::Text),
+                ("video", true, ValueSpec::Media),
+                ("duration", false, en(&["7s"])),
+                ("resolution", false, en(&["720p"])),
+                ("generate_audio", false, ValueSpec::Boolean),
+            ],
+        )
+    });
+
     // GPT Image 2.5's two tiers. `image_size` is OpenAI's shape control here —
     // there is no `aspect_ratio` and no `resolution` on any of the four
     // endpoints, so neither is declared and the UI offers neither.
@@ -2228,15 +2351,16 @@ mod tests {
         // Catalogue models minus the exclusions, plus the hand-authored
         // picker-only specs, plus 2 fal-native video editors the catalogue
         // never had because Higgsfield runs its editing surfaces in-house,
-        // plus the 10 fal frontier models ADDED on 2026-09-16 from fal's own
-        // index (`IMPORTED_2026_09` lists 11 — `seedance_2_5` was promoted in
-        // place, not added). Three probed-but-unrunnable imports (`ltx_2_5`,
-        // `ltx_2_5_animate`, `veo3_1_extend`) were removed again before
-        // release, hence +27 rather than +30. None of these are sold by
-        // Higgsfield, so none are described by any vendored document.
+        // plus the 13 fal frontier models ADDED from fal's own index
+        // (`IMPORTED_2026_09` lists 14 — `seedance_2_5` was promoted in place,
+        // not added). Ten landed on 2026-09-16; `ltx_2_5`, `ltx_2_5_animate`
+        // and `veo3_1_extend` followed once the schema parser learned to read
+        // a `const` and an integer enum, which is what made them runnable.
+        // None of these are sold by Higgsfield, so none are described by any
+        // vendored document.
         assert_eq!(
             reg.len(),
-            cat.len() - EXCLUSIONS.len() + 27,
+            cat.len() - EXCLUSIONS.len() + 30,
             "registry size"
         );
     }
@@ -2257,6 +2381,9 @@ mod tests {
             "wan2_2_video",
             "seedream_v5_pro",
             "image2video",
+            "ltx_2_5",
+            "ltx_2_5_animate",
+            "veo3_1_extend",
             // Imported from fal's own index on 2026-09-16. Higgsfield sells
             // none of them, so `MODELS.md` describes none of them either.
             "kling3_0_pro",
@@ -2814,12 +2941,17 @@ mod tests {
 
     /// Every id added by the fal catalogue sync, in one place, so the three
     /// tests below cannot drift apart from each other.
-    const IMPORTED_2026_09: [&str; 11] = [
+    const IMPORTED_2026_09: [&str; 14] = [
         "gpt_image_2_5_flare",
         "gpt_image_2_5_flare_edit",
         "gpt_image_2_5_sunburst",
         "gpt_image_2_5_sunburst_edit",
         "kling3_0_pro",
+        // Probed in the same sweep, landed one slice later: fal pins or
+        // integer-enumerates their settings and the parser could not read
+        // either, so every submit was refused before it was sent.
+        "ltx_2_5",
+        "ltx_2_5_animate",
         "nano_banana_2_edit",
         "nano_banana_pro_edit",
         "qwen_image_3",
@@ -2827,6 +2959,7 @@ mod tests {
         // than added, which is why it is here and not in the count above.
         "seedance_2_5",
         "seedream_v5_pro_edit",
+        "veo3_1_extend",
         "wan3_0_prime",
     ];
 
@@ -2887,6 +3020,52 @@ mod tests {
                 "{id} has no executable fal route"
             );
         }
+    }
+
+    #[test]
+    fn ltx_2_5_offers_only_the_durations_fal_enumerates() {
+        // The 2026-09-16 defect, pinned: the flag was `ValueSpec::Number`, the
+        // chip row invented a `[3,4,5,6,8,10,12]` ladder, and fal enumerates
+        // exactly `[6, 8, 10, "auto"]`. Every submit was refused before it was
+        // sent. `auto` is not a number, so it is absent here by construction.
+        for id in ["ltx_2_5", "ltx_2_5_animate"] {
+            let caps = registry()[id].spec.capabilities();
+            assert!(caps.supports_duration, "{id} lost its duration axis");
+            assert_eq!(caps.durations, [6.0, 8.0, 10.0], "{id}");
+            assert_eq!(caps.resolutions, ["720p", "1080p"], "{id}");
+        }
+    }
+
+    #[test]
+    fn the_extend_endpoint_is_priced_at_its_fixed_seven_seconds() {
+        // fal pins this endpoint to 7s/720p by `const`, so the only price it
+        // can ever quote is 7 x $0.20 — doubled with audio, which is fal's own
+        // published pair. A flat model could not express the doubling and would
+        // under-quote by 2x, which is the wrong direction to be wrong in.
+        let m = &registry()["veo3_1_extend"];
+        let route = m
+            .routes
+            .iter()
+            .find(|r| r.provider == ProviderId::Fal)
+            .expect("veo3_1_extend has a fal route");
+
+        let silent = crate::cost::Billable {
+            seconds: Some(7.0),
+            ..crate::cost::Billable::video(7.0, 1280, 720)
+        };
+        let loud = crate::cost::Billable {
+            audio: true,
+            ..silent.clone()
+        };
+        let usd = |b| m.estimate(route, b).map(|e| e.usd).expect("a priced route");
+        assert!((usd(&silent) - 1.40).abs() < 1e-9, "{}", usd(&silent));
+        assert!((usd(&loud) - 2.80).abs() < 1e-9, "{}", usd(&loud));
+
+        // And the settings can only produce those 7 seconds.
+        let caps = m.spec.capabilities();
+        assert_eq!(caps.durations, [7.0]);
+        assert_eq!(caps.resolutions, ["720p"]);
+        assert!(caps.audio, "fal publishes generate_audio on this endpoint");
     }
 
     #[test]

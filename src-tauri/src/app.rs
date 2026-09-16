@@ -435,8 +435,24 @@ pub fn submit_to_provider(
             // Then make what remains speak the endpoint's own spelling and
             // type. Without this the settings object's `duration: 4.0` reaches
             // an endpoint that enumerates `'4'` as a string and 422s.
-            hickeyfield_core::fal_schema::reconcile(schema, &mut body)
+            let pinned = hickeyfield_core::fal_schema::reconcile(schema, &mut body)
                 .map_err(|r| JobError::Permanent(format!("{} — {r}", model.display_name)))?;
+
+            for p in &pinned {
+                // The endpoint fixes this field by `const`, so there is no
+                // neighbouring value to have picked instead — but the render is
+                // not the one the settings asked for, and a job that does not
+                // say so is the silent kind of wrong.
+                let note = format!(
+                    "{} always renders at {} {} on this endpoint — your {} setting does not apply",
+                    model.display_name,
+                    p.to,
+                    p.field.replace('_', " "),
+                    p.from,
+                );
+                tracing::warn!("{note}");
+                job.advisories.push(note);
+            }
 
             if !ignored_settings.is_empty() {
                 // Recorded on the job rather than refused: the generation is

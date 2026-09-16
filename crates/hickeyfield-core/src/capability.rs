@@ -765,7 +765,27 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
                 .collect(),
+            pinned: Default::default(),
         }
+    }
+
+    /// The same, for an endpoint that pins a field to one value with `const`.
+    ///
+    /// Run through `fal_schema::parse` rather than filled in by hand, so the
+    /// axis assertions below fail if the parser stops recording the pin.
+    fn pinned_schema(accepted: &[&str], field: &str, value: &str) -> EndpointSchema {
+        let mut props = serde_json::Map::new();
+        for k in accepted {
+            props.insert((*k).to_string(), serde_json::json!({"type": "string"}));
+        }
+        props.insert(
+            field.to_string(),
+            serde_json::json!({"const": value, "type": "string"}),
+        );
+        let doc = serde_json::json!({
+            "components": {"schemas": {"XInput": {"properties": props}}}
+        });
+        crate::fal_schema::parse(&doc).expect("a document with one Input schema")
     }
 
     fn flag(name: &str, value: ValueSpec) -> FlagSpec {
@@ -943,6 +963,43 @@ mod tests {
         // a fal-declared field would claim fal's authority for Higgsfield's
         // answer, which is the inversion this whole module exists to undo.
         assert!(cap.duration.values.is_empty());
+    }
+
+    #[test]
+    fn a_const_pinned_axis_is_fixed_not_free_form() {
+        // Seedance 2.5's image-to-video endpoint pins `aspect_ratio` to `auto`
+        // by `const` ("Always \"auto\" for image-to-video"). Before the parser
+        // read `const` this axis had no values, which `is_free_form` reports as
+        // "anything goes" — so the chip row hid the control and the settings'
+        // stale ratio went over the wire and 422'd.
+        let s = pinned_schema(
+            &["prompt", "image_url", "aspect_ratio"],
+            "aspect_ratio",
+            "auto",
+        );
+        let cap = ModelCapability::from_fal(&gemini_omni_spec(), "bytedance/x", &s);
+        assert_eq!(cap.aspect.support, Support::Yes);
+        assert_eq!(cap.aspect.values, ["auto"]);
+        assert!(
+            !cap.aspect.is_free_form(),
+            "a pinned axis must be shown as fixed, not as a free control whose \
+             value is discarded"
+        );
+    }
+
+    #[test]
+    fn a_catalogue_default_outside_a_pin_is_dropped() {
+        // Veo 3.1 Extend pins `resolution` to 720p while the catalogue's
+        // default is 1080p. Opening on 1080p would price and promise a render
+        // the endpoint cannot make.
+        let s = pinned_schema(&["prompt", "resolution"], "resolution", "720p");
+        let m = spec(vec![FlagSpec {
+            default: Some("1080p".into()),
+            ..flag("resolution", ValueSpec::Text)
+        }]);
+        let cap = ModelCapability::from_fal(&m, "fal-ai/veo3.1/extend-video", &s);
+        assert_eq!(cap.resolution.values, ["720p"]);
+        assert_eq!(cap.resolution.default, None);
     }
 
     #[test]
@@ -1184,6 +1241,61 @@ mod tests {
             cap.endpoint.as_deref(),
             Some("fal-ai/kling-video/v3/standard/image-to-video")
         );
+    }
+
+    #[test]
+    fn one_spec_two_endpoints_and_the_pin_applies_to_only_one_of_them() {
+        // Seedance 2.5 is one model with two contracts: its text-to-video
+        // endpoint takes seven aspect ratios, its image-to-video endpoint pins
+        // `aspect_ratio` to `auto` by `const`. This is why the pin lives in the
+        // per-endpoint schema layer and not in the spec — putting it in the
+        // spec would have to break one of the two modes.
+        let m = crate::registry::registry()["seedance_2_5"].spec.clone();
+        let schema_for = |ep: &str| {
+            Some(if ep.ends_with("/image-to-video") {
+                pinned_schema(
+                    &["prompt", "image_url", "aspect_ratio"],
+                    "aspect_ratio",
+                    "auto",
+                )
+            } else {
+                schema(
+                    &["prompt", "aspect_ratio"],
+                    &["prompt"],
+                    &[(
+                        "aspect_ratio",
+                        &["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+                    )],
+                )
+            })
+        };
+
+        let i2v = for_route(
+            &m,
+            ProviderId::Fal,
+            "bytedance/seedance-2.5",
+            InputMode::Image,
+            schema_for,
+        );
+        assert_eq!(
+            i2v.endpoint.as_deref(),
+            Some("bytedance/seedance-2.5/image-to-video")
+        );
+        assert_eq!(i2v.aspect.values, ["auto"]);
+        assert!(!i2v.aspect.is_free_form());
+
+        let t2v = for_route(
+            &m,
+            ProviderId::Fal,
+            "bytedance/seedance-2.5",
+            InputMode::Text,
+            schema_for,
+        );
+        assert_eq!(
+            t2v.endpoint.as_deref(),
+            Some("bytedance/seedance-2.5/text-to-video")
+        );
+        assert_eq!(t2v.aspect.values.len(), 7, "{:?}", t2v.aspect.values);
     }
 
     #[test]

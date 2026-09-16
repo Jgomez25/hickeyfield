@@ -596,7 +596,7 @@ impl InputMode {
 /// **Provisional.** Phase C2 replaces this by reading fal's schema per
 /// endpoint and caching it. Until then a slug absent from this table is
 /// suffixed optimistically, which costs one 404 and no money.
-const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 48] = [
+const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 51] = [
     // Video editors. Each takes a clip and nothing else — offering them for
     // "Animate Image" produced "does not accept a start frame" at submit.
     // A complete text-to-image endpoint. Its editing counterpart is a separate
@@ -626,9 +626,20 @@ const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 48] = [
     ),
     // Measured 2026-09-16 against fal's refreshed index. Each of these is a
     // complete endpoint whose family is split by something other than an input
-    // mode — a tiered name (`…/flare/text-to-image`, `…/flare/edit`) — so the
-    // mode list is the one mode it serves and `Exact` is true.
-    // Suffixing any of them 404s.
+    // mode — a tier (`…/text-to-video/pro`), a tiered name (`…/flare/edit`) or
+    // a verb (`/extend-video`) — so the mode list is the one mode it serves and
+    // `Exact` is true. Suffixing any of them 404s.
+    (
+        "lightricks/ltx-2.5/text-to-video/pro",
+        true,
+        &[InputMode::Text],
+    ),
+    (
+        "lightricks/ltx-2.5/image-to-video/pro",
+        true,
+        &[InputMode::Image],
+    ),
+    ("fal-ai/veo3.1/extend-video", true, &[InputMode::Video]),
     (
         "openai/gpt-image-2.5/flare/text-to-image",
         true,
@@ -686,15 +697,18 @@ const FAL_ROUTE_MODES: [(&str, Exact, &[InputMode]); 48] = [
         false,
         &[InputMode::Text, InputMode::Image],
     ),
-    // fal serves `/seedance-2.5/image-to-video` too, and it is deliberately
-    // not claimed here: that endpoint pins `aspect_ratio` to `"auto"` by
-    // `const` (its own description: always "auto" for image-to-video), and
-    // `fal_schema::parse` does not read `const`, so the app would send the
-    // settings' real ratio and be refused with a 422 on every submit. The
-    // 30s text-to-video path — the reason this model is here — is unaffected.
-    // Re-claim Image once the parser reads `const` (backlog:
-    // fal-schema-const-and-int-enums).
-    ("bytedance/seedance-2.5", false, &[InputMode::Text]),
+    // Both modes, again. `/seedance-2.5/image-to-video` pins `aspect_ratio` to
+    // `"auto"` by `const` (its own description: always "auto" for
+    // image-to-video), which cost this mode a release: the parser could not
+    // read `const`, so the app sent the settings' real ratio and was refused.
+    // `fal_schema::parse` now records a pin as a one-member enum, and because
+    // the schema is fetched per *endpoint* the text-to-video half keeps its own
+    // seven-ratio list — one spec, two contracts, each honoured where it applies.
+    (
+        "bytedance/seedance-2.5",
+        false,
+        &[InputMode::Text, InputMode::Image],
+    ),
     ("bytedance/seedream/v5/lite", false, &[InputMode::Text]),
     ("bytedance/seedream/v5/pro", false, &[InputMode::Text]),
     (

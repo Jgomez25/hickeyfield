@@ -197,7 +197,7 @@ mandatory slice; tracked here for prioritization.
   still sends the shown text (safe), but the stored `original` can diverge from what was shown.
   Cosmetic provenance, non-blocking.
 
-- **NEW SLICE — fal-schema-const-and-int-enums (from S8 REVIEW, blocking-class bug).**
+- **DONE (S9-fal-schema-const-and-int-enums)** — fal-schema-const-and-int-enums (from S8 REVIEW, blocking-class bug).
   `crates/hickeyfield-core/src/fal_schema.rs:216` keeps only STRING enum members and ignores
   `const`, so (a) mixed enums like LTX 2.5's duration {6,8,10,"auto"} record as ["auto"] and every
   submit is refused, and (b) const-pinned fields (Veo 3.1 extend: duration "7s", resolution
@@ -208,6 +208,11 @@ mandatory slice; tracked here for prioritization.
   `ltx_2_5_animate` (duration enum 6/8/10, default 6) and `veo3_1_extend` (fixed 7s/720p — drop
   those fields from body + cost). Tests: parser fixtures for const + int-enum; audit finding on a
   const mismatch.
+  Landed in S9: `parse` records a `const` as a one-member enum plus a `pinned` set and
+  stringifies non-string enum members; `reconcile` writes a pin and reports it (never over a
+  prompt or a media key); `audit_fal` gained a fifth check and dropped its duplicate fetcher;
+  all 62 pre-existing endpoints re-probed with zero new findings; `ltx_2_5`, `ltx_2_5_animate`,
+  `veo3_1_extend` and Seedance 2.5's `InputMode::Image` re-landed (CHECKED 62 -> 66).
 - **S8 minors (non-blocking):** Wan 3.0 Prime "no published ceiling" comment is false;
   `nano_banana_2_edit` defaults to 0.5K but is priced at 1K; `fal_diff --dump --offline` restamps
   stale data with a new date; snapshot `thumbnailUrl` values (418 storage.googleapis.com,

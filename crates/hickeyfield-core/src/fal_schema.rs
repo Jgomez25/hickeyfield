@@ -1,7 +1,8 @@
 //! What a fal endpoint actually accepts, from fal.
 //!
 //! Three bugs in one day came from the same mistake: trusting the vendored
-//! catalogue about a *different provider's* API.
+//! catalogue about a *different provider's* API. The fourth, found six weeks
+//! later, came from reading fal's own document too narrowly.
 //!
 //! 1. Parameter **names** differ — the catalogue says `image`, fal wants
 //!    `image_url`. Patched with a dialect table.
@@ -13,6 +14,13 @@
 //!    attached a clip, asked for it to be edited, and got an unrelated
 //!    text-to-video generation — because fal ignored the field it did not
 //!    recognise and billed for the result.
+//! 4. A field the endpoint **pins**, which is none of the above: `const` is
+//!    not a wrong name, not a wrong mode and not an unaccepted key, so every
+//!    guard above waves it through. fal's Veo 3.1 Extend renders at `"7s"` and
+//!    `"720p"` and will take nothing else; LTX 2.5 writes its lengths as the
+//!    integers `{6, 8, 10}` beside the string `"auto"`. The enum reader kept
+//!    only strings and never looked at `const`, so both read as "no
+//!    constraint" (or, worse, as `["auto"]` alone) and both 422 on submit.
 //!
 //! The catalogue describes Higgsfield's API. It is not wrong; it is about
 //! something else. fal publishes its own per-endpoint schema, unauthenticated,
@@ -38,7 +46,22 @@ pub struct EndpointSchema {
     /// Needed because the catalogue and fal spell the *same* value
     /// differently: we offer `1k`, fal wants `1K`; we offer `4`, Veo wants
     /// `4s`. Both are 422s that look like our bug to the user.
+    ///
+    /// Members are recorded as text whatever JSON type fal declares them with,
+    /// because that is the only spelling both sides can compare: LTX 2.5's
+    /// `duration` is the mixed list `{6, 8, 10, "auto"}` and reading only its
+    /// string member left the app believing `auto` was the sole legal length.
     pub enums: BTreeMap<String, Vec<String>>,
+    /// Fields the endpoint pins to a single value with `const`.
+    ///
+    /// Also present in `enums` as a one-member list, because that is what
+    /// every consumer already reads; this set is what distinguishes "fal
+    /// offers exactly one value" from "fal pins this and will 422 anything
+    /// else", which the submit path and the audit each say differently.
+    ///
+    /// Defaulted on deserialize so an older serialised snapshot still loads.
+    #[serde(default)]
+    pub pinned: BTreeSet<String>,
 }
 
 impl EndpointSchema {
@@ -120,6 +143,18 @@ impl std::fmt::Display for Refusal {
     }
 }
 
+/// A field the endpoint pins with `const`, rewritten to the value it pins.
+///
+/// Reported rather than swallowed: the render the user gets is not the one
+/// their settings asked for, and a job that does not say so is the silent kind
+/// of wrong this module exists to stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pinned {
+    pub field: String,
+    pub from: String,
+    pub to: String,
+}
+
 /// Rewrite a request body into the spelling *and the JSON type* the endpoint
 /// publishes, before anything is sent.
 ///
@@ -139,10 +174,53 @@ impl std::fmt::Display for Refusal {
 /// than quietly swapped for a neighbour. Substituting 6s for a requested 8s
 /// would produce a generation the user did not ask for and charge them for it —
 /// the same silent-substitution failure this module was written to stop.
+///
+/// A field the endpoint **pins** (`const`) is the one exception, and it is not
+/// a substitution: there is no neighbour to pick instead. Veo 3.1 Extend renders
+/// at 7 seconds and nothing else, so refusing a stale `duration: 5` would cost
+/// the user a generation fal would happily have run. The pinned value is written
+/// and returned in the [`Pinned`] list so the caller can say so on the job.
+/// `prompt` and media keys are never rewritten this way — overwriting what a
+/// person typed or uploaded with a schema constant would be this module's
+/// founding failure committed in a new place — and are refused instead.
 pub fn reconcile(
     schema: &EndpointSchema,
     body: &mut serde_json::Map<String, serde_json::Value>,
-) -> Result<(), Refusal> {
+) -> Result<Vec<Pinned>, Refusal> {
+    // Pins first, then the enum pass below retypes what was written: the JSON
+    // type is half the contract and both halves must hold.
+    let mut rewritten: Vec<Pinned> = Vec::new();
+    for field in &schema.pinned {
+        let Some(pin) = schema.enums.get(field).and_then(|v| v.first()).cloned() else {
+            continue;
+        };
+        // A key the body does not carry stays fal's business.
+        let Some(current) = body.get(field) else {
+            continue;
+        };
+        let Some(as_text) = scalar_text(current) else {
+            continue;
+        };
+        // Already the pinned value, or the same value spelled differently
+        // (`7` against `7s`) — nothing was overridden, so nothing to report.
+        if schema.coerce(field, &as_text).as_deref() == Some(pin.as_str()) {
+            continue;
+        }
+        if field == "prompt" || schema.media_keys().contains(&field.as_str()) {
+            return Err(Refusal {
+                field: field.clone(),
+                offered: vec![pin],
+                sent: as_text,
+            });
+        }
+        body.insert(field.clone(), serde_json::Value::String(pin.clone()));
+        rewritten.push(Pinned {
+            field: field.clone(),
+            from: as_text,
+            to: pin,
+        });
+    }
+
     for (field, allowed) in &schema.enums {
         let Some(current) = body.get(field) else {
             continue;
@@ -169,7 +247,7 @@ pub fn reconcile(
             }
         }
     }
-    Ok(())
+    Ok(rewritten)
 }
 
 /// A scalar as the text an enum would spell it with.
@@ -211,17 +289,47 @@ pub fn parse(doc: &serde_json::Value) -> Option<EndpointSchema> {
         .cloned()
         .collect();
     let mut enums = BTreeMap::new();
+    let mut pinned = BTreeSet::new();
     if let Some(props) = input.get("properties").and_then(|p| p.as_object()) {
         for (name, prop) in props {
+            // `const` first, and it beats a sibling `enum`: fal generates these
+            // from a pydantic `Literal[...]`, so the enum in that case is the
+            // wider declared type rather than a second offer. A `const` that is
+            // an object, an array or `null` is ignored outright — we do not
+            // model those, and pretending to would be worse than silence.
+            if let Some(text) = prop.get("const").and_then(scalar_text) {
+                enums.insert(name.clone(), vec![text]);
+                pinned.insert(name.clone());
+                continue;
+            }
             if let Some(vals) = prop.get("enum").and_then(|e| e.as_array()) {
-                let vs: Vec<String> = vals
-                    .iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect();
-                if !vs.is_empty() {
+                // All-or-nothing. A partially recorded enum is exactly the LTX
+                // 2.5 failure: it looks authoritative and then refuses every
+                // value the endpoint actually takes. A `null` member is skipped
+                // without voiding the entry — in a fal enum it means "may be
+                // omitted", not a value the app can send.
+                let mut vs: Vec<String> = Vec::new();
+                let mut readable = true;
+                for v in vals {
+                    if v.is_null() {
+                        continue;
+                    }
+                    match scalar_text(v) {
+                        Some(t) => vs.push(t),
+                        None => {
+                            readable = false;
+                            break;
+                        }
+                    }
+                }
+                if readable && !vs.is_empty() {
                     enums.insert(name.clone(), vs);
                 }
             }
+            // `anyOf` / `oneOf` / `allOf` are deliberately not descended into.
+            // Wan 3.0 Prime declares `duration` as
+            // `anyOf[{integer 2..30}, {null}]`, which is a range and not an
+            // offer: enumerating it would invent members fal never published.
         }
     }
 
@@ -239,6 +347,7 @@ pub fn parse(doc: &serde_json::Value) -> Option<EndpointSchema> {
         accepted,
         required,
         enums,
+        pinned,
     })
 }
 
@@ -402,6 +511,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            pinned: Default::default(),
         };
         assert_eq!(s.coerce("resolution", "1k").as_deref(), Some("1K"));
         assert_eq!(s.coerce("resolution", "4K").as_deref(), Some("4K"));
@@ -419,6 +529,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            pinned: Default::default(),
         };
         assert_eq!(s.coerce("duration", "4").as_deref(), Some("4s"));
         assert_eq!(s.coerce("duration", "8s").as_deref(), Some("8s"));
@@ -435,6 +546,7 @@ mod tests {
             enums: [("resolution".to_string(), vec!["480p".into(), "720p".into()])]
                 .into_iter()
                 .collect(),
+            pinned: Default::default(),
         };
         assert_eq!(s.coerce("resolution", "4k"), None);
         assert_eq!(s.coerce("resolution", "1080p"), None);
@@ -446,6 +558,7 @@ mod tests {
             accepted: ["prompt".to_string()].into_iter().collect(),
             required: Default::default(),
             enums: Default::default(),
+            pinned: Default::default(),
         };
         assert_eq!(s.coerce("prompt", "anything").as_deref(), Some("anything"));
     }
@@ -478,7 +591,26 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            pinned: Default::default(),
         }
+    }
+
+    /// Build a schema that pins one field to one value.
+    ///
+    /// Deliberately built by running [`parse`] over the document shape fal
+    /// publishes rather than by filling the struct in by hand: a hand-built
+    /// `pinned` set would keep these tests green even if the parser stopped
+    /// recording the pin, which is the one thing they exist to catch.
+    fn pinned_to(field: &str, value: &str) -> EndpointSchema {
+        let mut props = serde_json::json!({
+            "prompt": {"type": "string"},
+            "image_url": {"type": "string"},
+        });
+        props[field] = serde_json::json!({"const": value, "type": "string"});
+        let doc = serde_json::json!({
+            "components": {"schemas": {"XInput": {"properties": props}}}
+        });
+        parse(&doc).expect("a document with one Input schema")
     }
 
     #[test]
@@ -560,5 +692,199 @@ mod tests {
         body.insert("resolution".into(), serde_json::json!("1k"));
         reconcile(&schema, &mut body).unwrap();
         assert_eq!(body["resolution"], serde_json::json!("1K"));
+    }
+
+    // ---- `const` and non-string enum members -----------------------------
+    //
+    // Every fixture below is copied from the endpoint document fal served on
+    // 2026-09-16, not composed here: the bug this closes was a parser that read
+    // fal's own document more narrowly than fal wrote it.
+
+    #[test]
+    fn a_const_is_recorded_as_a_one_member_enum() {
+        // `fal-ai/veo3.1/extend-video`, verbatim. Neither key is an `enum`, so
+        // the old parser recorded nothing and the app sent 5.0 / "1080p".
+        let doc = r#"{"components":{"schemas":{"Veo31ExtendVideoInput":{"properties":{
+            "duration":{"const":"7s","type":"string","default":"7s"},
+            "resolution":{"const":"720p","type":"string","default":"720p"},
+            "prompt":{"type":"string"}}}}}}"#;
+        let s = parsed(doc);
+        assert_eq!(s.enums.get("duration").unwrap(), &["7s"]);
+        assert_eq!(s.enums.get("resolution").unwrap(), &["720p"]);
+        assert!(s.pinned.contains("duration"));
+        assert!(s.pinned.contains("resolution"));
+        assert!(!s.pinned.contains("prompt"));
+    }
+
+    #[test]
+    fn an_integer_enum_is_stringified_not_dropped() {
+        // `lightricks/ltx-2.5/text-to-video/pro`, verbatim: a mixed list with
+        // no `type` key. The old parser kept `["auto"]` alone, so `reconcile`
+        // refused 6, 8 and 10 — every length the UI could produce.
+        let doc = r#"{"components":{"schemas":{"Ltx25Input":{"properties":{
+            "duration":{"default":"auto","enum":[6,8,10,"auto"]}}}}}}"#;
+        let s = parsed(doc);
+        assert_eq!(s.enums.get("duration").unwrap(), &["6", "8", "10", "auto"]);
+        assert!(s.pinned.is_empty());
+    }
+
+    #[test]
+    fn a_pure_integer_enum_is_kept() {
+        // `fps` on both LTX 2.5 endpoints.
+        let doc = r#"{"components":{"schemas":{"XInput":{"properties":{
+            "fps":{"type":"integer","default":25,"enum":[24,25,50]}}}}}}"#;
+        assert_eq!(parsed(doc).enums.get("fps").unwrap(), &["24", "25", "50"]);
+    }
+
+    #[test]
+    fn a_const_beside_an_enum_wins() {
+        // fal generates a `const` from a pydantic `Literal`, so a sibling
+        // `enum` is the wider declared type rather than a second offer.
+        let doc = r#"{"components":{"schemas":{"XInput":{"properties":{
+            "aspect_ratio":{"const":"auto","enum":["auto","16:9","9:16"]}}}}}}"#;
+        let s = parsed(doc);
+        assert_eq!(s.enums.get("aspect_ratio").unwrap(), &["auto"]);
+        assert!(s.pinned.contains("aspect_ratio"));
+    }
+
+    #[test]
+    fn a_nullable_integer_is_not_enumerated() {
+        // `alibaba/wan-3.0-prime/*`, verbatim. A range is not an offer: turning
+        // it into an enum would invent members fal never published, and the
+        // free-form axis it produces today is correct.
+        let doc = r#"{"components":{"schemas":{"XInput":{"properties":{
+            "duration":{"default":5,"anyOf":[{"type":"integer","minimum":2,"maximum":30},{"type":"null"}]}}}}}}"#;
+        let s = parsed(doc);
+        assert!(!s.enums.contains_key("duration"), "{:?}", s.enums);
+        assert!(s.pinned.is_empty());
+    }
+
+    #[test]
+    fn a_null_member_is_skipped_without_voiding_the_enum() {
+        let doc = r#"{"components":{"schemas":{"XInput":{"properties":{
+            "duration":{"enum":[4,null,8]}}}}}}"#;
+        assert_eq!(parsed(doc).enums.get("duration").unwrap(), &["4", "8"]);
+    }
+
+    #[test]
+    fn an_enum_we_cannot_fully_read_is_recorded_as_nothing() {
+        // All-or-nothing. A partially recorded enum is the LTX 2.5 failure: it
+        // looks authoritative and refuses values the endpoint actually takes.
+        let doc = r#"{"components":{"schemas":{"XInput":{"properties":{
+            "size":{"enum":[{"width":1024},"auto"]}}}}}}"#;
+        let s = parsed(doc);
+        assert!(!s.enums.contains_key("size"), "{:?}", s.enums);
+        assert!(s.pinned.is_empty());
+    }
+
+    #[test]
+    fn a_const_that_is_not_a_scalar_is_ignored_entirely() {
+        let doc = r#"{"components":{"schemas":{"XInput":{"properties":{
+            "size":{"const":{"width":1024}},"other":{"const":null}}}}}}"#;
+        let s = parsed(doc);
+        assert!(s.enums.is_empty(), "{:?}", s.enums);
+        assert!(s.pinned.is_empty());
+    }
+
+    #[test]
+    fn a_pinned_field_is_written_to_the_value_the_endpoint_fixes() {
+        // Seedance 2.5's image-to-video endpoint: `aspect_ratio` is `const
+        // "auto"`, so a stale "16:9" in the settings is a guaranteed 422. There
+        // is no neighbouring ratio to have picked instead — the endpoint
+        // renders one shape — so the value is written and reported, not refused.
+        let schema = pinned_to("aspect_ratio", "auto");
+        let mut body = serde_json::Map::new();
+        body.insert("aspect_ratio".into(), serde_json::json!("16:9"));
+
+        let pinned = reconcile(&schema, &mut body).expect("a pin is not a refusal");
+        assert_eq!(body["aspect_ratio"], serde_json::json!("auto"));
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].field, "aspect_ratio");
+        assert_eq!(pinned[0].from, "16:9");
+        assert_eq!(pinned[0].to, "auto");
+    }
+
+    #[test]
+    fn a_pinned_duration_accepts_the_bare_number() {
+        // `7` against the pin `"7s"` is the same duration spelled differently:
+        // nothing was overridden, so nothing is reported.
+        let schema = pinned_to("duration", "7s");
+        let mut body = serde_json::Map::new();
+        body.insert("duration".into(), serde_json::json!(7.0));
+
+        let pinned = reconcile(&schema, &mut body).unwrap();
+        assert_eq!(body["duration"], serde_json::json!("7s"));
+        assert!(pinned.is_empty(), "{pinned:?}");
+    }
+
+    #[test]
+    fn a_pinned_prompt_or_media_key_is_refused_not_rewritten() {
+        // No live endpoint pins either today. The guard exists because reading
+        // `const` makes it possible for the first time, and overwriting what a
+        // person typed or uploaded with a schema constant would be this
+        // module's founding failure committed in a new place.
+        for field in ["prompt", "image_url"] {
+            let schema = pinned_to(field, "fixed");
+            let mut body = serde_json::Map::new();
+            body.insert(field.into(), serde_json::json!("what the user gave us"));
+
+            let err = reconcile(&schema, &mut body).expect_err("must refuse, not rewrite");
+            assert_eq!(err.field, field);
+            assert_eq!(body[field], serde_json::json!("what the user gave us"));
+        }
+    }
+
+    #[test]
+    fn a_pinned_field_the_body_does_not_carry_is_left_to_fal() {
+        let schema = pinned_to("duration", "7s");
+        let mut body = serde_json::Map::new();
+        body.insert("prompt".into(), serde_json::json!("a red door"));
+
+        assert!(reconcile(&schema, &mut body).unwrap().is_empty());
+        assert!(!body.contains_key("duration"));
+    }
+
+    #[test]
+    fn a_numeric_duration_matches_an_integer_enum_member() {
+        // The LTX 2.5 submit that failed on every attempt before this slice.
+        let schema = enumerated("duration", &["6", "8", "10", "auto"]);
+        let mut body = serde_json::Map::new();
+        body.insert("duration".into(), serde_json::json!(6.0));
+
+        assert!(reconcile(&schema, &mut body).unwrap().is_empty());
+        assert_eq!(body["duration"], serde_json::json!("6"));
+    }
+
+    #[test]
+    fn the_two_ltx_endpoints_do_not_agree_on_aspect_ratio() {
+        // Copied from the two documents fal served on 2026-09-16. They are
+        // separate documents and they differ: the image-to-video half adds
+        // `auto` (it reads the shape off the attached still). One shared enum
+        // across both would offer a value one of them rejects, which is the
+        // failure this module exists to stop — hence two specs.
+        let t2v = parsed(
+            r#"{"components":{"schemas":{"Ltx25TextToVideoProInput":{"properties":{
+            "aspect_ratio":{"type":"string","default":"16:9","enum":["16:9","9:16"]},
+            "duration":{"default":"auto","enum":[6,8,10,"auto"]},
+            "resolution":{"type":"string","default":"1080p","enum":["720p","1080p"]}}}}}}"#,
+        );
+        let i2v = parsed(
+            r#"{"components":{"schemas":{"Ltx25ImageToVideoProInput":{"properties":{
+            "aspect_ratio":{"type":"string","default":"auto","enum":["auto","16:9","9:16"]},
+            "duration":{"default":"auto","enum":[6,8,10,"auto"]},
+            "camera_motion":{"anyOf":[{"type":"string","enum":["static"]},{"type":"null"}]},
+            "resolution":{"type":"string","default":"1080p","enum":["720p","1080p"]}}}}}}"#,
+        );
+        assert_eq!(t2v.enums.get("aspect_ratio").unwrap(), &["16:9", "9:16"]);
+        assert_eq!(
+            i2v.enums.get("aspect_ratio").unwrap(),
+            &["auto", "16:9", "9:16"]
+        );
+        // Both agree on the duration and resolution the specs enumerate.
+        assert_eq!(t2v.enums.get("duration"), i2v.enums.get("duration"));
+        assert_eq!(t2v.enums.get("resolution"), i2v.enums.get("resolution"));
+        // An enum nested inside `anyOf` is not read, so `camera_motion` stays
+        // an undeclared field rather than a half-understood one.
+        assert!(!i2v.enums.contains_key("camera_motion"));
     }
 }

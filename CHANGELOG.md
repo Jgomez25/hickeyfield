@@ -21,9 +21,7 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **fal's newest models are in the picker, and a 30-second clip is now possible.**
   Seedance 2.5 moved from a placeholder to a real, priced model and offers every
   length fal takes, up to a native 30 seconds — the longest single clip the app has
-  ever been able to ask for (text-to-video for now: fal's image-to-video endpoint
-  pins its aspect ratio in a way the app cannot yet honour). Alongside it: Kling 3.0
-  Pro and Wan 3.0 Prime.
+  ever been able to ask for. Alongside it: Kling 3.0 Pro and Wan 3.0 Prime.
   On the image side: GPT Image 2.5 in both of its tiers, Qwen Image 3, and — as
   their own entries, because they are separate endpoints — the edit paths for Nano
   Banana Pro, Nano Banana 2 and Seedream 5.0 Pro. Each was checked against the
@@ -46,6 +44,18 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as written.
 
 ### Fixed
+
+- **Four generation paths that could never run are now available, and a whole class
+  of silent rejection is gone.** Some providers fix a setting for you — an endpoint
+  that always renders seven seconds at 720p, or always takes its shape from the image
+  you attached — and some list their lengths as plain numbers rather than text. The
+  app read neither, so it sent a value the provider would refuse and the generation
+  failed before it started. It now reads both, shows a fixed setting as the single
+  option it is, and says so on the job when a saved setting cannot apply. With that
+  in place: LTX 2.5 Pro and LTX 2.5 Pro Animate (6, 8 or 10 seconds at 720p or
+  1080p), Veo 3.1 Extend for continuing a clip, and Seedance 2.5's animate-an-image
+  mode — which can also transition between a start and an end frame — all work and
+  are in the picker.
 
 - **A model that refuses to rewrite no longer costs you a generation.** If the
   local or hosted enhancer replies with a refusal, apology, or other non-prompt

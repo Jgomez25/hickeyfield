@@ -289,11 +289,19 @@ mod tests {
         // endpoint names its start frame in a key the binder cannot write.
         let reg = registry();
         for (id, tab) in [
-            // `seedance_2_5` is text-to-video only for now: fal's image-to-video
-            // endpoint pins `aspect_ratio` by `const`, which the parser cannot
-            // yet honour (see `media::FAL_ROUTE_MODES`).
             ("seedance_2_5", UseCase::TextToVideo),
+            // Re-claimed once `fal_schema::parse` learned to read a `const`:
+            // the image-to-video endpoint pins `aspect_ratio` to `auto`, and
+            // the schema is fetched per endpoint, so honouring that pin costs
+            // the text-to-video half nothing (see `media::FAL_ROUTE_MODES`).
+            ("seedance_2_5", UseCase::ImageToVideo),
             ("kling3_0_pro", UseCase::TextToVideo),
+            ("ltx_2_5", UseCase::TextToVideo),
+            ("ltx_2_5_animate", UseCase::ImageToVideo),
+            // The tab is the work — extending a clip is editing one. Its
+            // JOB_TYPES group is `animate` (enhancer off), which is a different
+            // axis and neither implies the other.
+            ("veo3_1_extend", UseCase::EditVideo),
             ("wan3_0_prime", UseCase::TextToVideo),
             ("gpt_image_2_5_flare", UseCase::TextToImage),
             ("gpt_image_2_5_flare_edit", UseCase::EditImage),
@@ -314,7 +322,6 @@ mod tests {
         // becoming a tile that refuses the user's file at submit.
         assert!(!supports(&reg["kling3_0_pro"], UseCase::ImageToVideo));
         assert!(!supports(&reg["wan3_0_prime"], UseCase::ImageToVideo));
-        assert!(!supports(&reg["seedance_2_5"], UseCase::ImageToVideo));
         assert!(!supports(&reg["qwen_image_3"], UseCase::EditImage));
     }
 
