@@ -261,3 +261,11 @@ mandatory slice; tracked here for prioritization.
   chain.rs `chainable_model` uses coarse `use_case::supports`; `a_failed_shot_stops_the_chain` phase-guard
   assertion vacuous (clip guard + hook gate still stop it); chain::advance TOCTOU → UNIQUE(storyboard_id,
   shot_index); `apply_overrides` allow-list when no schema cached.
+
+- **S17 keyframe-anchored mode** (the 99% continuity path; draft in `.forge/slices/S17-parked/`): stills →
+  i2v with actual last frame as start + next still as `end_image_url` (H3 Max supports both); tier-2
+  thresholds 0.90/6/3; bounded auto-retry. **S18 shot trim handles**: per-shot in/out before stitching,
+  total recomputed against the ±10% tolerance, continuity frame from the trimmed out-point.
+- **S16 follow-ups:** threshold calibration on ONE real paid 2×15 set (human-run, owner's key; then adjust
+  the named constants); world-block text editor + per-shot Regenerate button on the Storyboard card (UI
+  polish; the action lives on the Library set item); world rules are opt-in on a non-empty world block.

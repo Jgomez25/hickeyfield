@@ -118,8 +118,9 @@
     {
       "id": "S16-duration-range-and-continuity-prompting",
       "title": "duration-range-and-continuity-prompting",
-      "status": "in-progress",
-      "started": "2026-09-16"
+      "status": "released",
+      "started": "2026-09-16",
+      "branch": "forge/s16-continuity"
     }
   ]
 }

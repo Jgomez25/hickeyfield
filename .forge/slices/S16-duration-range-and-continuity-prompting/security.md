@@ -100,3 +100,48 @@ No Critical, High, Medium, or Low findings. Boundaries examined and cleared belo
 No Critical/High findings — no new security slices required.
 
 VERDICT: PASS
+
+## RE-CHECK (HEAD 48cb68d)
+
+Re-reviewed `git show 48cb68d -- src-tauri/src/commands.rs src-tauri/src/chain.rs`
+(repair round 1). Money focus confirmed clear.
+
+### `shot_in_flight(jobs, idx)` — the shared double-submit gate — CLEAR
+`src-tauri/src/commands.rs:1086`
+- Reads **only server-side job rows**: it iterates `&[JobSet]` and inspects `j.shot_index`
+  and `j.status` — both store-owned fields — matching `!j.status.is_terminal()`.
+  `is_terminal` (`crates/hickeyfield-core/src/job.rs:143`) is `phase ∈ {Completed, Failed,
+  Canceled}`; Queued/InProgress and every intermediate stage are non-terminal, so the gate
+  is conservative (in-flight ⇒ refuse). No client-supplied field is consulted: the caller
+  passes `existing_jobs`/`store.jobs_in_storyboard(&sid)`, never anything from
+  `StoryboardGenerateInput`. Cannot be bypassed by a crafted request field.
+- **Manual regenerate** (`generate_storyboard_inner:1558-1585`): the `shot_in_flight`
+  refusal returns `Err("shot N is still in flight …")` inside the per-index loop, i.e.
+  before the branch returns the `existing` sid and before the batch reaches any
+  `submit_one` or store write. The below-floor relaxation is only reached for a **settled
+  (terminal)** low-join shot. Verified by `a_below_floor_join_that_is_still_in_flight_is_refused`
+  (Queued/InProgress refuse; Completed eligible) and `shot_in_flight_reads_only_non_terminal_rows`.
+- **`maybe_auto_retry`** (`chain.rs:399-409`): the same `shot_in_flight` check runs
+  immediately after `let i = record.index;` and returns **before** the frame check, the
+  `shots_json` parse, the attempt bump/persist, and `submit_one`. So a prior auto-retry
+  attempt still queued/running cannot spawn a duplicate in-flight job; the persisted
+  `attempt` still bounds the loop at ≤2. Refusal precedes any spend or store write.
+
+### Scratch-frame cleanup — CLEAR
+`src-tauri/src/chain.rs:314-318`
+- `std::fs::remove_file(&first)` targets only
+  `renders_root/<sid>/frames/first{i}.png`, built from the app-owned `renders_root`, the
+  stored `sid` (from `settled.storyboard_id`, a persisted server value that must match an
+  existing storyboard row), and the numeric shot index `i`. No component comes from
+  untrusted/client input, and the path pattern is unchanged from the S15 `shot{i}.png`
+  derivation. It deletes the scratch score input only; `shot{i-1}.png` (the continuity
+  frame the chain and render still read) is untouched — confirmed by
+  `score_join_cleans_up_the_scratch_first_frame`. Cleanup runs unconditionally after the
+  score attempt (success or `Err`), so a failed score leaves no cruft either. No
+  path-traversal or arbitrary-delete surface introduced.
+
+All prior boundaries (sections 1–7) remain valid — the repair only added the in-flight
+gate and the scratch cleanup, both money/disk-hygiene hardening. No Critical/High
+findings; no new security slices required.
+
+VERDICT: PASS

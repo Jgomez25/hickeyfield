@@ -149,3 +149,59 @@ its own bound), so it is not on a currently-live critical path. It must be close
 are latent or cosmetic.
 
 VERDICT: PASS
+
+---
+
+## RE-REVIEW (HEAD 48cb68d — repair round 1 of 2)
+
+Re-read `git show 48cb68d` and re-ran the gate on the repaired tree. All five prior findings are
+closed with real tests; no new issue introduced.
+
+### Gate re-run (repaired tree)
+
+- `cargo fmt --all --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean (0).
+- `cargo test --workspace` → **924 passed, 0 failed** (749 core + 167 tauri-lib + 6 + 2). Matches the
+  coordinator's 924/0.
+- `cargo test -p hickeyfield-core --lib ffmpeg -- --ignored` → 7 passed; the new
+  `chain::tests::score_join_cleans_up_the_scratch_first_frame` (real sidecar) → 1 passed.
+- `cd ui && pnpm test` → **302 passed** (+1: the new ladder edge case).
+
+### Findings verified closed
+
+- **M1 (major, double-bill) — CLOSED.** New shared `shot_in_flight(jobs, idx)`
+  (`src-tauri/src/commands.rs:1084`) = `any(shot_index == idx && !status.is_terminal())`. The
+  **manual** path (`generate_storyboard_inner`, commands.rs:1561-1585) now: `!started → continue`;
+  `started && !below_floor → "already started"` (above-floor/unscored started shot still refused —
+  the invariant held); `started && below_floor && shot_in_flight → "still in flight"`. Only a
+  **terminal** (settled) below-floor shot is admitted. The **auto-retry** path
+  (`maybe_auto_retry`, chain.rs:402-410) applies the *same* `shot_in_flight` guard before submitting,
+  so a not-yet-settled prior attempt cannot mint a duplicate. Tests:
+  `a_below_floor_join_that_is_still_in_flight_is_refused` (Queued and InProgress both refused,
+  Completed admitted) and `shot_in_flight_reads_only_non_terminal_rows` (a terminal row does not mask
+  an in-flight one at the same index). Double-bill closed on both paths; above-floor refusal preserved.
+- **m1 (ladder ≤12 invariant) — CLOSED.** `ladderFromRange` (variants.ts:66) now seeds `min`, `max`,
+  and the in-range default into the `Set` FIRST, then fills the remaining budget by an even stride
+  with the loop bounded on `kept.size < MAX_CHIPS`, ending with `.slice(0, 12)`. Endpoints and default
+  are therefore guaranteed present and the count can never reach 13. Deterministic (Set + `Math.round`
+  of a fixed stride). Proven by `never emits more than twelve chips when the default is not a stride
+  pick` (`[1,100]` default 6 → ≤12, contains 1/100/6, same output twice).
+- **m2 (cut words) — CLOSED.** `contains_word` (storyboard.rs) matches on non-alphanumeric boundaries;
+  `a_cut_word_matches_only_whole_words` proves `later` does not fire inside `slater` and `elsewhere`
+  not inside `elsewheres`, while `meanwhile`/`cut to` still match.
+- **m3 (hold phrasing) — CLOSED.** `ends_on_hold` accepts whole-word `hold`/`holds` (so `static hold`,
+  `holds on`, `a hold` all pass) and rejects `household`; `hold_ending_accepts_several_phrasings` and
+  `a_holds_on_ending_passes` cover it. The relaxation is deliberate and does not weaken the guard
+  against a genuinely hold-less non-final shot (`a_non_final_shot_without_a_hold_is_rejected` still
+  green).
+- **m4 (doc overstatement) — CLOSED.** CHANGELOG and README now say the range covers "every model
+  whose provider publishes or documents a range … (models that publish neither still use the generic
+  ladder)" — accurate.
+- **m5 (scratch frames) — CLOSED.** `score_join` removes `first{i}.png` after scoring while keeping
+  the `shot{i-1}.png` continuity frame (chain.rs:315); the ignored real-sidecar test asserts no
+  `first*.png` remains and the continuity frame survives.
+
+No regressions and no new findings. All acceptance criteria remain covered by the (now larger) test
+suite; the two continuity thresholds remain reasoned-not-measured with the human-run calibration
+correctly recorded.
+
+VERDICT: PASS

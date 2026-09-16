@@ -12,7 +12,7 @@ Veo 3.1 Extend and Seedance i2v withdrawn → S9)** · **S9 fal-schema-const-and
 Tests 801 Rust / 232 UI at S9 · **S10 pricing-accuracy-and-cost-tracker (released 2026-09-16:
 hermetic price audit, 2 literals fixed, settled actual cost + migration 7, UI delta)**. Tests 820 / 245 at S10.
 
-## S11 ui-redesign-mockup — RELEASED 2026-09-16 (owner approved; decisions in S11/document.md). S12 ui-redesign-code RELEASED (+picker hotfix) · S13 storyboard-plan RELEASED 2026-09-16 (852 Rust / 285 UI). S14 minimax-h3-max RELEASED 2026-09-16 (865 Rust; H3 Max + Turbo live). S15 storyboard-render RELEASED 2026-09-16 (888 Rust / 292 UI; 30s ads on any i2v model). NEXT: S16 duration-range + continuity prompting (+ per-join score), S17 keyframe mode
+## S11 ui-redesign-mockup — RELEASED 2026-09-16 (owner approved; decisions in S11/document.md). S12 ui-redesign-code RELEASED (+picker hotfix) · S13 storyboard-plan RELEASED 2026-09-16 (852 Rust / 285 UI). S14 minimax-h3-max RELEASED 2026-09-16 (865 Rust; H3 Max + Turbo live). S15 storyboard-render RELEASED 2026-09-16 (888 Rust / 292 UI; 30s ads on any i2v model). S16 duration-range + continuity RELEASED 2026-09-16 (924 Rust / 302 UI; 12s cap gone; measured continuity 0.80 floor). NEXT: S17 keyframe-anchored mode (99% path), S18 shot trim handles; human-run: calibrate thresholds on one paid 2×15 set
 Canvas: https://claude.ai/artifact/2des9awBapmx8rSZN8wvAe (4 boards: Studio, Model picker, Library,
 Tokens). Working files `.forge/slices/S11-ui-redesign-mockup/mockup/*.dc.html` + canvas.json; re-seed
 with the design skill helper after any edit, republish same path with contract 0.1.31. Second-look

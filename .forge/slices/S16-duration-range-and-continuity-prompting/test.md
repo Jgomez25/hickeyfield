@@ -147,3 +147,80 @@ the owner-priority items (12-second cap fix, per-join continuity score machinery
 are proven. No mutation of a new test survived; no gate failed.
 
 VERDICT: PASS
+
+## RE-TEST (HEAD 48cb68d)
+
+Repair commit `48cb68d` ("S16 repair 1") landed after the reviewer found a dormant double-bill:
+the regenerate/auto-retry below-floor relaxation admitted a shot without checking live job status,
+so a second submit between a regenerate and its settle would mint a duplicate in-flight job. I
+re-tested the delta (`git show 48cb68d`). Same rules held: no key, no money, repo read-only apart
+from test.md; all mutations in a scratch copy OUTSIDE the repo.
+
+### What changed (verified against the diff)
+- `commands.rs`: new `pub(crate) fn shot_in_flight(jobs, idx)` = any row at `idx` not
+  `is_terminal()`. The regenerate relaxation now: `!started → continue`; started & not below-floor →
+  "already started"; below-floor & `shot_in_flight` → "still in flight" refusal. Only a settled
+  (terminal) low-join shot is admitted.
+- `chain.rs`: `maybe_auto_retry` gains the same `shot_in_flight` guard before it regenerates; and
+  `score_join` removes the scratch `first{i}.png` after scoring (the `shot{i-1}.png` continuity frame
+  survives).
+- `variants.ts`: `ladderFromRange` rewritten so min/max/default are mandatory and consume the budget
+  first, then a stride fill, then `.slice(0, MAX_CHIPS)` — deterministically ≤12 chips.
+- `storyboard.rs`: `contains_word` (whole-word/phrase, boundary-checked) replaces naive
+  `hay.contains` for CUT_WORDS; `ends_on_hold` accepts "hold"/"holds"/"static hold" as whole words.
+
+### Gate (re-run on HEAD 48cb68d, real output)
+```
+cargo test --workspace  -> 749 + 6 + 2 + 167 = 924 passed, 0 failed   (matches coordinator's 924/0)
+cargo test -p hickeyfield-core --lib ffmpeg -- --ignored          -> 7 passed, 0 failed
+cargo test -p hickeyfield-tauri --lib score_join_cleans -- --ignored -> 1 passed, 0 failed  (8 total sidecar)
+cargo fmt --all --check   -> FMT_OK
+./scripts/lint-provenance.py -> PROV_OK
+cargo clippy --workspace --all-targets -- -D warnings -> CLIPPY_EXIT=0
+cd ui && pnpm test -> Tests 302 passed (302);  pnpm build -> ✓ built
+```
+
+### Guard driven directly (real HEAD, `cargo test -p hickeyfield-tauri --lib in_flight`)
+```
+test commands::tests::shot_in_flight_reads_only_non_terminal_rows ... ok
+test commands::tests::a_below_floor_join_that_is_still_in_flight_is_refused ... ok
+test result: ok. 2 passed; 0 failed
+```
+`a_below_floor_join_that_is_still_in_flight_is_refused` asserts: Queued below-floor → refused
+("still in flight"); InProgress below-floor → refused; Completed below-floor → NOT refused by the
+guard (the one eligible case, i.e. admitted once). A second call while in flight is exactly the
+Queued/InProgress case → refused. `shot_in_flight_reads_only_non_terminal_rows` proves
+Completed/Failed are terminal and a terminal row does not mask an in-flight row at the same index.
+`maybe_auto_retry` calls the same `shot_in_flight(&jobs, i)` before regenerating (chain.rs:404-408),
+so auto-retry skips an in-flight index — code-verified, sharing the tested helper.
+
+### Mutation checks (scratch copy OUTSIDE the repo — each new guard/test proven non-vacuous)
+- **M-a — `shot_in_flight` returns `false`** (guard defeated): `shot_in_flight_reads_only_non_terminal_rows`
+  FAILED. The integration test then proceeds PAST the guard toward a real `submit_one` and hangs on
+  the (keyless) provider path — itself demonstrating the double-bill the guard prevents. Caught.
+- **M-c — ladder `<=12` cap defeated** (drop the size-bounded fill + final `.slice`):
+  `never emits more than twelve chips when the default is not a stride pick` FAILED. Caught.
+- **M-d — `ends_on_hold` reverts to `action.contains("hold")`**: `hold_ending_accepts_several_phrasings`
+  FAILED ("household" wrongly counts as a hold). Caught.
+- **M-e — `contains_word` reverts to naive substring**: `a_cut_word_matches_only_whole_words` FAILED
+  ("later" fires inside "slater"). Caught.
+- **M-f — remove the `remove_file(&first)` cleanup**: `score_join_cleans_up_the_scratch_first_frame`
+  (`--ignored`, real sidecar) FAILED — `first1.png` left behind. The `shot0.png` continuity frame
+  still survives. Caught.
+
+### New ladder still yields the ceilings (real `ladderFromRange`, executed)
+```
+H3 Max (5,15) default 5 -> [5,6,7,8,9,10,11,12,13,14,15]  (11 chips, includes 15)
+Wan    (2,30) default 5 -> [2,5,7,10,12,15,17,20,22,25,27,30] (12 chips, includes 2 and 30, all in-bound)
+```
+15 is offered on H3 Max, 30 on Wan; ≤12 chips; nothing outside the bound; the default is kept.
+
+### Assessment
+The repair closes the dormant double-bill: a below-floor regenerate and an auto-retry now refuse an
+index with a live queued/running job and admit only a settled (terminal) low-join shot. The scratch
+frame is cleaned without touching the continuity frame the chain/render need. The ladder is
+deterministically capped at 12 while still exposing 15/30. All four repair points are guarded by
+tests that fail under mutation; the full gate is green (924/0, 8 sidecar, fmt/clippy/provenance,
+UI 302 + build). No new defect; the earlier PASS stands and the reviewer's finding is resolved.
+
+VERDICT: PASS
