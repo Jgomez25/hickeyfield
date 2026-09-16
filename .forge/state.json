@@ -90,8 +90,9 @@
     {
       "id": "S12-ui-redesign-code",
       "title": "ui-redesign-code",
-      "status": "in-progress",
-      "started": "2026-09-15"
+      "status": "released",
+      "started": "2026-09-15",
+      "branch": "forge/s12-redesign-code"
     }
   ]
 }

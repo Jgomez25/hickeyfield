@@ -238,3 +238,8 @@ mandatory slice; tracked here for prioritization.
   seam (`tests/live_fal_pricing.rs`).
 
 - **dependency-advisories-h2-rustls** (from S9 SECURITY/REVIEW, non-blocking): `cargo deny check advisories` fails on main: RUSTSEC-2026-0258 (h2 0.4.15 → >=0.4.16), RUSTSEC-2026-0285 (rustls 0.23.43 → >=0.23.45), plus a stale RUSTSEC-2024-0429 ignore at deny.toml:77 (`advisory-not-detected`). `cargo update -p h2 -p rustls`, drop the stale ignore, re-run the gate.
+
+- **S12 minors (from REVIEW, non-blocking):** orphaned `.model-row*` rules in `ui/src/components/rail.css`
+  (~:481-524) and the unmounted `ResultsFeed.tsx` — delete; `WorkspaceTabs.tsx` nav tabs keep
+  `aria-controls="generator-panel"` while Library has no panel; `--text-tertiary` legal notice ≈3.5:1 on
+  the card (was 3.1:1) — consider #7a7a7a; `<1200px` meta rail as an Overlay sheet instead of a stacked column.
