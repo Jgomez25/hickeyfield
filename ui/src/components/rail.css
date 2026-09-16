@@ -66,6 +66,44 @@
   color: var(--text-primary);
 }
 
+/* Vertical icon variant: the 72px use-case nav. Same tablist, restyled. */
+.tabs-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-100);
+  padding: 0;
+  background: transparent;
+}
+
+.tabs-nav-tab {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-100);
+  width: 56px;
+  padding: var(--space-200) 0;
+  border-radius: var(--radius-200);
+  color: var(--text-secondary);
+}
+
+.tabs-nav-tab:hover {
+  color: var(--text-primary);
+  background: var(--light-05);
+}
+
+.tabs-nav-tab[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--text-brand);
+}
+
+.tabs-nav-label {
+  font-size: var(--text-xxs);
+  font-weight: 600;
+  line-height: 1;
+}
+
 .tabs-inline {
   flex-wrap: wrap;
   background: transparent;
@@ -488,12 +526,170 @@
   white-space: nowrap;
 }
 
+/* ── Composer model tile ─────────────────────────────────────────────────
+ * The model row is now a tile keeping the pinned .model-item* classes. It
+ * carries .model-item-composer so the picker's 5-column grid rules (scoped
+ * under .model-list) cannot reach it. */
+
+.model-item-composer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-300);
+  width: 100%;
+  padding: var(--space-250);
+  border: 0;
+  border-radius: var(--radius-card);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.model-item-composer:hover {
+  background: var(--cool-150);
+}
+
+.model-item-composer .model-item-thumb {
+  position: relative;
+  flex: none;
+  width: 72px;
+  aspect-ratio: var(--tile-thumb-ratio);
+  border-radius: var(--radius-200);
+  background-size: cover;
+  background-position: 50%;
+}
+
+.model-item-composer .model-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.model-item-composer .model-item-name {
+  font-family: var(--font-brand);
+  font-size: var(--text-md);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  line-height: 1.2;
+}
+
+.model-item-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-200);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.model-item-composer .chip-route {
+  height: auto;
+  padding: 1px var(--space-150);
+  border-radius: var(--radius-100);
+  background: var(--light-10);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xxs);
+}
+
+.model-item-change {
+  flex: none;
+  padding: var(--space-150) var(--space-300);
+  border-radius: var(--radius-200);
+  background: var(--light-05);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+/* ── Camera-move strip ───────────────────────────────────────────────────── */
+
+.camera-strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-200);
+}
+
+.camera-strip-label {
+  font-size: var(--text-xxs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.camera-strip-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-200);
+}
+
+.camera-strip-tile {
+  position: relative;
+  aspect-ratio: var(--tile-thumb-ratio);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-200);
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.camera-strip-tile[data-active] {
+  box-shadow: 0 0 0 1.5px var(--accent);
+}
+
+.camera-strip-name {
+  position: absolute;
+  left: var(--space-200);
+  bottom: var(--space-150);
+  z-index: 1;
+  font-family: var(--font-brand);
+  font-size: var(--text-xxs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
+}
+
+.camera-strip-more {
+  display: grid;
+  place-items: center;
+  aspect-ratio: var(--tile-thumb-ratio);
+  border: 0;
+  border-radius: var(--radius-200);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.camera-strip-more:hover {
+  background: var(--cool-150);
+  color: var(--text-primary);
+}
+
 /* ── Chip row + Generate ────────────────────────────────────────────────── */
 
 .chip-row {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-200);
+}
+
+/* The priced Generate bar sticks to the foot of the scrolling composer so it is
+ * always reachable without hunting for it below a long prompt. */
+.rail-generate-sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  padding-top: var(--space-300);
+  margin-top: auto;
+  background: linear-gradient(
+    to top,
+    var(--bg-secondary) 78%,
+    transparent
+  );
 }
 
 .generate {
@@ -529,7 +725,7 @@
 
 .generate-button:hover:not(:disabled) {
   background: var(--accent-hover);
-  box-shadow: 0 0 32px rgba(255, 74, 28, 0.42);
+  box-shadow: var(--bloom-strong);
 }
 
 .generate-button:active:not(:disabled) {

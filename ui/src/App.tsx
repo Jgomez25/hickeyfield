@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  cancelJob,
   configuredProviders,
   estimateCost,
   isDesktop,
@@ -53,14 +52,20 @@ import {
   type ProviderInfo,
 } from "./lib/providers";
 import { SettingsRail } from "./components/SettingsRail";
-import { ResultsFeed } from "./components/ResultsFeed";
+import { Stage } from "./components/Stage";
+import { Library } from "./components/Library";
+import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { MetaRail } from "./components/MetaRail";
 import { PresetPicker } from "./components/PresetPicker";
 import { ModelPicker } from "./components/ModelPicker";
 import { Onboarding } from "./components/Onboarding";
 import { Settings } from "./components/Settings";
 import { ConfirmDelete } from "./components/ConfirmDelete";
-import { SettingsIcon } from "./components/Icons";
+import { Overlay } from "./components/Overlay";
+import { VideoPreview } from "./components/VideoPreview";
+import { KeyIcon } from "./components/Icons";
+import { isPlayableVideo, posterFor } from "./lib/media";
+import { revealResult } from "./api";
 import "./app.css";
 
 const DEFAULT_SETTINGS: GenSettings = {
@@ -126,6 +131,11 @@ export default function App() {
     null | "presets" | "models" | "onboarding" | "settings"
   >(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Studio (compose + stage) vs Library (gallery + meta). A separate axis from
+  // the use-case `tab`; a two-value state, not a router (there is no URL).
+  const [view, setView] = useState<"studio" | "library">("studio");
+  // The Library lightbox: the job whose result is shown large, or null.
+  const [lightboxId, setLightboxId] = useState<string | null>(null);
 
   const [catalog, setCatalog] = useState<ProviderInfo[]>(PROVIDER_CATALOG);
   const [states, setStates] = useState<KeyState[]>([]);
@@ -509,6 +519,62 @@ export default function App() {
     [],
   );
 
+  // The Studio stage shows the selection when there is one, else the latest
+  // (jobs are newest-first). Recents are the first six.
+  const featured = useMemo(
+    () => jobs.find((j) => j.id === selectedId) ?? jobs[0] ?? null,
+    [jobs, selectedId],
+  );
+  const recents = useMemo(() => jobs.slice(0, 6), [jobs]);
+  const featuredModelName = useMemo(() => {
+    if (!featured) return "";
+    return (
+      models.find((m) => m.id === featured.modelId)?.displayName ??
+      featured.modelId
+    );
+  }, [featured, models]);
+
+  // Camera-move presets drive the composer strip (S11's "25 camera presets").
+  const cameraPresets = useMemo(
+    () => presets.filter((p) => p.category === "camera-control"),
+    [presets],
+  );
+
+  // Extend is only honest when the roster has an edit-video use case to land on
+  // and the job actually produced a saved clip to extend. When either is
+  // missing the Stage hides the pill rather than offering a dead action (§D4).
+  const extendUseCase = useMemo(
+    () => useCases.find((u) => u.slug === "edit-video") ?? null,
+    [useCases],
+  );
+  const onExtend = useCallback(
+    (job: JobSet) => {
+      const path = job.results?.find((r) => r.localPath)?.localPath;
+      if (!path || !extendUseCase) return;
+      // Prefill the source clip and land on the extend tab; the specific
+      // route is then chosen by the roster filter for that tab. We do not
+      // force-select veo3_1_extend — a wrong auto-select is worse than the
+      // right tab (§8, Q4).
+      setTab(extendUseCase.slug);
+      setMedia([
+        {
+          role: "video",
+          source: { kind: "local", path },
+          name: path.split("/").pop() ?? "clip",
+        },
+      ]);
+      setPrompt(job.prompt);
+      setView("studio");
+      document.getElementById("prompt-input")?.focus();
+    },
+    [extendUseCase],
+  );
+
+  const lightboxJob = useMemo(
+    () => (lightboxId ? (jobs.find((j) => j.id === lightboxId) ?? null) : null),
+    [lightboxId, jobs],
+  );
+
   // Deletion is two steps: the card asks, the modal commits. Our accent is
   // red, so colour cannot carry destructive weight — the confirm does.
   const [pendingDelete, setPendingDelete] = useState<JobSet | null>(null);
@@ -565,7 +631,27 @@ export default function App() {
   return (
     <div className="shell">
       <header className="titlebar" data-tauri-drag-region>
-        <span className="wordmark">HICKEYFIELD</span>
+        <div className="titlebar-left">
+          <span className="wordmark">HICKEYFIELD</span>
+          <nav className="view-switch" aria-label="View">
+            <button
+              type="button"
+              className="view-switch-tab"
+              aria-pressed={view === "studio"}
+              onClick={() => setView("studio")}
+            >
+              Studio
+            </button>
+            <button
+              type="button"
+              className="view-switch-tab"
+              aria-pressed={view === "library"}
+              onClick={() => setView("library")}
+            >
+              Library
+            </button>
+          </nav>
+        </div>
         <span className="titlebar-meta">
           {runningCount > 0 ? (
             <span className="titlebar-running">{runningCount} running</span>
@@ -573,84 +659,103 @@ export default function App() {
           <span className="titlebar-mode">
             {isDesktop() ? "Desktop" : "Browse mode · sample data"}
           </span>
-          <button
-            type="button"
-            className="btn btn-icon btn-ghost titlebar-action"
-            aria-label="Settings"
-            onClick={() => setOverlay("settings")}
-          >
-      <ConfirmDelete
-        open={pendingDelete !== null}
-        hasFiles={Boolean(
-          pendingDelete?.results?.some((r) => Boolean(r.localPath)),
-        )}
-        onCancel={() => setPendingDelete(null)}
-        onConfirm={(files) => void confirmDelete(files)}
-      />
-
-      <SettingsIcon size={18} />
-          </button>
         </span>
       </header>
 
-      <div className="workspace">
-        <SettingsRail
-          useCases={useCases}
-          tab={tab}
-          onTabChange={setTab}
-          preset={preset}
-          model={model}
-          route={route}
-          capabilities={capabilities}
-          settings={settings}
-          onSettingsChange={patchSettings}
-          prompt={prompt}
-          onPromptChange={setPrompt}
-          media={media}
-          onMediaAdd={addMedia}
-          onMediaRemoveRole={removeByRole}
-          onMediaRemoveKey={removeByKey}
-          ollamaUp={local?.ollama ?? false}
-          ollamaModels={ollamaModelList}
-          openaiAvailable={states.some(
-            (s) => s.provider === "openai" && s.hasKey,
-          )}
-          enhancer={enhancer}
-          onEnhancerChange={setEnhancer}
-          estimate={estimate}
-          pending={pending}
-          needsSetup={needsSetup}
-          onOpenPresets={() => setOverlay("presets")}
-          onOpenModels={() => setOverlay("models")}
-          onOpenSetup={() => setOverlay("onboarding")}
-          onSubmit={() => void onSubmit()}
-          preview={preview}
-          previewText={previewText}
-          onPreviewTextChange={setPreviewText}
-          previewing={previewing}
-          onPreview={() => void runPreview()}
-          onRetryPreview={() => void runPreview()}
-          onGenerateFromPreview={() => void onGenerateFromPreview()}
-        />
+      <div className="workspace" data-view={view}>
+        <nav className="use-nav" aria-label="Use case">
+          <WorkspaceTabs
+            variant="nav"
+            useCases={useCases}
+            value={tab}
+            onChange={setTab}
+            panelId="generator-panel"
+          />
+          <button
+            type="button"
+            className="use-nav-keys"
+            onClick={() => setOverlay("settings")}
+            aria-label="Keys and settings"
+            title="Keys and settings"
+          >
+            <KeyIcon size={20} />
+            <span className="tabs-nav-label">Keys</span>
+          </button>
+        </nav>
 
-        <ResultsFeed
-          error={submitError}
-          onDismissError={() => setSubmitError(null)}
-          jobs={jobs}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          onCancel={(id) => void cancelJob(id)}
-          onFocusPrompt={() => document.getElementById("prompt-input")?.focus()}
-        />
+        {view === "studio" ? (
+          <>
+            <SettingsRail
+              useCases={useCases}
+              tab={tab}
+              preset={preset}
+              model={model}
+              route={route}
+              capabilities={capabilities}
+              settings={settings}
+              onSettingsChange={patchSettings}
+              prompt={prompt}
+              onPromptChange={setPrompt}
+              media={media}
+              onMediaAdd={addMedia}
+              onMediaRemoveRole={removeByRole}
+              onMediaRemoveKey={removeByKey}
+              ollamaUp={local?.ollama ?? false}
+              ollamaModels={ollamaModelList}
+              openaiAvailable={states.some(
+                (s) => s.provider === "openai" && s.hasKey,
+              )}
+              enhancer={enhancer}
+              onEnhancerChange={setEnhancer}
+              estimate={estimate}
+              pending={pending}
+              needsSetup={needsSetup}
+              onOpenPresets={() => setOverlay("presets")}
+              onOpenModels={() => setOverlay("models")}
+              onOpenSetup={() => setOverlay("onboarding")}
+              onSubmit={() => void onSubmit()}
+              cameraPresets={cameraPresets}
+              onPickPreset={(p) => setPresetId(p.id)}
+              preview={preview}
+              previewText={previewText}
+              onPreviewTextChange={setPreviewText}
+              previewing={previewing}
+              onPreview={() => void runPreview()}
+              onRetryPreview={() => void runPreview()}
+              onGenerateFromPreview={() => void onGenerateFromPreview()}
+            />
 
-        <MetaRail
-          jobs={jobs}
-          models={models}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          onRerun={onRerun}
-          onDelete={onDelete}
-        />
+            <Stage
+              job={featured}
+              recents={recents}
+              modelName={featuredModelName}
+              error={submitError}
+              onDismissError={() => setSubmitError(null)}
+              onSelect={setSelectedId}
+              onRetry={onRerun}
+              onExtend={extendUseCase ? onExtend : null}
+              onReveal={(path) => void revealResult(path)}
+            />
+          </>
+        ) : (
+          <>
+            <Library
+              jobs={jobs}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onOpenLightbox={setLightboxId}
+            />
+
+            <MetaRail
+              jobs={jobs}
+              models={models}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onRerun={onRerun}
+              onDelete={onDelete}
+            />
+          </>
+        )}
       </div>
 
       <PresetPicker
@@ -695,6 +800,43 @@ export default function App() {
         onRecheckLocal={recheckLocal}
         onRunOnboarding={() => setOverlay("onboarding")}
       />
+
+      {/* A sibling of the other overlays now, not nested inside a titlebar
+          button — the fix for the button-in-button invalid HTML (AC1). */}
+      <ConfirmDelete
+        open={pendingDelete !== null}
+        hasFiles={Boolean(
+          pendingDelete?.results?.some((r) => Boolean(r.localPath)),
+        )}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={(files) => void confirmDelete(files)}
+      />
+
+      <Overlay
+        open={lightboxJob !== null}
+        onClose={() => setLightboxId(null)}
+        title={lightboxJob ? "Result" : ""}
+        variant="full"
+      >
+        {lightboxJob ? <Lightbox job={lightboxJob} /> : null}
+      </Overlay>
+    </div>
+  );
+}
+
+/** The large result shown in the Library lightbox — the same media rendering
+ * the feed uses, never a snapshot thumbnail. */
+function Lightbox({ job }: { job: JobSet }) {
+  const first = job.results?.[0];
+  return (
+    <div className="lightbox">
+      {first && isPlayableVideo(first) ? (
+        <VideoPreview result={first} className="lightbox-media" />
+      ) : first ? (
+        <img className="lightbox-media" src={posterFor(first)} alt="" />
+      ) : (
+        <span className="lightbox-empty">No output to show</span>
+      )}
     </div>
   );
 }

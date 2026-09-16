@@ -8,6 +8,15 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The window is redesigned into a stage-first Studio and a Library gallery.** Studio now
+  shows your latest result large — with its model, duration, resolution and its estimated
+  *and* actual cost on one caption — a strip of recent generations, and a 72-pixel use-case
+  nav (Video, Animate, Image, Edit, Extend, plus Keys) down the left. The composer keeps the
+  same controls, reordered around a model tile and a sticky, priced Generate bar. A new
+  Library view is a gallery of every generation with a lightbox and the per-generation cost
+  card, and the model picker is now a tile grid. The legal notice stays visible and no
+  behaviour, pricing or provider wiring changed.
+
 - **The enhancer now recommends good local models and warns about slow ones.** The
   model picker labels each installed Ollama model — small, fast instruct models suited
   to prompt rewriting (Llama 3.2, Phi-4 Mini, Gemma 3 family) are marked *recommended*

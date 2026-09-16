@@ -129,6 +129,33 @@ describe("ModelPicker hides unroutable Local-only models", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  // S12 AC7 — additive only: the DOM pins above are unchanged; the tile grid
+  // adds a thumbnail and a data-tier derived from isLaunch. No new assertion
+  // depends on the filters row, and none of the pinned assertions changed.
+  it("gives each tile a thumbnail and a data-tier from isLaunch (S12)", () => {
+    render(
+      <ModelPicker
+        open
+        onClose={() => {}}
+        models={[zImage, control]}
+        selectedModelId={null}
+        selectedRouteId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    // A launch model is a frontier tile; a non-launch model is standard.
+    expect(itemFor("Nano Banana 2").getAttribute("data-tier")).toBe("frontier");
+    expect(itemFor("Z-Image").getAttribute("data-tier")).toBe("standard");
+    // Every tile carries original placeholder art, never a snapshot thumbnail.
+    for (const li of Array.from(
+      container.querySelectorAll<HTMLLIElement>("li.model-item"),
+    )) {
+      const thumb = li.querySelector<HTMLElement>(".model-item-thumb");
+      expect(thumb).not.toBeNull();
+      expect(thumb!.style.backgroundImage).toContain("data:image/svg+xml");
+    }
+  });
+
   it("keeps a real fal route runnable and selectable (AC3)", () => {
     const onSelect = vi.fn();
     render(

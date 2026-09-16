@@ -1,30 +1,63 @@
-import type { Model, Route } from "../types";
-import { routeLabel } from "../lib/variants";
-import { ChevronRightIcon } from "./Icons";
+import type { Model, ModelCapabilities, Route } from "../types";
+import { gradientDataUri } from "../lib/placeholder";
 
-/** The row that opens the model sheet. Shows the resolved route underneath —
- * the same model on two providers can differ in price and in what it allows,
- * so the route is not an implementation detail the user should have to dig
- * for. */
+/**
+ * The composer's model tile.
+ *
+ * Restyled from a flat row into the mockup tile — a placeholder thumbnail, the
+ * model name, a provider chip and a capability line — while keeping the
+ * test-locked `.model-item` / `.model-item-name` / `.chip-route` classes AC5
+ * pins. It carries `.model-item-composer` so the picker's 5-column grid rules
+ * (scoped under `.model-list`) cannot reach it.
+ *
+ * The thumbnail is deterministic original art from `gradientDataUri` — models
+ * carry no thumbnail URL and no provider snapshot is ever rendered here. Price
+ * is deliberately not duplicated: the authoritative estimate lives on the
+ * sticky Generate button, and a second figure would be one more thing to drift.
+ */
 export function ModelRow({
   model,
   route,
+  capabilities,
   onOpen,
 }: {
   model: Model | null;
   route: Route | null;
+  capabilities?: ModelCapabilities;
   onOpen: () => void;
 }) {
+  const durations = capabilities?.durations ?? [];
+  const cap =
+    durations.length > 0 ? `up to ${Math.max(...durations)}s` : null;
+
   return (
-    <button type="button" className="model-row" onClick={onOpen}>
-      <span className="model-row-text">
-        <span className="model-row-label">Model</span>
-        <span className="model-row-name">
+    <button
+      type="button"
+      className="model-item model-item-composer"
+      onClick={onOpen}
+      aria-label="Change model"
+    >
+      <span
+        className="model-item-thumb"
+        aria-hidden="true"
+        style={
+          model
+            ? { backgroundImage: `url("${gradientDataUri(model.id)}")` }
+            : undefined
+        }
+      >
+        <span className="media-bevel" />
+      </span>
+      <span className="model-item-main">
+        <span className="model-item-name">
           {model?.displayName ?? "Select a model"}
         </span>
-        <span className="model-row-route">{routeLabel(route)}</span>
+        <span className="model-item-meta">
+          {route ? <span className="chip-route">{route.provider}</span> : null}
+          {cap ? <span className="model-item-cap">{cap}</span> : null}
+        </span>
       </span>
-      <ChevronRightIcon size={18} />
+      <span className="model-item-change">Change</span>
     </button>
   );
 }

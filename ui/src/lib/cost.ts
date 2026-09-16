@@ -187,6 +187,29 @@ function usable(v: number | null | undefined): number | null {
 }
 
 /**
+ * The cost line on the Studio stage caption and the Library gallery tile.
+ *
+ * The estimate and the actual are two different claims, so the caption never
+ * invents one from the other: with both it shows the arrow, with only one it
+ * shows only that one, and with neither it says "unpriced" (never "$0.00" or
+ * "Free" — the same refusal the rest of the cost surface makes). `tone` lets
+ * the caller amber the unpriced case without re-deriving it from the text.
+ */
+export function stageCostCaption(job: {
+  estimatedUsd?: number | null;
+  actualUsd?: number | null;
+}): { text: string; tone: "normal" | "unpriced" } {
+  const est = usable(job.estimatedUsd);
+  const act = usable(job.actualUsd);
+  if (est !== null && act !== null) {
+    return { text: `est. ${formatUsd(est)} → actual ${formatUsd(act)}`, tone: "normal" };
+  }
+  if (est !== null) return { text: `est. ${formatUsd(est)}`, tone: "normal" };
+  if (act !== null) return { text: `actual ${formatUsd(act)}`, tone: "normal" };
+  return { text: "unpriced", tone: "unpriced" };
+}
+
+/**
  * How the spend meter's own number should be qualified, in the meter's own
  * words. Empty when every counted job reported a real charge.
  */

@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { Model, Modality } from "../types";
+import { gradientDataUri } from "../lib/placeholder";
 import { Overlay } from "./Overlay";
 import { RouteIcon } from "./Icons";
 
@@ -32,10 +34,52 @@ export function ModelPicker({
   selectedRouteId: string | null;
   onSelect: (modelId: string, routeId: string) => void;
 }) {
+  // Client-side filters, additive to the pinned skeleton. All off by default so
+  // the roster shows every model until the user narrows it.
+  const [runnableOnly, setRunnableOnly] = useState(false);
+  const [audioOnly, setAudioOnly] = useState(false);
+  const [longOnly, setLongOnly] = useState(false);
+
+  const passes = (m: Model): boolean => {
+    if (runnableOnly && !m.routes.some((r) => r.available !== false)) return false;
+    if (audioOnly && !m.capabilities?.audio) return false;
+    if (longOnly && !(m.capabilities?.durations ?? []).some((d) => d >= 30))
+      return false;
+    return true;
+  };
+
   return (
     <Overlay open={open} onClose={onClose} title="Select model" variant="sheet">
+      <div className="model-filters" role="group" aria-label="Filter models">
+        <button
+          type="button"
+          className="chip chip-button"
+          aria-pressed={runnableOnly}
+          onClick={() => setRunnableOnly((v) => !v)}
+        >
+          Runnable only
+        </button>
+        <button
+          type="button"
+          className="chip chip-button"
+          aria-pressed={audioOnly}
+          onClick={() => setAudioOnly((v) => !v)}
+        >
+          Audio
+        </button>
+        <button
+          type="button"
+          className="chip chip-button"
+          aria-pressed={longOnly}
+          onClick={() => setLongOnly((v) => !v)}
+        >
+          30s capable
+        </button>
+      </div>
       {GROUPS.map((group) => {
-        const items = models.filter((m) => m.modality === group.modality);
+        const items = models.filter(
+          (m) => m.modality === group.modality && passes(m),
+        );
         if (items.length === 0) return null;
         return (
           <section className="model-group" key={group.modality}>
@@ -54,7 +98,17 @@ export function ModelPicker({
                     className="model-item"
                     data-active={active || undefined}
                     data-unrunnable={!runnable || undefined}
+                    data-tier={model.isLaunch ? "frontier" : "standard"}
                   >
+                    <span
+                      className="model-item-thumb"
+                      aria-hidden="true"
+                      style={{
+                        backgroundImage: `url("${gradientDataUri(model.id)}")`,
+                      }}
+                    >
+                      <span className="media-bevel" />
+                    </span>
                     <button
                       type="button"
                       className="model-item-main"

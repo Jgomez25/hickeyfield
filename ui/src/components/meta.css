@@ -271,7 +271,7 @@
 
 .confirm-check input {
   margin-top: 0.2em;
-  accent-color: var(--color-vermilion);
+  accent-color: var(--accent);
   flex: none;
 }
 

@@ -50,7 +50,7 @@ export const ResultsFeed = forwardRef<
           {onDismissError ? (
             <button
               type="button"
-              className="btn btn-quiet feed-error-dismiss"
+              className="btn btn-ghost btn-sm feed-error-dismiss"
               onClick={onDismissError}
             >
               Dismiss

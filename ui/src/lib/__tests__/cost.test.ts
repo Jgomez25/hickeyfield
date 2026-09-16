@@ -10,6 +10,7 @@ import {
   formatCost,
   formatUsd,
   hasPrice,
+  stageCostCaption,
   totalSpend,
   UNKNOWN_COST_LABEL,
 } from "../cost";
@@ -197,5 +198,33 @@ describe("sessionSpend", () => {
       "2 estimated · 3 unpriced",
     );
     expect(spendQualifier({ estimatedCount: 0, unknownCount: 0 })).toBeNull();
+  });
+});
+
+// AC4 (S12). The stage/gallery caption's four cost states.
+describe("stageCostCaption", () => {
+  it("shows the arrow when both estimate and actual are known", () => {
+    const c = stageCostCaption({ estimatedUsd: 0.43, actualUsd: 0.41 });
+    expect(c.text).toBe("est. $0.43 → actual $0.41");
+    expect(c.tone).toBe("normal");
+  });
+
+  it("shows only the estimate when the actual is missing (no invented arrow)", () => {
+    const c = stageCostCaption({ estimatedUsd: 0.43, actualUsd: null });
+    expect(c.text).toBe("est. $0.43");
+    expect(c.text).not.toContain("→");
+    expect(c.tone).toBe("normal");
+  });
+
+  it("shows only the actual when there was no estimate", () => {
+    const c = stageCostCaption({ estimatedUsd: null, actualUsd: 0.41 });
+    expect(c.text).toBe("actual $0.41");
+    expect(c.tone).toBe("normal");
+  });
+
+  it("is 'unpriced' with the unpriced tone when neither is known", () => {
+    const c = stageCostCaption({ estimatedUsd: null, actualUsd: undefined });
+    expect(c.text).toBe("unpriced");
+    expect(c.tone).toBe("unpriced");
   });
 });

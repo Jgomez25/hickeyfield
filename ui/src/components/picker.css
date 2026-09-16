@@ -203,31 +203,55 @@
   color: var(--text-tertiary);
 }
 
-.model-list {
+/* The picker filters row. Additive to the pinned skeleton — off by default. */
+.model-filters {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: var(--space-200);
+}
+
+/* A 5-column tile grid. Every layout rule below is scoped under `.model-list`
+ * so the composer's `.model-item-composer` tile (rail.css) — which reuses the
+ * same pinned class names — does not inherit the grid. */
+.model-list {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-300);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.model-item {
+.model-list .model-item {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: var(--space-300);
-  padding: var(--space-250) var(--space-300);
+  flex-direction: column;
+  gap: var(--space-250);
+  padding: var(--space-250);
   border: 1px solid transparent;
-  border-radius: var(--radius-300);
-  background: var(--light-05);
+  border-radius: var(--radius-card);
+  background: var(--bg-secondary);
 }
 
-.model-item[data-active] {
+.model-list .model-item[data-active] {
   border-color: var(--vermilion-alpha-40);
   background: var(--accent-soft);
 }
 
-.model-item-main {
+/* The frontier (launch) models get the accent ring the mockup draws. */
+.model-list .model-item[data-tier="frontier"] {
+  box-shadow: 0 0 0 1.5px var(--vermilion-alpha-50);
+}
+
+.model-list .model-item-thumb {
+  position: relative;
+  aspect-ratio: var(--tile-thumb-ratio);
+  border-radius: var(--radius-200);
+  background-size: cover;
+  background-position: 50%;
+}
+
+.model-list .model-item-main {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -240,25 +264,28 @@
   text-align: left;
 }
 
-.model-item-name {
+.model-list .model-item-name {
   display: flex;
   align-items: center;
+  font-family: var(--font-brand);
   font-size: var(--text-sm);
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
 }
 
-.model-item-sub {
+.model-list .model-item-sub {
   font-size: var(--text-xs);
   color: var(--text-secondary);
 }
 
-.model-item-routes {
+.model-list .model-item-routes {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-150);
   flex: none;
 }
 
-.chip-route {
+.model-list .chip-route {
   height: 1.75rem;
   padding: 0 var(--space-250);
   font-family: var(--font-mono);
@@ -268,17 +295,17 @@
 /* A route we cannot execute is shown rather than hidden, so the user can see
  * the model is served there and learn what unlocks it. Dimmed, not removed —
  * and never a red fill, which is reserved for destructive state. */
-.chip-route[data-unavailable] {
+.model-list .chip-route[data-unavailable] {
   opacity: 0.4;
   cursor: not-allowed;
   text-decoration: line-through;
 }
 
-.model-item[data-unrunnable] .model-item-name {
+.model-list .model-item[data-unrunnable] .model-item-name {
   opacity: 0.55;
 }
 
-.model-item[data-unrunnable] .model-item-sub {
+.model-list .model-item[data-unrunnable] .model-item-sub {
   /* The reason replaces the description here, so it needs to read as an
    * explanation rather than as more metadata. */
   font-style: italic;

@@ -31,9 +31,9 @@
   align-items: flex-start;
   gap: var(--space-300);
   padding: var(--space-300) var(--space-400);
-  border: 1px solid rgba(255, 84, 98, 0.32);
+  border: 1px solid var(--danger-border);
   border-radius: var(--radius-300);
-  background: rgba(255, 84, 98, 0.12);
+  background: var(--danger-soft);
   color: var(--danger);
 }
 
@@ -223,4 +223,346 @@
  * that already fits. */
 .result-card[data-portrait] .result-card-media {
   object-fit: contain;
+}
+
+/* ── Studio stage ──────────────────────────────────────────────────────────
+ * The centre column on Studio: the latest (or selected) result large with its
+ * caption and action pills, a recents strip below, and the submit-error banner
+ * (moved here from the old flat feed). */
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-400);
+  min-height: 0;
+  padding: var(--space-200) var(--space-200) 0;
+  overflow: hidden;
+}
+
+.stage-head,
+.stage-recents-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-300);
+}
+
+.stage-title,
+.library-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-h-xs);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.stage-sub {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.stage-timer {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-200);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.stage-timer-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  box-shadow: var(--hickeyfield-bloom);
+}
+
+.stage-hero {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: var(--radius-500);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.stage-hero-media {
+  position: absolute;
+  inset: 0;
+}
+
+.stage-hero-img,
+.stage-hero-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.stage-hero-running {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stage-hero-rainbow {
+  height: 78%;
+  max-width: 90%;
+  aspect-ratio: 16 / 9;
+}
+
+.stage-hero-status {
+  position: absolute;
+  bottom: var(--space-500);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.stage-hero-failed {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--space-600);
+  background: var(--danger-soft);
+  color: var(--danger);
+  text-align: center;
+  font-size: var(--text-sm);
+}
+
+.stage-hero-caption {
+  position: absolute;
+  left: var(--space-500);
+  bottom: var(--space-500);
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-150);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
+}
+
+.stage-hero-name {
+  font-family: var(--font-brand);
+  font-size: var(--text-h-xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  line-height: 1.1;
+}
+
+.stage-hero-detail {
+  font-size: var(--text-xs);
+  color: var(--light-80);
+}
+
+.stage-hero-cost {
+  font-family: var(--font-mono);
+}
+
+.stage-hero-cost[data-unpriced] {
+  color: var(--warning);
+}
+
+.stage-hero-pills {
+  position: absolute;
+  top: var(--space-400);
+  right: var(--space-400);
+  z-index: 1;
+  display: flex;
+  gap: var(--space-200);
+}
+
+.stage-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 1.75rem;
+  padding: 0 var(--space-300);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--dark-60);
+  backdrop-filter: blur(12px);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.stage-pill:hover {
+  background: var(--dark-80);
+}
+
+.stage-recents {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-200);
+  flex: none;
+}
+
+.stage-recents-title {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  letter-spacing: 0.02em;
+}
+
+.stage-recents-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--space-200);
+}
+
+.stage-recent-tile {
+  position: relative;
+  aspect-ratio: var(--tile-thumb-ratio);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-200);
+  background: var(--bg-tertiary);
+  background-size: cover;
+  background-position: 50%;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.stage-recent-tile[data-selected] {
+  box-shadow: 0 0 0 1.5px var(--vermilion-alpha-50);
+}
+
+.stage-recent-cost {
+  position: absolute;
+  left: var(--space-200);
+  bottom: var(--space-150);
+  z-index: 1;
+  font-family: var(--font-mono);
+  font-size: var(--text-xxs);
+  color: var(--light-70);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
+}
+
+.stage-recent-cost[data-running] {
+  color: var(--text-brand);
+}
+
+.stage-recent-cost[data-unpriced] {
+  color: var(--warning);
+}
+
+/* ── Library gallery ───────────────────────────────────────────────────────
+ * A second presentation of the same jobs array — no new command. */
+
+.library {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-400);
+  min-height: 0;
+  padding: var(--space-200) var(--space-200) 0;
+  overflow: hidden;
+}
+
+.library-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-300);
+}
+
+.library-filters {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-200);
+}
+
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-300);
+  min-height: 0;
+  padding-bottom: var(--space-600);
+  overflow-y: auto;
+  align-content: start;
+}
+
+.library-tile {
+  position: relative;
+  aspect-ratio: var(--tile-thumb-ratio);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-card);
+  background: var(--bg-tertiary);
+  background-size: cover;
+  background-position: 50%;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.library-tile[data-selected] {
+  box-shadow: 0 0 0 1.5px var(--vermilion-alpha-50);
+}
+
+.library-tile[data-failed] {
+  border: 1px solid var(--danger-border);
+  background: var(--danger-soft);
+}
+
+.library-tile-caption {
+  position: absolute;
+  left: var(--space-300);
+  right: var(--space-300);
+  bottom: var(--space-250);
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
+}
+
+.library-tile-name {
+  font-family: var(--font-brand);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-tile[data-failed] .library-tile-name {
+  color: var(--danger);
+}
+
+.library-tile-cost {
+  font-family: var(--font-mono);
+  font-size: var(--text-xxs);
+  color: var(--light-70);
+}
+
+.library-tile-cost[data-unpriced] {
+  color: var(--warning);
+}
+
+/* ── Library lightbox ──────────────────────────────────────────────────────
+ * The selected result shown large in the existing full Overlay. */
+
+.lightbox {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.lightbox-media {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-300);
+}
+
+.lightbox-empty {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
 }

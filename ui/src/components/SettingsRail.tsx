@@ -13,17 +13,56 @@ import type {
   UseCase,
   WorkspaceTab,
 } from "../types";
-import { WorkspaceTabs } from "./WorkspaceTabs";
+import { useState } from "react";
 import { PresetTile } from "./PresetTile";
 import { Dropzone, FrameSlots, type FrameSlot } from "./MediaInputs";
 import { PromptCard } from "./PromptCard";
 import { EnhancerPicker } from "./EnhancerPicker";
 import { ModelRow } from "./ModelRow";
+import { CameraPreview } from "./CameraPreview";
 import { ChipRow } from "./ChipRow";
 import { GenerateButton } from "./GenerateButton";
 import { PromptPreview } from "./PromptPreview";
 
 const PANEL_ID = "generator-panel";
+
+/** How many camera moves the strip shows before the "+N more" tile. */
+const CAMERA_STRIP_LIMIT = 3;
+
+/**
+ * One camera-move tile in the composer strip. Tracks its own hover/focus so the
+ * CSS-transform preview plays (the same `data-active` mechanism the preset
+ * picker uses), and picks the preset on click.
+ */
+function CameraStripTile({
+  preset,
+  active,
+  onPick,
+}: {
+  preset: PresetFamily;
+  active: boolean;
+  onPick: () => void;
+}) {
+  const [hot, setHot] = useState(false);
+  return (
+    <button
+      type="button"
+      className="camera-strip-tile"
+      data-active={active || undefined}
+      onClick={onPick}
+      onMouseEnter={() => setHot(true)}
+      onMouseLeave={() => setHot(false)}
+      onFocus={() => setHot(true)}
+      onBlur={() => setHot(false)}
+      aria-pressed={active}
+      aria-label={`Camera move ${preset.displayName}`}
+    >
+      <CameraPreview slug={preset.id} active={hot} />
+      <span className="media-bevel" aria-hidden="true" />
+      <span className="camera-strip-name">{preset.displayName}</span>
+    </button>
+  );
+}
 
 /**
  * Human labels for the media roles. The *slots* now come from the use case in
@@ -60,7 +99,6 @@ function slotsFor(
 export function SettingsRail({
   useCases,
   tab,
-  onTabChange,
   preset,
   model,
   route,
@@ -85,6 +123,8 @@ export function SettingsRail({
   onOpenModels,
   onOpenSetup,
   onSubmit,
+  cameraPresets,
+  onPickPreset,
   preview,
   previewText,
   onPreviewTextChange,
@@ -94,8 +134,9 @@ export function SettingsRail({
   onGenerateFromPreview,
 }: {
   useCases: UseCase[];
+  /** The active use-case slug — drives which frame slots the composer shows.
+   * Selection itself now lives in the 72px nav (WorkspaceTabs), not here. */
   tab: WorkspaceTab;
-  onTabChange: (tab: WorkspaceTab) => void;
   preset: PresetFamily | null;
   model: Model | null;
   route: Route | null;
@@ -124,6 +165,9 @@ export function SettingsRail({
   onOpenModels: () => void;
   onOpenSetup: () => void;
   onSubmit: () => void;
+  /** Camera-control presets for the strip; "+N more" opens the full picker. */
+  cameraPresets: PresetFamily[];
+  onPickPreset: (preset: PresetFamily) => void;
   /** The current preview, or null when the panel is closed. */
   preview: Preview | null;
   /** The editable preview text — what Generate-from-preview sends verbatim. */
@@ -150,9 +194,6 @@ export function SettingsRail({
   return (
     <aside className="rail rail-settings" aria-label="Generation settings">
       <div className="rail-card">
-        <WorkspaceTabs
-          useCases={useCases} value={tab} onChange={onTabChange} panelId={PANEL_ID} />
-
         <div className="rail-stack" id={PANEL_ID} role="tabpanel">
           <PresetTile
             preset={preset}
@@ -198,7 +239,37 @@ export function SettingsRail({
             onChange={onEnhancerChange}
           />
 
-          <ModelRow model={model} route={route} onOpen={onOpenModels} />
+          <ModelRow
+            model={model}
+            route={route}
+            capabilities={capabilities}
+            onOpen={onOpenModels}
+          />
+
+          {cameraPresets.length > 0 ? (
+            <div className="camera-strip">
+              <span className="camera-strip-label">Camera move</span>
+              <div className="camera-strip-grid">
+                {cameraPresets.slice(0, CAMERA_STRIP_LIMIT).map((p) => (
+                  <CameraStripTile
+                    key={p.id}
+                    preset={p}
+                    active={preset?.id === p.id}
+                    onPick={() => onPickPreset(p)}
+                  />
+                ))}
+                <button
+                  type="button"
+                  className="camera-strip-more"
+                  onClick={onOpenPresets}
+                >
+                  {cameraPresets.length > CAMERA_STRIP_LIMIT
+                    ? `+${cameraPresets.length - CAMERA_STRIP_LIMIT} more`
+                    : "More"}
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           <ChipRow
             capabilities={capabilities}
@@ -206,14 +277,16 @@ export function SettingsRail({
             onChange={onSettingsChange}
           />
 
-          <GenerateButton
-            estimate={estimate}
-            pending={pending}
-            blockedReason={blockedReason}
-            needsSetup={needsSetup}
-            onSubmit={onSubmit}
-            onSetup={onOpenSetup}
-          />
+          <div className="rail-generate-sticky">
+            <GenerateButton
+              estimate={estimate}
+              pending={pending}
+              blockedReason={blockedReason}
+              needsSetup={needsSetup}
+              onSubmit={onSubmit}
+              onSetup={onOpenSetup}
+            />
+          </div>
 
           {!needsSetup ? (
             <button

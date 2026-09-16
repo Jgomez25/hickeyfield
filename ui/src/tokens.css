@@ -88,8 +88,11 @@
 
   /* ── Semantic: text ─────────────────────────────────────────────────── */
   --text-primary: #ffffff;
-  --text-secondary: #828282;
-  --text-tertiary: #626262;
+  /* Re-valued in S12 (owner-approved Tokens board): the old #828282/#626262
+   * pair was under AA on the darker cards; these two nudges land on every
+   * surface at once through the semantic aliases, no component edit. */
+  --text-secondary: #9a9a9a;
+  --text-tertiary: #6e6e6e;
   --text-disabled: var(--cool-100);
   --text-inverse: #1a1a1a;
 
@@ -157,6 +160,11 @@
   --radius-600: 1.5rem;
   --radius-full: 9999px;
 
+  /* S12 semantic radii: name the two shapes the redesign draws everywhere so a
+   * tile or panel radius is one edit, not a scattered literal. */
+  --radius-card: var(--radius-400);
+  --radius-panel: var(--radius-600);
+
   /* ── Elevation ──────────────────────────────────────────────────────── */
   --shadow-sheen: inset 0 2px 3px 0 #ffffff0d;
   --shadow-raised: inset 0 2px 3px 0 #ffffff0d, 0 4px 24px -8px #00000026;
@@ -171,6 +179,10 @@
    * actually bloom. This is our one deliberate divergence from Higgsfield's
    * flat treatment. */
   --hickeyfield-bloom: 0 0 24px rgba(255, 74, 28, 0.32);
+  /* The stronger bloom on the primary action's hover. Named here so the one
+   * component that draws it (the Generate button) references a token, not a
+   * raw brand rgb literal the provenance/token grep would flag. */
+  --bloom-strong: 0 0 32px rgba(255, 74, 28, 0.42);
 
   /* ── Motion ─────────────────────────────────────────────────────────── */
   --dur-fast: 0.1s;
@@ -208,8 +220,10 @@
   --tracking-tight: -0.02em;
 
   /* ── Layout ─────────────────────────────────────────────────────────── */
-  --rail-settings: 410px;
+  --rail-nav: 72px;
+  --rail-settings: 400px;
   --rail-meta: 390px;
+  --tile-thumb-ratio: 16 / 9;
   --z-dropdown: 10;
   --z-sticky: 20;
   --z-overlay: 30;
