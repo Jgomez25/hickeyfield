@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S15-storyboard-render",
+  "currentSlice": "S16-duration-range-and-continuity-prompting",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -114,6 +114,12 @@
       "status": "released",
       "started": "2026-09-16",
       "branch": "forge/s15-storyboard-render"
+    },
+    {
+      "id": "S16-duration-range-and-continuity-prompting",
+      "title": "duration-range-and-continuity-prompting",
+      "status": "in-progress",
+      "started": "2026-09-16"
     }
   ]
 }
