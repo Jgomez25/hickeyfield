@@ -5,9 +5,15 @@ Agents: use `model: "opus"` by default; `fable` only when necessary (owner prefe
 
 ## Released on `main` (all installed to /Applications)
 S1 reliability(+F1/F3/F5) · S2 honest-free-tier · S4 enhancer-wired · S5 model-curation ·
-S6 refusal-guard · S7 prompt-preview/edit/retry. Tests 773 Rust / 232 UI at S7.
+S6 refusal-guard · S7 prompt-preview/edit/retry · **S8 fal-catalogue-sync (released 2026-09-16,
+main 2672040: 11 verified fal models, Seedance 2.5 native 30s t2v-only, fal_diff tool; LTX 2.5 ×2,
+Veo 3.1 Extend and Seedance i2v withdrawn → S9)**. Tests 779 Rust / 232 UI at S8.
 
-## IN FLIGHT: S8-fal-catalogue-sync — branch `forge/s8-fal-catalogue-sync` (UNCOMMITTED)
+## NUMBERING NOTE (2026-09-16): `new-slice.sh` numbers by state.json count, so the parser slice
+is **S9-fal-schema-const-and-int-enums**; "S9 pricing" below is therefore S10, "S10 redesign" is
+S11, Storyboard S12+. Owner order unchanged.
+
+## S8 HISTORY (released; kept for the repair trail) — branch `forge/s8-fal-catalogue-sync`
 Implemented + green (779 tests, snapshot refreshed 2026-09-16 = 1,491 models, audit_fal
 UNREACHABLE=0, 13 new + seedance_2_5 promoted with native 30s). Evidence: slice/design/implement
 written; TEST + REVIEW/SECURITY agents were running at cutoff — check
