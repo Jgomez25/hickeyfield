@@ -177,4 +177,149 @@ describe("Storyboard", () => {
     )!;
     expect(draft.disabled).toBe(true);
   });
+
+  it("a cleared target length shows a validation message and blocks drafting", () => {
+    const props = base();
+    render(<Storyboard {...props} />);
+    typeInto(
+      container.querySelector<HTMLTextAreaElement>("textarea.storyboard-brief")!,
+      "a brief",
+    );
+    // Clear the target length → 0.
+    typeInto(
+      container.querySelector<HTMLInputElement>(".storyboard-target-input")!,
+      "",
+    );
+    expect(container.querySelector(".storyboard-target-invalid")).not.toBeNull();
+    expect(
+      container.querySelector<HTMLButtonElement>("button.storyboard-draft")!.disabled,
+    ).toBe(true);
+  });
+
+  it("a full success switches to the Library", async () => {
+    const onGenerated = vi.fn();
+    const props = base({
+      onGenerate: vi.fn(async () => ({
+        storyboardId: "sb",
+        shots: [0, 1, 2, 3].map((i) => ({
+          shotIndex: i,
+          jobSetId: `j${i}`,
+          error: null,
+        })),
+      })),
+      onGenerated,
+    });
+    render(<Storyboard {...props} />);
+    typeInto(
+      container.querySelector<HTMLTextAreaElement>("textarea.storyboard-brief")!,
+      "brief",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-draft")!.click();
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-generate")!.click();
+    });
+    await flush();
+
+    expect(onGenerated).toHaveBeenCalledTimes(1);
+    // No partial-failure summary on a clean run.
+    expect(container.querySelector(".storyboard-outcome")).toBeNull();
+  });
+
+  it("a partial failure shows the failed shots and retry submits only those", async () => {
+    const onGenerated = vi.fn();
+    const onGenerate = vi.fn(async (input: { shots: unknown[] }) => {
+      if (input.shots.length === 4) {
+        // Shot 3 (index 2) is refused; the rest start.
+        return {
+          storyboardId: "sb1",
+          shots: [0, 1, 2, 3].map((i) => ({
+            shotIndex: i,
+            jobSetId: i === 2 ? null : `j${i}`,
+            error: i === 2 ? "the model declined this shot" : null,
+          })),
+        };
+      }
+      // The retry of the single failed shot now succeeds.
+      return {
+        storyboardId: "sb2",
+        shots: [{ shotIndex: 0, jobSetId: "j2", error: null }],
+      };
+    });
+    const props = base({ onGenerate, onGenerated });
+    render(<Storyboard {...props} />);
+    typeInto(
+      container.querySelector<HTMLTextAreaElement>("textarea.storyboard-brief")!,
+      "brief",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-draft")!.click();
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-generate")!.click();
+    });
+    await flush();
+
+    // The partial failure is surfaced, with the failed shot's error text, and
+    // the batch did NOT switch to the Library.
+    const outcome = container.querySelector(".storyboard-outcome");
+    expect(outcome).not.toBeNull();
+    expect(outcome!.textContent).toContain("the model declined this shot");
+    const fails = container.querySelectorAll(".storyboard-outcome-fail");
+    expect(fails.length).toBe(1);
+    expect(fails[0].getAttribute("data-shot-index")).toBe("2");
+    expect(onGenerated).not.toHaveBeenCalled();
+
+    // Retry submits ONLY the failed shot.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-retry")!.click();
+    });
+    await flush();
+
+    expect(onGenerate).toHaveBeenCalledTimes(2);
+    const retryArg = onGenerate.mock.calls[1][0] as { shots: unknown[] };
+    expect(retryArg.shots.length).toBe(1);
+    // All shots now succeeded → hand off to the Library, summary cleared.
+    expect(onGenerated).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".storyboard-outcome")).toBeNull();
+  });
+
+  it("reordering closes an open prompt preview", async () => {
+    const props = base();
+    render(<Storyboard {...props} />);
+    typeInto(
+      container.querySelector<HTMLTextAreaElement>("textarea.storyboard-brief")!,
+      "brief",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-draft")!.click();
+    });
+    await flush();
+
+    // Open shot 1's inline preview.
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          ".storyboard-shot[data-shot-index='0'] .storyboard-preview-open",
+        )!
+        .click();
+    });
+    await flush();
+    expect(container.querySelector(".prompt-preview-text")).not.toBeNull();
+
+    // Move shot 1 down — the stale preview must close so it cannot be accepted
+    // for the shot that now sits at index 0.
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          ".storyboard-shot[data-shot-index='0'] .storyboard-move:not([disabled])",
+        )!
+        .click();
+    });
+    await flush();
+    expect(container.querySelector(".prompt-preview-text")).toBeNull();
+  });
 });

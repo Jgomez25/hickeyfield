@@ -207,3 +207,127 @@ itself does not re-enforce "total shown first" (its only caller is the Storyboar
 - `store::storyboard` (singular) and `store::jobs_in_storyboard` are the store surface for S14 and the
   tests; nothing in S13 production calls them, so both carry `#[allow(dead_code)]` with a note.
 - The successful generate-all path (real job ids) is not unit-tested offline; see §10.2 gap above.
+
+---
+
+## REPAIR ROUND 1
+
+Fresh implementer, repair round 1 of at most 2. Fixed every item in review.md
+(B1, M1, m1/m2/m3) and security.md (L1–L3). Working tree only, no commit. Full
+gate re-run and pasted at the end.
+
+### B1 (money, blocker) — non-unique job ids collapsed same-model shots
+`src-tauri/src/commands.rs`.
+- Added a process-wide monotonic counter and two minting helpers:
+  `static ID_SEQ: AtomicU64`, `next_id_seq()`, `mint_job_id(model_id)`
+  (`= "{now_secs}-{model_id}-{seq}"`) and `mint_storyboard_id()`
+  (`= "sb-{now_secs}-{seq}"`). The counter is the disambiguator the review asked
+  for; no new dependency (std `AtomicU64`).
+- `submit_one` now mints via `mint_job_id(&model.id)` (was
+  `format!("{}-{}", now_secs(), model.id)`), so **both** the generate-all loop
+  and the single-job path get collision-proof ids. Outward id shape changes only
+  by a trailing `-{seq}` segment; grep confirmed **nothing parses the job id**
+  (`split('-')` appears nowhere; only `route_id.split(':')` is parsed, untouched).
+- `generate_storyboard_inner` mints the storyboard id via `mint_storyboard_id()`
+  (fixes m1/L2 with the same counter).
+- Tests (`commands.rs`): `minted_job_ids_do_not_collide_within_one_second`
+  (200 same-model ids all distinct; two immediate single-job mints differ; two
+  storyboard ids differ) and `same_model_shots_survive_as_distinct_rows_in_the_store`
+  (three same-model shots minted as `submit_one` mints them, tagged to one
+  storyboard, upserted, then read back via `jobs_in_storyboard` — three rows,
+  dense `shot_index [0,1,2]`, none clobbered by `ON CONFLICT`).
+  - Honest note on why this is a store-write test and not a live loop test: the
+    router (`route::resolve`) only ever yields fal/higgsfield routes (the only
+    providers with `has_adapter()`), and reaching them needs a configured key
+    that then makes `submit_to_provider` POST over the network. So the loop's
+    own submit cannot run offline without a network call. The collision itself,
+    however, lives entirely in id minting + the store's first upsert, which the
+    two tests drive with the real production `mint_job_id` and the real store.
+
+### M1 (major) — UI swallowed per-shot failures
+`ui/src/components/Storyboard.tsx`.
+- Added `outcome` state. `generate()` now inspects `result.shots`: on **full
+  success** it clears the outcome and calls `onGenerated(result)` (App switches
+  to Library, unchanged); on **partial failure** it keeps the result and does
+  NOT hand off, so the failed shots stay editable in their cards.
+- New outcome summary (`.storyboard-outcome`, `role="alert"`): "n of N shots
+  submitted; m failed", a `.storyboard-outcome-fail` line per failed shot
+  carrying its `shot_index` and error text, the retry total
+  (`totalCostCaption` of just the failed shots — money shown first), and a
+  `.storyboard-retry` button.
+- `retryFailed()` resubmits ONLY the failed shots through the same money-gated
+  `submitBatch` (estimate + S6 guard + S7 verbatim prompt per shot), remaps the
+  retried `shotIndex` back onto the original card numbering, merges, and hands
+  off to the Library only once every shot has started.
+- `submitBatch(indices)` factors the per-shot `SubmitInput` build so generate
+  and retry share one path. `App.tsx` `onStoryboardGenerated` is now only ever
+  called on full success, so switching to Library there is correct.
+- vitest (`Storyboard.test.tsx`): `a full success switches to the Library`
+  (onGenerated once, no summary) and `a partial failure shows the failed shots
+  and retry submits only those` (summary + error text rendered, onGenerated not
+  called; retry calls onGenerate a 2nd time with exactly 1 shot; on success the
+  summary clears and onGenerated fires).
+
+### Review minors
+- **m1** storyboard id collision — fixed by `mint_storyboard_id()` (above).
+- **m2** stale preview on reorder/delete — added `closePreview()` (resets
+  `previewShot`/`preview`/`previewText`) and call it from `moveShot`,
+  `removeShot`, and `draft`. vitest `reordering closes an open prompt preview`
+  opens a shot's inline `PromptPreview`, moves the shot, and asserts the
+  `.prompt-preview-text` panel is gone.
+- **m3** cleared target length — a 0/blank target now renders
+  `.storyboard-target-invalid` (`role="alert"`) and disables Draft, instead of
+  silently guaranteeing a `DurationSum` rejection. vitest `a cleared target
+  length shows a validation message and blocks drafting`.
+
+### Security L1–L3 — server-side bounds in generate_storyboard
+`src-tauri/src/commands.rs` `generate_storyboard_inner`.
+- **L1** — before minting anything: reject `input.shots.len() > 8` (const
+  `MAX_SHOTS`), reject an empty shot list, and — when `plan_json` is present —
+  parse it and re-run `hickeyfield_core::storyboard::validate(&plan.shots,
+  plan.target_seconds, use_case)` (the same validator the draft path uses), then
+  require the submitted shot list to match the plan (same length, same per-index
+  `model_id`) so no shot is injected beyond the plan the user saw and priced.
+- **L3** — cap `brief` at 4 KiB (`MAX_BRIEF_BYTES`) and `plan_json` at 64 KiB
+  (`MAX_PLAN_JSON_BYTES`) with typed `Err(String)` messages at the boundary,
+  before the DB write.
+- Tests: `generate_rejects_more_than_eight_shots`,
+  `generate_rejects_a_plan_with_a_bad_model` (asserts nothing was written),
+  `generate_rejects_shots_that_do_not_match_the_plan`,
+  `generate_rejects_a_brief_over_the_size_cap`,
+  `generate_rejects_a_plan_json_over_the_size_cap`. The pre-existing
+  `generate_records_the_set_even_when_shots_fail` was switched to `plan_json:
+  None` (it exercises the per-shot continue-on-failure path, which is distinct
+  from the new pre-loop plan re-validation).
+- Added `#[derive(Debug)]` to `ShotOutcome`/`StoryboardResult` so the new
+  `unwrap_err()` tests compile.
+
+### Gate — every command, observed output
+```
+cargo fmt --all --check                         → FMT_CLEAN (exit 0)
+cargo clippy --workspace --all-targets -- -D warnings → Finished, 0 warnings
+cargo test --workspace                          → 704 + 139 + 3 + 2 = 848 passed, 0 failed, 12 ignored (>= 841)
+./scripts/lint-provenance.py                    → CDN PASS, Copy provenance PASS (80015 shingles)
+env -u hickeyfield_FAL_KEY -u FAL_KEY cargo run -q -p hickeyfield-core --example audit_fal
+                                                → PINNED 0, UNREACHABLE 0 (unchanged)
+cd ui && pnpm test                              → 23 files, 285 passed (>= 281)
+cd ui && pnpm build                             → tsc + vite ✓ built (dist emitted)
+```
+`tauri build` (8-min bundle) was NOT re-run this round — no native/tooling change,
+only Rust command logic + TS view logic + CSS; the S12 bundle path is unchanged.
+`first_light.rs` never run; no hosted LLM or fal call with a key; no money spent.
+
+### Known limitations not fixed (not hidden)
+- **Retry creates a new storyboard group.** A "Retry failed" batch goes through
+  `generate_storyboard` again and mints a fresh `storyboard_id`, so retried
+  shots land in a separate Library group from the first batch's successes. The
+  merged in-view outcome is correct, but the two groups are not reunited under
+  one header. Reuniting them needs a "generate into an existing set" command,
+  which is out of this slice's scope.
+- **The successful generate-all loop remains not unit-tested offline** (the
+  router-only-yields-fal/higgsfield constraint above). The id-minting and store
+  writes it depends on are now tested with the real production helpers; the live
+  submit itself is still covered only by a real run.
+- Everything from the original claim's limitations list still stands (no
+  render/stitch/last-frame — S14; continuity recorded not applied; no hosted
+  JSON mode; `store::storyboard`/`jobs_in_storyboard` are the S14 surface).

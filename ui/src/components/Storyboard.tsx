@@ -82,6 +82,18 @@ export function Storyboard({
   const [previewing, setPreviewing] = useState(false);
   // The exact previewed text per shot, sent verbatim as finalPrompt (S7).
   const [finalPrompts, setFinalPrompts] = useState<Record<number, string>>({});
+  // The last generate-all outcome, kept when some shots failed so the user
+  // sees which failed (and why) and can retry just those. `null` while a batch
+  // fully succeeded (App switched to the Library) or nothing has run yet.
+  const [outcome, setOutcome] = useState<StoryboardResult | null>(null);
+
+  /** Close any open inline preview — called on reorder/delete so a stale
+   * preview cannot be accepted for the shot that now sits at that index. */
+  const closePreview = useCallback(() => {
+    setPreviewShot(null);
+    setPreview(null);
+    setPreviewText("");
+  }, []);
 
   const modelName = useCallback(
     (id: string) => models.find((m) => m.id === id)?.displayName ?? id,
@@ -118,7 +130,8 @@ export function Storyboard({
       });
       setShots(plan.shots);
       setFinalPrompts({});
-      setPreviewShot(null);
+      setOutcome(null);
+      closePreview();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -132,10 +145,14 @@ export function Storyboard({
     );
   }, []);
 
-  const removeShot = useCallback((i: number) => {
-    setShots((prev) => renumber(prev.filter((_, idx) => idx !== i)));
-    setFinalPrompts({});
-  }, []);
+  const removeShot = useCallback(
+    (i: number) => {
+      setShots((prev) => renumber(prev.filter((_, idx) => idx !== i)));
+      setFinalPrompts({});
+      closePreview();
+    },
+    [closePreview],
+  );
 
   const addShot = useCallback(() => {
     setShots((prev) => {
@@ -154,16 +171,20 @@ export function Storyboard({
     });
   }, [models]);
 
-  const moveShot = useCallback((i: number, dir: -1 | 1) => {
-    setShots((prev) => {
-      const j = i + dir;
-      if (j < 0 || j >= prev.length) return prev;
-      const next = [...prev];
-      [next[i], next[j]] = [next[j], next[i]];
-      return renumber(next);
-    });
-    setFinalPrompts({});
-  }, []);
+  const moveShot = useCallback(
+    (i: number, dir: -1 | 1) => {
+      setShots((prev) => {
+        const j = i + dir;
+        if (j < 0 || j >= prev.length) return prev;
+        const next = [...prev];
+        [next[i], next[j]] = [next[j], next[i]];
+        return renumber(next);
+      });
+      setFinalPrompts({});
+      closePreview();
+    },
+    [closePreview],
+  );
 
   const openPreview = useCallback(
     async (i: number) => {
@@ -192,54 +213,107 @@ export function Storyboard({
   );
 
   const total = totalCostCaption(estimates);
+  const targetInvalid = !(targetSeconds > 0);
   const canGenerate =
     shots.length > 0 && estimates.length === shots.length && !generating;
+
+  // The shots the last batch reported as failed (by their index in `shots`),
+  // still editable in the cards above so the user can fix and retry just those.
+  const failedIndices =
+    outcome?.shots.filter((s) => s.error).map((s) => s.shotIndex) ?? [];
+  // The retry total, shown before any resubmit so money honesty holds on retry.
+  const retryTotal = totalCostCaption(failedIndices.map((i) => estimates[i] ?? null));
+
+  // Submit the shots at `indices` (in order) through the money-gated bridge and
+  // return the per-shot result. Shared by generate-all and retry-failed so both
+  // run the identical estimate + S6 guard + S7 verbatim-prompt path per shot.
+  const submitBatch = useCallback(
+    async (indices: number[]): Promise<StoryboardResult> => {
+      const batch = indices.map((i) => shots[i]);
+      const plan: StoryboardPlan = {
+        brief,
+        targetSeconds,
+        useCase: tab,
+        shots: batch,
+      };
+      const shotInputs: SubmitInput[] = indices.map((i) => {
+        const s = shots[i];
+        return {
+          modelId: s.modelId,
+          routeId: routeFor(models, s.modelId),
+          prompt: s.prompt,
+          presetId: s.camera,
+          settings: { ...settings, duration: s.seconds },
+          media: [],
+          rewriter: enhancer,
+          finalPrompt: finalPrompts[i] ?? null,
+        };
+      });
+      return onGenerate({
+        brief,
+        targetSeconds,
+        planJson: JSON.stringify(plan),
+        shots: shotInputs,
+      });
+    },
+    [shots, brief, targetSeconds, tab, models, settings, enhancer, finalPrompts, onGenerate],
+  );
 
   const generate = useCallback(async () => {
     if (shots.length === 0) return;
     setGenerating(true);
     setError(null);
     try {
-      const plan: StoryboardPlan = {
-        brief,
-        targetSeconds,
-        useCase: tab,
-        shots,
-      };
-      const shotInputs: SubmitInput[] = shots.map((s, i) => ({
-        modelId: s.modelId,
-        routeId: routeFor(models, s.modelId),
-        prompt: s.prompt,
-        presetId: s.camera,
-        settings: { ...settings, duration: s.seconds },
-        media: [],
-        rewriter: enhancer,
-        finalPrompt: finalPrompts[i] ?? null,
-      }));
-      const result = await onGenerate({
-        brief,
-        targetSeconds,
-        planJson: JSON.stringify(plan),
-        shots: shotInputs,
-      });
-      onGenerated(result);
+      // The result's shotIndex is 0..shots.length-1, aligned with `shots`.
+      const result = await submitBatch(shots.map((_, i) => i));
+      const failed = result.shots.filter((s) => s.error);
+      if (failed.length === 0) {
+        // Every shot started — hand off to the Library.
+        setOutcome(null);
+        onGenerated(result);
+      } else {
+        // Keep the failed shots in view with their errors and a retry button.
+        setOutcome(result);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setGenerating(false);
     }
-  }, [
-    shots,
-    brief,
-    targetSeconds,
-    tab,
-    models,
-    settings,
-    enhancer,
-    finalPrompts,
-    onGenerate,
-    onGenerated,
-  ]);
+  }, [shots, submitBatch, onGenerated]);
+
+  const retryFailed = useCallback(async () => {
+    const indices = failedIndices;
+    if (indices.length === 0) return;
+    setGenerating(true);
+    setError(null);
+    try {
+      // Resubmit ONLY the failed shots. The retried result's shotIndex is
+      // 0..indices.length-1; map it back onto the original shot indices so the
+      // merged outcome still speaks in the card numbering the user sees.
+      const retried = await submitBatch(indices);
+      const remapped = retried.shots.map((s) => ({
+        ...s,
+        shotIndex: indices[s.shotIndex],
+      }));
+      // Merge: a previously-failed shot that now started replaces its old entry.
+      const byIndex = new Map(remapped.map((s) => [s.shotIndex, s]));
+      const merged: StoryboardResult = {
+        storyboardId: outcome?.storyboardId ?? retried.storyboardId,
+        shots: (outcome?.shots ?? []).map((s) => byIndex.get(s.shotIndex) ?? s),
+      };
+      if (merged.shots.every((s) => !s.error)) {
+        setOutcome(null);
+        onGenerated(merged);
+      } else {
+        setOutcome(merged);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGenerating(false);
+    }
+  }, [failedIndices, submitBatch, outcome, onGenerated]);
 
   return (
     <section className="storyboard" aria-label="Storyboard">
@@ -275,12 +349,17 @@ export function Storyboard({
           <button
             type="button"
             className="storyboard-draft"
-            disabled={drafting || !brief.trim()}
+            disabled={drafting || !brief.trim() || targetInvalid}
             onClick={() => void draft()}
           >
             {drafting ? "Drafting…" : "Draft shot list"}
           </button>
         </div>
+        {targetInvalid ? (
+          <p className="storyboard-target-invalid" role="alert">
+            Enter a target length of at least 1 second.
+          </p>
+        ) : null}
       </header>
 
       {error ? <p className="storyboard-error">{error}</p> : null}
@@ -442,6 +521,49 @@ export function Storyboard({
               + Add shot
             </button>
           </div>
+
+          {outcome && failedIndices.length > 0 ? (
+            <section className="storyboard-outcome" role="alert">
+              <p className="storyboard-outcome-summary">
+                {outcome.shots.length - failedIndices.length} of{" "}
+                {outcome.shots.length} shots submitted; {failedIndices.length}{" "}
+                failed. Fix the shots below and retry just those.
+              </p>
+              <ul className="storyboard-outcome-fails">
+                {outcome.shots
+                  .filter((s) => s.error)
+                  .map((s) => (
+                    <li
+                      className="storyboard-outcome-fail"
+                      key={s.shotIndex}
+                      data-shot-index={s.shotIndex}
+                    >
+                      <span className="storyboard-outcome-fail-n">
+                        Shot {s.shotIndex + 1}
+                      </span>
+                      <span className="storyboard-outcome-fail-why">
+                        {s.error}
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+              <div className="storyboard-outcome-retry-line">
+                <span className="storyboard-outcome-retry-total">
+                  Retry total: {retryTotal.text}
+                </span>
+                <button
+                  type="button"
+                  className="storyboard-retry"
+                  disabled={generating}
+                  onClick={() => void retryFailed()}
+                >
+                  {generating
+                    ? "Retrying…"
+                    : `Retry ${failedIndices.length} failed`}
+                </button>
+              </div>
+            </section>
+          ) : null}
 
           <footer className="storyboard-foot">
             <div className="storyboard-total-line">

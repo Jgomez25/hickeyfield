@@ -801,6 +801,59 @@
   margin: 0;
 }
 
+.storyboard-target-invalid {
+  color: var(--danger, #e2555b);
+  font-size: var(--text-200, 0.8rem);
+  margin: var(--space-100, 0.25rem) 0 0;
+}
+
+/* Per-shot outcome summary after a partial-failure generate-all (S13 M1). */
+.storyboard-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-150, 0.4rem);
+  border: 1px solid var(--danger, #e2555b);
+  border-radius: var(--radius-200, 0.5rem);
+  padding: var(--space-200);
+  margin-top: var(--space-200);
+}
+
+.storyboard-outcome-summary {
+  margin: 0;
+  font-weight: 600;
+}
+
+.storyboard-outcome-fails {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-100, 0.25rem);
+}
+
+.storyboard-outcome-fail {
+  display: flex;
+  gap: var(--space-200);
+  font-size: var(--text-200, 0.8rem);
+}
+
+.storyboard-outcome-fail-n {
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.storyboard-outcome-fail-why {
+  color: var(--danger, #e2555b);
+}
+
+.storyboard-outcome-retry-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-200);
+}
+
 .storyboard-shot-cost[data-unpriced],
 .storyboard-total[data-unpriced] {
   color: var(--warn, #e6b34d);

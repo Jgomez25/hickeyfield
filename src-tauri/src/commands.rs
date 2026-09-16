@@ -12,7 +12,40 @@ use hickeyfield_core::clients::{detect_local, LocalEndpoints};
 use hickeyfield_core::engine::{JobSet, JobStore};
 use hickeyfield_core::{registry, Billable, Estimate, ProviderId, RoutePolicy};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::State;
+
+/// A process-wide monotonic counter, minted once per id.
+///
+/// `now_secs()` is whole-second resolution (`runner.rs`), so a generate-all loop
+/// that submits several fast enqueue POSTs within one second would otherwise mint
+/// the same `{secs}-{model.id}` id twice — and `store.upsert`'s
+/// `ON CONFLICT(id) DO UPDATE` would silently overwrite the first row while every
+/// POST is still billed. This counter guarantees each id is distinct regardless of
+/// clock granularity, for both storyboard shots and standalone submits.
+static ID_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The next process-wide-unique suffix. Never repeats within a run.
+fn next_id_seq() -> u64 {
+    ID_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Mint a job id that cannot collide with another minted in the same second.
+///
+/// The seconds + model id keep the id human-legible and stable in shape; the
+/// trailing counter is what makes two same-model shots submitted inside one
+/// wall-clock second (the generate-all loop) distinct, so `store.upsert`'s
+/// `ON CONFLICT(id) DO UPDATE` can never overwrite an earlier shot's row. No
+/// code parses this id, so the extra `-{seq}` segment is safe.
+fn mint_job_id(model_id: &str) -> String {
+    format!("{}-{}-{}", now_secs(), model_id, next_id_seq())
+}
+
+/// Mint a storyboard (group) id that cannot collide with another minted in the
+/// same second. Same reasoning as [`mint_job_id`].
+fn mint_storyboard_id() -> String {
+    format!("sb-{}-{}", now_secs(), next_id_seq())
+}
 
 // ── Keys ───────────────────────────────────────────────────────────────────
 
@@ -1015,8 +1048,10 @@ fn submit_one(
     let priced_at = priced.as_ref().map(|_| now_secs());
 
     // The id is ours, not the provider's: a submit that fails still leaves a
-    // visible row explaining why, rather than vanishing.
-    let id = format!("{}-{}", now_secs(), model.id);
+    // visible row explaining why, rather than vanishing. The trailing counter
+    // keeps two same-model submits in the same wall-clock second distinct — a
+    // generate-all loop mints several within one second (see `next_id_seq`).
+    let id = mint_job_id(&model.id);
     let mut job = JobSet {
         id: id.clone(),
         model_id: model.id.clone(),
@@ -1182,7 +1217,7 @@ pub struct StoryboardGenerateInput {
 /// One shot's fate in a generate-all batch. A shot that failed (a refusal, a
 /// missing key, a submit error) carries `error`; a shot that started carries the
 /// `job_set_id` the Library watches.
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ShotOutcome {
     pub shot_index: u32,
@@ -1191,7 +1226,7 @@ pub struct ShotOutcome {
 }
 
 /// The result of a generate-all: the minted storyboard id and a per-shot outcome.
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct StoryboardResult {
     pub storyboard_id: String,
@@ -1216,11 +1251,82 @@ pub fn generate_storyboard(
 
 /// The body of [`generate_storyboard`], taking a plain `&AppState` so it is
 /// testable with an in-memory store and no Tauri `State` extractor.
+/// The largest a brief may be at the generate boundary (4 KiB). A brief is the
+/// user's own text, but capping it keeps one runaway paste from inflating the
+/// stored row (and, at draft time, the hosted completion's token cost).
+const MAX_BRIEF_BYTES: usize = 4 * 1024;
+/// The largest a serialised plan may be at the generate boundary (64 KiB).
+const MAX_PLAN_JSON_BYTES: usize = 64 * 1024;
+/// A storyboard never has more than 8 shots (the same bound `storyboard::validate`
+/// enforces at draft time). Re-checked here so the money/plan-size invariant does
+/// not depend solely on the UI disabling Generate-all.
+const MAX_SHOTS: usize = 8;
+
 fn generate_storyboard_inner(
     state: &AppState,
     input: StoryboardGenerateInput,
 ) -> Result<StoryboardResult, String> {
-    let sid = format!("sb-{}-{}", now_secs(), input.shots.len());
+    // Server-side money/size guards. The Storyboard view already gates on these
+    // (it disables Generate-all until a validated plan and its total render), but
+    // a caller that reached this command directly must not be able to submit an
+    // unbounded, unvalidated batch of paid jobs.
+    if input.brief.len() > MAX_BRIEF_BYTES {
+        return Err(format!(
+            "brief is too large ({} bytes; limit {MAX_BRIEF_BYTES}).",
+            input.brief.len()
+        ));
+    }
+    if let Some(plan_json) = input.plan_json.as_deref() {
+        if plan_json.len() > MAX_PLAN_JSON_BYTES {
+            return Err(format!(
+                "plan is too large ({} bytes; limit {MAX_PLAN_JSON_BYTES}).",
+                plan_json.len()
+            ));
+        }
+    }
+    if input.shots.is_empty() {
+        return Err("a storyboard needs at least one shot to generate.".to_string());
+    }
+    if input.shots.len() > MAX_SHOTS {
+        return Err(format!(
+            "a storyboard has at most {MAX_SHOTS} shots, but {} were submitted.",
+            input.shots.len()
+        ));
+    }
+
+    // Re-validate the plan the UI showed, server-side, via the same
+    // `storyboard::validate` the draft path used — so a tampered/direct caller
+    // cannot submit shots the composer would have refused. When a plan is
+    // present it is authoritative: the submitted shot list must match it exactly
+    // (no shot injected beyond the plan the user saw and priced).
+    if let Some(plan_json) = input.plan_json.as_deref() {
+        let plan: hickeyfield_core::storyboard::StoryboardPlan = serde_json::from_str(plan_json)
+            .map_err(|e| format!("plan is not a valid storyboard: {e}"))?;
+        let uc = hickeyfield_core::UseCase::from_slug(&plan.use_case)
+            .ok_or_else(|| format!("plan names an unknown use case: {}", plan.use_case))?;
+        hickeyfield_core::storyboard::validate(&plan.shots, plan.target_seconds, uc)
+            .map_err(|e| e.to_string())?;
+        if plan.shots.len() != input.shots.len() {
+            return Err(format!(
+                "submitted {} shots but the plan has {} — refusing to generate a set that does not match the plan.",
+                input.shots.len(),
+                plan.shots.len()
+            ));
+        }
+        for (i, shot) in input.shots.iter().enumerate() {
+            if shot.model_id != plan.shots[i].model_id {
+                return Err(format!(
+                    "shot {} submits model {}, which is not in the plan (plan shot {} is {}).",
+                    i + 1,
+                    shot.model_id,
+                    i + 1,
+                    plan.shots[i].model_id
+                ));
+            }
+        }
+    }
+
+    let sid = mint_storyboard_id();
     let storyboard = crate::store::Storyboard {
         id: sid.clone(),
         brief: input.brief.clone(),
@@ -2136,7 +2242,11 @@ mod tests {
         let input = StoryboardGenerateInput {
             brief: "a 30s ad".into(),
             target_seconds: 30.0,
-            plan_json: Some(r#"{"shots":[]}"#.into()),
+            // No plan_json here: this test drives the per-shot continue-on-failure
+            // path (unknown models fail inside the loop). Server-side plan
+            // re-validation (which would reject unknown models *before* the loop)
+            // is covered separately by `generate_rejects_a_plan_with_a_bad_model`.
+            plan_json: None,
             shots: vec![shot_input("no-such-model-a"), shot_input("no-such-model-b")],
         };
         // Call the inner logic directly with a plain &AppState (the #[command]
@@ -2177,5 +2287,208 @@ mod tests {
         let out = generate_storyboard_inner(&state, input).unwrap();
         let indices: Vec<u32> = out.shots.iter().map(|s| s.shot_index).collect();
         assert_eq!(indices, vec![0, 1, 2]);
+    }
+
+    /// A minimal `JobSet` for the store-persistence tests below.
+    fn blank_job(id: &str) -> JobSet {
+        JobSet {
+            id: id.into(),
+            model_id: "seedance_2_5".into(),
+            route_id: "fal:fal-ai/bytedance/seedance/v1/pro/text-to-video".into(),
+            request_id: String::new(),
+            endpoint: String::new(),
+            status: hickeyfield_core::JobStatus::Queued,
+            prompt: "a shot".into(),
+            enhanced_prompt: None,
+            enhancer_version: None,
+            enhance_note: None,
+            advisories: Vec::new(),
+            preset_id: None,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+            results: vec![],
+            estimated_usd: None,
+            actual_usd: None,
+            priced_from: None,
+            priced_at: None,
+            actual_source: None,
+            fail_reason: None,
+            settings: serde_json::Value::Null,
+            media: Vec::new(),
+            poll_cycles: 0,
+            stalled: false,
+            storyboard_id: None,
+            shot_index: None,
+        }
+    }
+
+    #[test]
+    fn minted_job_ids_do_not_collide_within_one_second() {
+        // B1. Before the fix an id was `{secs}-{model.id}` at whole-second
+        // resolution, so a generate-all loop submitting several same-model shots
+        // inside one second minted identical ids, and `store.upsert`'s
+        // `ON CONFLICT(id) DO UPDATE` silently overwrote earlier rows while every
+        // POST still billed. `mint_job_id` now appends a process-wide counter, so
+        // 200 same-model ids minted back-to-back are all distinct.
+        let ids: std::collections::HashSet<String> =
+            (0..200).map(|_| mint_job_id("seedance_2_5")).collect();
+        assert_eq!(ids.len(), 200, "every minted job id is unique");
+
+        // The single-job caller benefits too: two immediate submits differ.
+        assert_ne!(mint_job_id("m"), mint_job_id("m"));
+        // Group ids are unique for the same reason (m1/L2).
+        assert_ne!(mint_storyboard_id(), mint_storyboard_id());
+    }
+
+    #[test]
+    fn same_model_shots_survive_as_distinct_rows_in_the_store() {
+        // B1 at the store boundary. Three shots on ONE model, ids minted exactly
+        // as `submit_one` mints them, tagged to one storyboard. All three must
+        // persist as separate rows — the pre-fix collision collapsed them to one
+        // via `ON CONFLICT`. Offline: the rows are upserted directly, exercising
+        // the same store write `submit_one` performs before it reaches a
+        // provider (the resolver only ever yields fal/higgsfield, both of which
+        // would POST, so the loop's own submit cannot run without a network call
+        // — the collision, however, is entirely in id minting + this store write,
+        // which this test drives faithfully).
+        let state = test_state();
+        let sid = mint_storyboard_id();
+        state
+            .store
+            .upsert_storyboard(&crate::store::Storyboard {
+                id: sid.clone(),
+                brief: "one model, three shots".into(),
+                target_seconds: 24.0,
+                plan_json: "{}".into(),
+                created_at: now_secs(),
+            })
+            .unwrap();
+
+        for idx in 0..3u32 {
+            let id = mint_job_id("seedance_2_5");
+            let mut job = blank_job(&id);
+            job.storyboard_id = Some(sid.clone());
+            job.shot_index = Some(idx);
+            state.store.upsert(&job).unwrap();
+        }
+
+        let rows = state.store.jobs_in_storyboard(&sid).unwrap();
+        assert_eq!(
+            rows.len(),
+            3,
+            "three same-model shots persist as three rows"
+        );
+        let indices: Vec<u32> = rows.iter().filter_map(|j| j.shot_index).collect();
+        assert_eq!(indices, vec![0, 1, 2], "dense shot_index, none clobbered");
+    }
+
+    #[test]
+    fn generate_rejects_a_brief_over_the_size_cap() {
+        // Security L3: a runaway brief is refused at the boundary with a typed
+        // error, before any storyboard row or shot is written.
+        let state = test_state();
+        let input = StoryboardGenerateInput {
+            brief: "x".repeat(MAX_BRIEF_BYTES + 1),
+            target_seconds: 30.0,
+            plan_json: None,
+            shots: vec![shot_input("nope")],
+        };
+        let err = generate_storyboard_inner(&state, input).unwrap_err();
+        assert!(err.contains("brief is too large"), "got: {err}");
+    }
+
+    #[test]
+    fn generate_rejects_a_plan_json_over_the_size_cap() {
+        // Security L3: an oversized plan_json is refused before the DB write.
+        let state = test_state();
+        let input = StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 30.0,
+            plan_json: Some("x".repeat(MAX_PLAN_JSON_BYTES + 1)),
+            shots: vec![shot_input("nope")],
+        };
+        let err = generate_storyboard_inner(&state, input).unwrap_err();
+        assert!(err.contains("plan is too large"), "got: {err}");
+    }
+
+    #[test]
+    fn generate_rejects_more_than_eight_shots() {
+        // Security L1: the server bounds the shot count, so the money/plan-size
+        // invariant does not rest solely on the UI disabling Generate-all.
+        let state = test_state();
+        let input = StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 30.0,
+            plan_json: None,
+            shots: (0..9).map(|_| shot_input("nope")).collect(),
+        };
+        let err = generate_storyboard_inner(&state, input).unwrap_err();
+        assert!(err.contains("at most 8 shots"), "got: {err}");
+    }
+
+    #[test]
+    fn generate_rejects_a_plan_with_a_bad_model() {
+        // Security L1: when a plan is present it is re-validated server-side via
+        // the same `storyboard::validate` the draft path used, so a direct/
+        // tampered caller cannot submit shots the composer would have refused.
+        let state = test_state();
+        let bad_plan = r#"{"brief":"b","targetSeconds":30,"useCase":"text-to-video","shots":[
+            {"title":"a","prompt":"p","seconds":10,"camera":null,"modelId":"no-such-model","role":"start"},
+            {"title":"b","prompt":"p","seconds":10,"camera":null,"modelId":"no-such-model","role":"middle"},
+            {"title":"c","prompt":"p","seconds":10,"camera":null,"modelId":"no-such-model","role":"end"}
+        ]}"#;
+        let input = StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 30.0,
+            plan_json: Some(bad_plan.into()),
+            shots: vec![
+                shot_input("no-such-model"),
+                shot_input("no-such-model"),
+                shot_input("no-such-model"),
+            ],
+        };
+        let err = generate_storyboard_inner(&state, input).unwrap_err();
+        assert!(err.contains("does not exist"), "got: {err}");
+
+        // And nothing was written: the plan is rejected before the group row.
+        assert_eq!(
+            state.store.all().unwrap().len(),
+            0,
+            "no shot row was written"
+        );
+    }
+
+    #[test]
+    fn generate_rejects_shots_that_do_not_match_the_plan() {
+        // Security L1: the submitted shot list must match the plan the user saw
+        // and priced — no shot injected beyond it. Here the plan has 3 shots but
+        // 4 are submitted.
+        let state = test_state();
+        // A plan whose models are all runnable for the tab (so it passes
+        // `validate`) but with a shot count that the submitted list exceeds.
+        let model = hickeyfield_core::use_case::models_for(hickeyfield_core::UseCase::TextToVideo)
+            .into_iter()
+            .next()
+            .expect("a t2v model exists")
+            .id;
+        let shot = |m: &str| {
+            format!(
+                r#"{{"title":"t","prompt":"p","seconds":10,"camera":null,"modelId":"{m}","role":"middle"}}"#
+            )
+        };
+        let plan = format!(
+            r#"{{"brief":"b","targetSeconds":30,"useCase":"text-to-video","shots":[{},{},{}]}}"#,
+            shot(&model),
+            shot(&model),
+            shot(&model),
+        );
+        let input = StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 30.0,
+            plan_json: Some(plan),
+            shots: (0..4).map(|_| shot_input(&model)).collect(),
+        };
+        let err = generate_storyboard_inner(&state, input).unwrap_err();
+        assert!(err.contains("does not match the plan"), "got: {err}");
     }
 }
