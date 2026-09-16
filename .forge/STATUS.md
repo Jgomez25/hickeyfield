@@ -12,7 +12,7 @@ Veo 3.1 Extend and Seedance i2v withdrawn → S9)** · **S9 fal-schema-const-and
 Tests 801 Rust / 232 UI at S9 · **S10 pricing-accuracy-and-cost-tracker (released 2026-09-16:
 hermetic price audit, 2 literals fixed, settled actual cost + migration 7, UI delta)**. Tests 820 / 245 at S10.
 
-## IN FLIGHT: S11-ui-redesign-mockup — branch `forge/s11-redesign` (mockup published, awaiting owner)
+## S11 ui-redesign-mockup — RELEASED 2026-09-16 (owner approved; decisions in S11/document.md). NEXT: S12-ui-redesign-code (design in progress)
 Canvas: https://claude.ai/artifact/2des9awBapmx8rSZN8wvAe (4 boards: Studio, Model picker, Library,
 Tokens). Working files `.forge/slices/S11-ui-redesign-mockup/mockup/*.dc.html` + canvas.json; re-seed
 with the design skill helper after any edit, republish same path with contract 0.1.31. Second-look

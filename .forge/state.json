@@ -83,8 +83,9 @@
     {
       "id": "S11-ui-redesign-mockup",
       "title": "ui-redesign-mockup",
-      "status": "in-progress",
-      "started": "2026-09-15"
+      "status": "released",
+      "started": "2026-09-15",
+      "branch": "forge/s11-redesign"
     },
     {
       "id": "S12-ui-redesign-code",
