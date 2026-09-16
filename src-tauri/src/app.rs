@@ -177,6 +177,11 @@ impl AppState {
             let renders_root = renders_root.clone();
             runner.set_on_settled(Arc::new(move |job: &JobSet| {
                 if let Some(runner) = weak.upgrade() {
+                    // Score the join INTO the shot that just settled (S16 D7),
+                    // beside — and independent of — advancing to the next shot.
+                    // Local ffmpeg on saved frames only; spends nothing. A low
+                    // join flags but never blocks the chain.
+                    let join = crate::chain::score_join(&store, &ffmpeg_dir, &renders_root, job);
                     crate::chain::advance(
                         &store,
                         &prices,
@@ -186,6 +191,20 @@ impl AppState {
                         &runner,
                         job,
                     );
+                    // S16 D9: opt-in bounded auto-retry of a below-floor join,
+                    // through the same money-gated path (cost shown per attempt,
+                    // capped at two). No-op unless the set enabled it.
+                    if let Some(rec) = join {
+                        crate::chain::maybe_auto_retry(
+                            &store,
+                            &prices,
+                            &runner,
+                            &ffmpeg_dir,
+                            &renders_root,
+                            job,
+                            &rec,
+                        );
+                    }
                 }
             }));
         }

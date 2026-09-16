@@ -44,6 +44,7 @@ fn main() {
     let mut wrong_options = Vec::new();
     let mut pinned_fields = Vec::new();
     let mut bad_constants = Vec::new();
+    let mut range_mismatches = Vec::new();
     let mut unreachable = Vec::new();
     // Kept as rows, not a counter: "which slugs did you actually probe" is the
     // question an importer has to answer, and a number cannot answer it.
@@ -186,6 +187,15 @@ fn main() {
             for issue in constant_issues(media::fal_constants(&route.slug), &schema) {
                 bad_constants.push(format!("{:<26} {endpoint}\n      {issue}", m.id));
             }
+
+            // 7. A spec-declared duration range that lies outside the range
+            //    fal publishes. Only checkable where fal publishes one: the
+            //    submit clamp reads the spec range on the money path, so a spec
+            //    range wider than the endpoint's would let a value through the
+            //    UI ladder that 422s downstream.
+            for issue in range_conflicts(&m.spec, &schema) {
+                range_mismatches.push(format!("{:<26} {endpoint}\n      {issue}", m.id));
+            }
         }
     }
 
@@ -212,6 +222,10 @@ fn main() {
     section(
         "BAD ROUTE CONSTANTS — the app injects a field the endpoint refuses",
         &bad_constants,
+    );
+    section(
+        "RANGE MISMATCH — a spec duration range wider than the endpoint's",
+        &range_mismatches,
     );
     // The loudest signal of all: we route to a slug fal does not serve. It was
     // collected and thrown away until 2026-09-15.
@@ -290,6 +304,30 @@ fn constant_issues(constants: &[(&str, &str)], schema: &EndpointSchema) -> Vec<S
         }
     }
     out
+}
+
+/// A spec-declared duration range that is not within the range fal publishes
+/// for the endpoint (check 7).
+///
+/// Pure and network-free over the fetched schema. Only fires when fal publishes
+/// a `duration` range AND the spec declares one: a spec range wider than the
+/// endpoint's would let a value through the UI ladder and the submit clamp (both
+/// read the spec range offline) that then 422s downstream. When fal publishes
+/// no range there is nothing to compare, exactly as the pin/enum checks skip
+/// when one side is silent — H3 Max (no published range) is skipped, Wan 3.0
+/// Prime (published `2..30`, spec `2..30`) is clean.
+fn range_conflicts(spec: &ModelSpec, schema: &EndpointSchema) -> Vec<String> {
+    let (Some((smin, smax)), Some(&(emin, emax))) =
+        (spec.duration_range, schema.ranges.get("duration"))
+    else {
+        return Vec::new();
+    };
+    if smin < emin || smax > emax {
+        return vec![format!(
+            "spec duration range ({smin}, {smax}) is not within the endpoint's ({emin}, {emax})"
+        )];
+    }
+    Vec::new()
 }
 
 fn pin_conflicts(
@@ -382,7 +420,48 @@ mod tests {
                 })
                 .collect(),
             constraints: Vec::new(),
+            duration_range: None,
         }
+    }
+
+    fn schema_with_duration_range(min: i64, max: i64) -> EndpointSchema {
+        let doc = serde_json::json!({
+            "components": {"schemas": {"XInput": {"properties": {
+                "prompt": {"type": "string"},
+                "duration": {"anyOf": [
+                    {"type": "integer", "minimum": min, "maximum": max},
+                    {"type": "null"}]}
+            }}}}
+        });
+        fal_schema::parse(&doc).expect("one Input schema")
+    }
+
+    #[test]
+    fn range_conflicts_flags_a_spec_range_outside_the_schema() {
+        // A spec (5,20) against a published (5,15) reports; (5,15) within
+        // (2,30) is clean; a spec range with no published schema range skips.
+        let wide = ModelSpec {
+            duration_range: Some((5.0, 20.0)),
+            ..spec_with(&[("duration", ValueSpec::Number)])
+        };
+        assert_eq!(
+            range_conflicts(&wide, &schema_with_duration_range(5, 15)).len(),
+            1,
+            "a spec range wider than the endpoint's must be reported"
+        );
+
+        let within = ModelSpec {
+            duration_range: Some((5.0, 15.0)),
+            ..spec_with(&[("duration", ValueSpec::Number)])
+        };
+        assert!(range_conflicts(&within, &schema_with_duration_range(2, 30)).is_empty());
+
+        // No published schema range: nothing to compare (the H3 Max case).
+        let no_schema = fal_schema::parse(&serde_json::json!({
+            "components": {"schemas": {"XInput": {"properties": {"duration": {"type": "integer"}}}}}
+        }))
+        .unwrap();
+        assert!(range_conflicts(&within, &no_schema).is_empty());
     }
 
     #[test]

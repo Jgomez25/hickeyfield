@@ -205,11 +205,19 @@ impl Flag {
 /// a fal-declared field is how the chip row came to offer 4k on a 720p model.
 /// The default is the one exception and gets its own provenance — see
 /// `default_source`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Axis {
     pub support: Support,
     pub values: Vec<String>,
     pub default: Option<String>,
+    /// The `[min, max]` bound of a free-form numeric axis, live schema first,
+    /// else a registry-declared bound (H3 Max, where fal publishes none), else
+    /// `None`. Distinct from `values`: a range is not an offer, and turning it
+    /// into an enum would invent members no provider published. The UI ladder
+    /// builds chips from this when present; the submit/storyboard clamp reads
+    /// it to keep a duration inside the provider's real bound.
+    #[serde(default)]
+    pub range: Option<(f64, f64)>,
     /// Where `support` and `values` came from.
     pub source: Source,
     /// Where `default` came from, which can differ from `source`.
@@ -230,6 +238,7 @@ impl Axis {
             support: Support::Unknown,
             values: Vec::new(),
             default: None,
+            range: None,
             source: Source::Unknown,
             default_source: Source::Unknown,
         }
@@ -241,6 +250,7 @@ impl Axis {
             support: Support::No,
             values: Vec::new(),
             default: None,
+            range: None,
             source,
             default_source: Source::Unknown,
         }
@@ -270,6 +280,7 @@ impl Axis {
             support: Support::Yes,
             values,
             default,
+            range: None,
             source,
             default_source,
         }
@@ -320,7 +331,7 @@ impl RoleSupport {
 }
 
 /// Everything one model can be asked for on one route, with provenance.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelCapability {
     pub model_id: String,
     /// The best source that answered anything here. A one-glance confidence
@@ -425,11 +436,14 @@ impl ModelCapability {
             source: Source::Catalog,
             endpoint: None,
             prompt: Flag::known(Support::from_known(spec.takes_prompt()), Source::Catalog),
-            duration: axis(
-                cat.supports_duration,
-                cat.durations.iter().copied().map(seconds_label).collect(),
-                cat.default_duration.map(seconds_label),
-            ),
+            duration: Axis {
+                range: cat.duration_range,
+                ..axis(
+                    cat.supports_duration,
+                    cat.durations.iter().copied().map(seconds_label).collect(),
+                    cat.default_duration.map(seconds_label),
+                )
+            },
             resolution: axis(
                 cat.supports_resolution,
                 cat.resolutions.clone(),
@@ -471,9 +485,10 @@ impl ModelCapability {
                 schema,
                 FAL_DURATION,
                 cat.default_duration.map(seconds_label),
+                cat.duration_range,
             ),
-            resolution: fal_axis(schema, FAL_RESOLUTION, cat.default_resolution.clone()),
-            aspect: fal_axis(schema, FAL_ASPECT, cat.default_aspect.clone()),
+            resolution: fal_axis(schema, FAL_RESOLUTION, cat.default_resolution.clone(), None),
+            aspect: fal_axis(schema, FAL_ASPECT, cat.default_aspect.clone(), None),
             audio_output: audio_output(Some(schema), &cat),
             roles,
             unmapped_media_keys,
@@ -485,6 +500,14 @@ impl ModelCapability {
                 .collect(),
             constraints: cat.constraints,
         }
+    }
+
+    /// The model's `[min, max]` free-form duration bound, live-schema-first.
+    ///
+    /// `None` for a model with no published or documented bound (an enumerated
+    /// axis carries its offers in `values`, not here).
+    pub fn duration_range(&self) -> Option<(f64, f64)> {
+        self.duration.range
     }
 
     /// This model's answer for one role.
@@ -600,7 +623,12 @@ pub fn for_route(
 /// every field the endpoint takes, so absence is an answer. A field present
 /// with no published enum is free-form — reporting the catalogue's enumeration
 /// there would be describing Higgsfield's API while claiming fal's authority.
-fn fal_axis(schema: &EndpointSchema, field: &str, catalog_default: Option<String>) -> Axis {
+fn fal_axis(
+    schema: &EndpointSchema,
+    field: &str,
+    catalog_default: Option<String>,
+    registry_range: Option<(f64, f64)>,
+) -> Axis {
     if !schema.accepts(field) {
         return Axis::unsupported(Source::FalEndpoint);
     }
@@ -615,7 +643,13 @@ fn fal_axis(schema: &EndpointSchema, field: &str, catalog_default: Option<String
     } else {
         catalog_default.and_then(|d| schema.coerce(field, &d))
     };
-    Axis::supported(values, default, Source::FalEndpoint, Source::Catalog)
+    // Live schema range wins; the registry-declared bound is the offline/
+    // unpublished fallback (H3 Max publishes no min/max).
+    let range = schema.ranges.get(field).copied().or(registry_range);
+    Axis {
+        range,
+        ..Axis::supported(values, default, Source::FalEndpoint, Source::Catalog)
+    }
 }
 
 /// Whether the model emits sound.
@@ -766,6 +800,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
                 .collect(),
             pinned: Default::default(),
+            ranges: Default::default(),
         }
     }
 
@@ -810,6 +845,7 @@ mod tests {
             modality: Modality::Video,
             flags,
             constraints: vec![],
+            duration_range: None,
         }
     }
 
@@ -825,6 +861,54 @@ mod tests {
     }
 
     // ── The bug that named this module ─────────────────────────────────────
+
+    /// A schema whose `duration` carries a live `anyOf` range, built through
+    /// `parse` so the assertion fails if the range reader regresses.
+    fn ranged_schema(min: i64, max: i64) -> EndpointSchema {
+        let doc = serde_json::json!({
+            "components": {"schemas": {"XInput": {"properties": {
+                "prompt": {"type": "string"},
+                "duration": {"default": 5, "anyOf": [
+                    {"type": "integer", "minimum": min, "maximum": max},
+                    {"type": "null"}]}
+            }}}}
+        });
+        crate::fal_schema::parse(&doc).expect("one Input schema")
+    }
+
+    fn spec_with_range(range: Option<(f64, f64)>) -> ModelSpec {
+        ModelSpec {
+            duration_range: range,
+            ..spec(vec![
+                flag("prompt", ValueSpec::Text),
+                flag("duration", ValueSpec::Number),
+            ])
+        }
+    }
+
+    #[test]
+    fn an_axis_range_comes_from_the_live_schema_first() {
+        // Live schema publishes (2,30); registry declares a different (9,9).
+        // The live bound wins.
+        let s = ranged_schema(2, 30);
+        let cap = ModelCapability::from_fal(&spec_with_range(Some((9.0, 9.0))), "x/y", &s);
+        assert_eq!(cap.duration_range(), Some((2.0, 30.0)));
+        // It is free-form (no enumerated values), sourced from fal.
+        assert!(cap.duration.is_free_form());
+        assert_eq!(cap.duration.source, Source::FalEndpoint);
+    }
+
+    #[test]
+    fn an_unpublished_range_falls_back_to_the_registry() {
+        // fal publishes no min/max (the H3 Max case); the registry (5,15) is
+        // the fallback, both online (from_fal) and offline (from_catalog).
+        let s = schema(&["prompt", "duration"], &["prompt"], &[]);
+        let spec = spec_with_range(Some((5.0, 15.0)));
+        let online = ModelCapability::from_fal(&spec, "x/y", &s);
+        assert_eq!(online.duration_range(), Some((5.0, 15.0)));
+        let offline = ModelCapability::from_catalog(&spec);
+        assert_eq!(offline.duration_range(), Some((5.0, 15.0)));
+    }
 
     #[test]
     fn a_source_clip_slot_is_closed_on_an_endpoint_that_takes_no_video() {

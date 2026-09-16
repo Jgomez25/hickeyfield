@@ -13,6 +13,7 @@ import type {
   GenSettings,
   JobResult,
   JobSet,
+  JoinRecord,
   LocalModel,
   MediaRef,
   Model,
@@ -317,6 +318,7 @@ interface RawCapabilities {
   supports_duration?: boolean;
   durations?: number[];
   default_duration?: number | null;
+  duration_range?: [number, number] | null;
   supports_resolution?: boolean;
   resolutions?: string[];
   default_resolution?: string | null;
@@ -337,6 +339,7 @@ const toCapabilities = (
         supportsDuration: c.supports_duration ?? false,
         durations: c.durations ?? [],
         defaultDuration: c.default_duration ?? null,
+        durationRange: c.duration_range ?? null,
         supportsResolution: c.supports_resolution ?? false,
         resolutions: c.resolutions ?? [],
         defaultResolution: c.default_resolution ?? null,
@@ -732,6 +735,9 @@ export async function generateStoryboard(input: {
    * last frame) rather than all at once. Only shot 0 is submitted now; the
    * runner drives the rest as each predecessor settles. */
   chained?: boolean;
+  /** S16 D9: opt into bounded auto-retry of a below-floor continuity join (at
+   * most 2 regenerations, each priced first). Off by default. */
+  autoRetry?: boolean;
 }): Promise<StoryboardResult> {
   try {
     return await invoke<StoryboardResult>("generate_storyboard", {
@@ -810,15 +816,32 @@ export async function listStoryboards(): Promise<Storyboard[]> {
         planJson?: string;
         created_at?: number;
         createdAt?: number;
+        joins_json?: string | null;
+        joinsJson?: string | null;
+        auto_retry?: boolean;
+        autoRetry?: boolean;
       }[]
     >("list_storyboards");
-    return raw.map((s) => ({
-      id: s.id,
-      brief: s.brief,
-      targetSeconds: s.target_seconds ?? s.targetSeconds ?? 0,
-      planJson: s.plan_json ?? s.planJson ?? "{}",
-      createdAt: s.created_at ?? s.createdAt ?? 0,
-    }));
+    return raw.map((s) => {
+      const joinsJson = s.joins_json ?? s.joinsJson ?? null;
+      let joins: JoinRecord[] = [];
+      if (joinsJson) {
+        try {
+          joins = JSON.parse(joinsJson) as JoinRecord[];
+        } catch {
+          joins = [];
+        }
+      }
+      return {
+        id: s.id,
+        brief: s.brief,
+        targetSeconds: s.target_seconds ?? s.targetSeconds ?? 0,
+        planJson: s.plan_json ?? s.planJson ?? "{}",
+        createdAt: s.created_at ?? s.createdAt ?? 0,
+        joins,
+        autoRetry: s.auto_retry ?? s.autoRetry ?? false,
+      };
+    });
   } catch {
     return [];
   }

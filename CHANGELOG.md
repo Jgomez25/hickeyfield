@@ -6,6 +6,32 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A model's duration control now offers the provider's real range instead of a generic
+  ladder capped at 12 seconds.** MiniMax H3 Max offers 5–15 seconds, Wan 3.0 Prime 2–30, and
+  every free-form-duration model its actual ceiling; switching to a model clamps a staged
+  duration into its range, and a value outside the range is clamped with an advisory before
+  anything is priced, so the estimate is for what will actually render. The keyless model
+  audit gains a check that a model's documented range never exceeds the range fal publishes.
+
+- **A 30-second storyboard fills any model's per-call ceiling and holds continuity with a
+  shared world block.** A brief longer than a model's ceiling is split to fill it (2×15 on
+  H3 Max), and the planner composes one shared world description — subject, palette,
+  lighting, lens, grade — verbatim into every shot, with each non-final shot ending on a
+  static hold the next shot opens on. The validator rejects a continuous run that drops the
+  world block, repeats a beat, omits a hold, or uses a scene-break word.
+
+- **Every chained join is scored for continuity and flagged.** When a chained shot settles,
+  the bundled ffmpeg measures how well its first frame matches the previous shot's last frame
+  (SSIM plus colour drift) and stores a per-join score; the Library shows the set's lowest
+  join score and flags a low one. Scoring spends nothing — it runs locally on saved frames.
+  A below-floor join can be regenerated "from the same frame" through the same money-gated
+  path (cost shown first), and an optional bounded auto-retry (off by default, at most two
+  attempts, each priced first) can do it automatically. A below-floor join flags but never
+  blocks paid work, and a join that cannot be scored is left unscored, never counted as a
+  failure.
+
 ### Changed
 
 - **The app can now send a required setting a provider does not expose as a control.** Some

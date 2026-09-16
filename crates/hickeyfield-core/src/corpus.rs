@@ -57,7 +57,7 @@ pub const CORPUS_ID: &str = "enhancer.v1";
 /// short and the allowed lists cannot go stale against the registry. Embedded
 /// with `include_str!` for the same reason the enhancer corpus is: a missing
 /// resource file is a compile error, never a silent runtime blank.
-pub const STORYBOARD_SYSTEM: &str = include_str!("../../../prompts/storyboard.v1.md");
+pub const STORYBOARD_SYSTEM: &str = include_str!("../../../prompts/storyboard.v2.md");
 
 /// The reference text for one mode. Never sent; see [`REFERENCE_BASE`].
 pub fn reference(mode: Mode) -> &'static str {

@@ -62,11 +62,19 @@ attached one and pressed Generate.
 
 There is also a **Storyboard** view: from one brief and a target length, the local or
 hosted enhancer drafts a model-aware shot list — per shot a prompt, duration, camera move,
-model and continuity role — which you edit, preview and then generate as one linked set.
-Drafting is free on local Ollama and costs one short completion on a hosted key; no clip is
-generated until the summed total is shown, and a shot with no published price is marked
-rather than counted as free. (Rendering the set into a single stitched film is a later
-step; this view plans and generates the individual shots.)
+model and continuity role — which you edit, preview and then generate as one linked set. A
+target longer than a model's per-call ceiling is split to fill it (a 30-second brief on
+MiniMax H3 Max becomes two 15-second shots), and a shared *world block* — subject, palette,
+lighting, lens, grade — is composed verbatim into every shot so a chained set holds its
+identity across cuts. Each join between consecutive shots is scored for continuity by the
+bundled ffmpeg (a local, free measurement); the Library shows the set's lowest join score
+and flags a low one, and a below-floor join can be regenerated from the same frame — cost
+shown first — or, with an optional toggle, retried automatically up to twice. Drafting is
+free on local Ollama and costs one short completion on a hosted key; no clip is generated
+until the summed total is shown, and a shot with no published price is marked rather than
+counted as free. Duration controls offer each model's real range (H3 Max 5–15s, Wan 3.0
+Prime 2–30s) rather than a generic ladder, and a value outside the range is clamped with an
+advisory before it is priced.
 
 Everything a request depends on is checked against the provider's own published
 schema before anything is sent: which inputs the endpoint accepts, which values

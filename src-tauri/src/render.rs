@@ -105,6 +105,13 @@ pub fn render_storyboard(
         .or(sb.overlap_seconds)
         .unwrap_or(hickeyfield_core::storyboard::DEFAULT_CROSSFADE_SECONDS);
 
+    // The recorded per-join kinds (S16 D8), authoritative over the media-
+    // presence heuristic: a scored set records each join's `kind` in
+    // `joins_json`, so a partially-chained set (a shot that fell back text-only
+    // while the set is chained) renders each join as what actually happened,
+    // not a re-derivation. Empty for a set generated before this slice.
+    let joins = crate::store::parse_joins(sb.joins_json.as_deref());
+
     // Probe each clip for its duration and dimensions; build the ordered clip
     // list with per-join kinds.
     let mut clips: Vec<Clip> = Vec::with_capacity(jobs.len());
@@ -138,11 +145,15 @@ pub fn render_storyboard(
 
         let mut clip = Clip::new(local, 0.0, dur);
         if i > 0 {
-            // A continuity join (hard cut, no crossfade) iff the set is chained
-            // AND this shot was submitted with a start frame from the previous
-            // shot (a runtime fact: the Start media is present). Otherwise a
-            // crossfade. §D-B.
-            let continuity = sb.chained && job.media.iter().any(|m| m.role == MediaRole::Start);
+            // Prefer the recorded join kind (D8); fall back to the media-
+            // presence heuristic only for a set with no scored join at this
+            // index (generated before this slice, or never scored). A
+            // continuity join is a hard cut (no crossfade); a crossfade join
+            // blends. §D-B.
+            let continuity = match joins.iter().find(|j| j.index == i) {
+                Some(rec) => rec.kind == "continuity",
+                None => sb.chained && job.media.iter().any(|m| m.role == MediaRole::Start),
+            };
             if !continuity && overlap > 0.0 {
                 clip = clip.crossfade_in(overlap);
             }

@@ -44,12 +44,51 @@ export function capabilitiesFor(model: Model | null): ModelCapabilities {
  */
 export function durationLadder(caps: ModelCapabilities): number[] {
   if (caps.durations.length > 0) return caps.durations;
+  if (caps.durationRange) return ladderFromRange(caps.durationRange, caps.defaultDuration);
   if (!caps.supportsDuration) return [];
   const common = [3, 4, 5, 6, 8, 10, 12];
   const d = caps.defaultDuration;
   return d != null && !common.includes(d)
     ? [...common, d].sort((a, b) => a - b)
     : common;
+}
+
+/**
+ * Whole-second chips across a free-form model's real range, thinned to at most
+ * twelve so a 2–30s model does not print 29 chips, while always keeping both
+ * endpoints and the default and never emitting a value outside the bound.
+ *
+ * A range is not an enum — the provider takes every integer between the bounds
+ * — so this is a convenience ladder beside the numeric input, not the truth
+ * about the model. It exists because the generic ladder stopped at 12 and hid
+ * that MiniMax H3 Max renders up to 15 and Wan 3.0 Prime up to 30.
+ */
+export function ladderFromRange(
+  range: [number, number],
+  defaultDuration?: number | null,
+): number[] {
+  const min = Math.ceil(range[0]);
+  const max = Math.floor(range[1]);
+  if (max < min) return [];
+  const all: number[] = [];
+  for (let v = min; v <= max; v++) all.push(v);
+
+  const MAX_CHIPS = 12;
+  let kept = all;
+  if (all.length > MAX_CHIPS) {
+    // Thin by an even stride, then force the endpoints back in so the ceiling
+    // (the whole point of the range) is always offered.
+    const stride = (all.length - 1) / (MAX_CHIPS - 1);
+    const picks = new Set<number>();
+    for (let i = 0; i < MAX_CHIPS; i++) picks.add(all[Math.round(i * stride)]);
+    picks.add(min);
+    picks.add(max);
+    kept = [...picks];
+  }
+
+  const d = defaultDuration;
+  if (d != null && d >= min && d <= max && !kept.includes(d)) kept.push(d);
+  return kept.sort((a, b) => a - b);
 }
 
 /**
@@ -125,15 +164,19 @@ export function resolveSettings(
   settings: GenSettings,
   caps: ModelCapabilities,
 ): GenSettings {
-  // An enumerated axis clamps to its options. A free-form or unknown axis is
-  // left alone: clamping against a list we invented is how a wrong value gets
-  // laundered into a confident one.
+  // An enumerated axis clamps to its options. A free-form axis with a known
+  // range clamps into that bound (so switching to H3 Max cannot leave 20s
+  // staged); a free-form axis with no range is left alone, because clamping
+  // against a list we invented is how a wrong value gets laundered into a
+  // confident one.
   const duration =
-    caps.durations.length === 0
-      ? settings.duration
-      : caps.durations.includes(settings.duration)
+    caps.durations.length > 0
+      ? caps.durations.includes(settings.duration)
         ? settings.duration
-        : nearest(settings.duration, caps.durations);
+        : nearest(settings.duration, caps.durations)
+      : caps.durationRange
+        ? Math.min(Math.max(settings.duration, caps.durationRange[0]), caps.durationRange[1])
+        : settings.duration;
 
   // Prefer the model's own default over its first option — "the first one in
   // the list" is an arbitrary choice, and several models list their cheapest

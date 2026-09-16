@@ -67,7 +67,18 @@ pub struct Shot {
     /// A few words naming the beat, for the editor to scan.
     pub title: String,
     /// What to generate for this shot. Sent through the submit path per shot.
+    /// In a multi-shot continuous plan this is composed by [`plan`] as
+    /// `"{world} {action}"` so every shot carries the identical world block
+    /// verbatim; a legacy or single-shot plan uses `prompt` directly.
+    /// `#[serde(default)]` so a v2 plan that supplies only `world` + per-shot
+    /// `action` (the continuous-run shape) parses; [`plan`] fills it.
+    #[serde(default)]
     pub prompt: String,
+    /// The per-shot beat, distinct from the shared `world`. The model drafts
+    /// `world` once and an `action` per shot; [`plan`] composes them into
+    /// `prompt`. `#[serde(default)]` so a legacy plan with only `prompt` parses.
+    #[serde(default)]
+    pub action: Option<String>,
     /// The shot's length. Clamped toward the model's duration axis by
     /// [`clamp_shot`]; the sum across shots is gated to the target by [`validate`].
     pub seconds: f64,
@@ -93,6 +104,14 @@ pub struct Shot {
     /// field still parses.
     #[serde(default)]
     pub chainable: bool,
+    /// An optional per-shot resolution. One resolution per set is the rule (the
+    /// frame dictates the canvas, so a mixed-resolution set is a continuity
+    /// hazard — memo D-F); when shots disagree, [`plan`] records a
+    /// `MixedResolution` advisory rather than rejecting. `#[serde(default)]`
+    /// (None) so a plan that omits it — the common case, one set-wide
+    /// resolution — still parses.
+    #[serde(default)]
+    pub resolution: Option<String>,
 }
 
 /// A whole storyboard plan.
@@ -104,6 +123,12 @@ pub struct Shot {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct StoryboardPlan {
+    /// The shared world block (subject, wardrobe, palette, lighting, lens,
+    /// grade, aspect — no action verb) composed verbatim into every shot's
+    /// prompt so a chained set holds identity across cuts (memo D-E).
+    /// `#[serde(default)]` so a stored S13 plan still parses.
+    #[serde(default)]
+    pub world: String,
     #[serde(default)]
     pub brief: String,
     #[serde(default)]
@@ -139,6 +164,31 @@ pub enum PlanError {
     },
     /// A shot named a camera slug that does not exist.
     UnknownCamera { shot: usize, slug: String },
+    /// A multi-shot plan whose `world` block is shorter than five words — too
+    /// thin to hold identity across a cut (memo D-E).
+    MissingWorld,
+    /// A composed `prompt` that does not begin with the `world` string, so a UI
+    /// edit broke the verbatim composition the continuity depends on.
+    PromptMissingWorld { shot: usize },
+    /// Two shots whose `action`s are equal after trim + case-fold: a chained
+    /// set of identical beats is a stutter, not continuity.
+    IdenticalShots { a: usize, b: usize },
+    /// A non-final shot whose `action` does not end on a static hold, so the
+    /// next shot has no matching frame to open on.
+    NoHoldEnding { shot: usize },
+    /// A shot whose `action`/`prompt` carries a cut word ("cut to", "meanwhile",
+    /// …) — an explicit scene break inside a continuous run.
+    CutWords { shot: usize, word: String },
+    /// A shot whose seconds exceed the model's hard per-call ceiling. A
+    /// free-form axis cannot be silently capped past its range without the user
+    /// knowing the target was unmet, so the planner must split to fill the
+    /// ceiling (30s → 2×15) rather than propose one over-long shot.
+    ShotOverCeiling {
+        shot: usize,
+        model_id: String,
+        seconds: f64,
+        ceiling: f64,
+    },
 }
 
 impl std::fmt::Display for PlanError {
@@ -183,6 +233,43 @@ impl std::fmt::Display for PlanError {
                 "shot {} named a camera move that does not exist ({slug}).",
                 shot + 1
             ),
+            PlanError::MissingWorld => write!(
+                f,
+                "a multi-shot storyboard needs a shared world description to hold continuity across cuts. Try drafting again."
+            ),
+            PlanError::PromptMissingWorld { shot } => write!(
+                f,
+                "shot {}'s prompt no longer opens with the shared world block, which breaks continuity.",
+                shot + 1
+            ),
+            PlanError::IdenticalShots { a, b } => write!(
+                f,
+                "shots {} and {} describe the same action — each shot needs its own beat.",
+                a + 1,
+                b + 1
+            ),
+            PlanError::NoHoldEnding { shot } => write!(
+                f,
+                "shot {} does not end on a static hold, so the next shot has no matching frame to continue from.",
+                shot + 1
+            ),
+            PlanError::CutWords { shot, word } => write!(
+                f,
+                "shot {} uses a scene-break word (\"{word}\") inside a continuous run.",
+                shot + 1
+            ),
+            PlanError::ShotOverCeiling {
+                shot,
+                model_id,
+                seconds,
+                ceiling,
+            } => write!(
+                f,
+                "shot {} asks {model_id} for {}s, but it renders at most {}s per call — split the beat to fill the ceiling.",
+                shot + 1,
+                trim_secs(*seconds),
+                trim_secs(*ceiling)
+            ),
         }
     }
 }
@@ -196,6 +283,92 @@ const SUM_TOLERANCE: f64 = 0.10;
 /// hard cut is `0.0`; the render's `RenderOptions.overlap_seconds` defaults from
 /// this.
 pub const DEFAULT_CROSSFADE_SECONDS: f64 = 0.5;
+
+/// The three numbers a continuity join is gated on (memo §0.1).
+///
+/// `ssim` is a floor (higher is better — same picture); `y`/`c` are ceilings on
+/// the 8-bit luma / chroma average drift (lower is better — same grade). A join
+/// passes iff `ssim >= ssim && dy <= y && du <= c && dv <= c`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContinuityThresholds {
+    pub ssim: f64,
+    pub y: f64,
+    pub c: f64,
+}
+
+/// The floor tier (S16 gates the flag on this). **Reasoned, not measured**: an
+/// i2v first frame is a VAE round-trip of the conditioning image, so a faithful
+/// reproduction lands ~0.9+ and a re-composed subject below ~0.7. These MUST be
+/// re-read once against the first real paid 2×15 set and changed in one commit
+/// (memo Q4 / design Q6) — the `--ignored` synth tests prove the machinery and
+/// that the colour gate is non-vacuous, not that 0.80/12/6 is the right line.
+pub const CONTINUITY_FLOOR: ContinuityThresholds = ContinuityThresholds {
+    ssim: 0.80,
+    y: 12.0,
+    c: 6.0,
+};
+
+/// The ideal tier: *reported* on the badge ("continuous" vs "in-camera") but
+/// NOT gated in S16. Also needs the real set to calibrate.
+pub const CONTINUITY_IDEAL: ContinuityThresholds = ContinuityThresholds {
+    ssim: 0.90,
+    y: 6.0,
+    c: 3.0,
+};
+
+/// The measured numbers for one join. Every field is optional because a scoring
+/// failure (sidecar missing, frame unreadable) MUST record `None`, never `0.0`:
+/// a `0` would read as a failed join and trigger a needless paid regenerate.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct JoinScore {
+    pub ssim: Option<f64>,
+    pub psnr: Option<f64>,
+    pub dy: Option<f64>,
+    pub du: Option<f64>,
+    pub dv: Option<f64>,
+}
+
+impl JoinScore {
+    /// A score that could not be computed — every number absent. Distinct from
+    /// a zero score, which would flag the join as failed.
+    pub fn unscored() -> Self {
+        JoinScore::default()
+    }
+
+    /// True once the four gated numbers are present (so the pass/fail verdict is
+    /// meaningful). An unscored join is neither passing nor failing.
+    pub fn is_scored(&self) -> bool {
+        self.ssim.is_some() && self.dy.is_some() && self.du.is_some() && self.dv.is_some()
+    }
+}
+
+/// Whether a join clears the thresholds.
+///
+/// An **unscored** join returns `true` (not failing): a missing score must not
+/// flag the join as low and fire a paid regenerate. A scored join passes iff
+/// SSIM is at or above the floor and each colour drift is at or below its
+/// ceiling.
+pub fn join_passes(score: &JoinScore, t: ContinuityThresholds) -> bool {
+    match (score.ssim, score.dy, score.du, score.dv) {
+        (Some(ssim), Some(dy), Some(du), Some(dv)) => {
+            ssim >= t.ssim && dy <= t.y && du <= t.c && dv <= t.c
+        }
+        // Unscored: not failing.
+        _ => true,
+    }
+}
+
+/// The pass rate over the **scored** joins — "95% as a test, not a feeling"
+/// (memo §0.5). Unscored joins are excluded (they are not evidence either way);
+/// a set with no scored joins is `1.0` (nothing has failed).
+pub fn continuity_rate(joins: &[JoinScore], t: ContinuityThresholds) -> f64 {
+    let scored: Vec<&JoinScore> = joins.iter().filter(|j| j.is_scored()).collect();
+    if scored.is_empty() {
+        return 1.0;
+    }
+    let passing = scored.iter().filter(|j| join_passes(j, t)).count();
+    passing as f64 / scored.len() as f64
+}
 
 /// How one shot joins the previous one in the stitched render (S15 D-B).
 ///
@@ -304,6 +477,25 @@ pub fn plan(
     parsed.target_seconds = target_seconds;
     parsed.use_case = use_case.slug().to_string();
 
+    // 2b. Compose the world block into each shot's prompt VERBATIM (memo D-E):
+    //     the exact string S7 previews and `submit_one` sends. Only when the
+    //     plan carries a `world` and a shot supplies an `action`; a legacy plan
+    //     with only `prompt` composes nothing.
+    if !parsed.world.trim().is_empty() {
+        for shot in parsed.shots.iter_mut() {
+            if let Some(action) = shot.action.as_deref() {
+                shot.prompt = format!("{} {}", parsed.world, action);
+            }
+        }
+    }
+
+    // 2c. Continuity rules (memo D-E): a multi-shot plan needs a world block,
+    //     hold endings, distinct actions, no cut words; the composition must be
+    //     verbatim. Pure, before the structural gates so a broken continuous
+    //     run is named precisely.
+    validate_continuity(&parsed.world, &parsed.shots)?;
+    validate_composition(&parsed.world, &parsed.shots)?;
+
     // 3–6. Structural validation on the model's proposed shots. The stitched
     //    length (crossfade-aware) is gated against the target, using the
     //    default overlap the render will apply (AC4).
@@ -351,7 +543,134 @@ pub fn plan(
         }
     }
 
+    // One resolution per set (memo D-F): a mixed-resolution set is a continuity
+    // hazard, advised (not rejected) on the first shot.
+    if let Some(advisory) = mixed_resolution_advisory(&parsed.shots) {
+        if let Some(first) = parsed.shots.first_mut() {
+            first.advisories.push(advisory);
+        }
+    }
+
     Ok(parsed)
+}
+
+/// Words that mark an explicit scene break — forbidden inside a continuous run,
+/// where every cut is meant to be invisible (memo D-E).
+const CUT_WORDS: [&str; 5] = ["cut to", "smash cut", "meanwhile", "elsewhere", "later"];
+
+/// The minimum word count for a `world` block to hold identity across a cut.
+const MIN_WORLD_WORDS: usize = 5;
+
+/// The continuity rules on a multi-shot **continuous** plan (memo D-E), pure.
+///
+/// Continuity is **opt-in through a non-empty `world`**: the v2 prompt requires
+/// a world for a continuous run, while a montage or a stored pre-S16 plan
+/// legitimately carries none and must still pass (backward-compat — the field
+/// is `#[serde(default)]`). So the rules gate only a plan that declares a world;
+/// a present-but-thin world (`< 5` words) on a multi-shot plan is the drafting
+/// error `MissingWorld`. A single-shot plan needs no world regardless.
+/// `MixedResolution` is an advisory handled in [`plan`], not a rejection here.
+pub fn validate_continuity(world: &str, shots: &[Shot]) -> Result<(), PlanError> {
+    let multi = shots.len() >= 2;
+    let declares_world = !world.trim().is_empty();
+
+    // A multi-shot plan that declares a world must give it enough substance to
+    // hold identity across a cut.
+    if multi && declares_world && world.split_whitespace().count() < MIN_WORLD_WORDS {
+        return Err(PlanError::MissingWorld);
+    }
+
+    // Not a declared continuous run (montage / legacy): nothing to enforce.
+    if !multi || !declares_world {
+        return Ok(());
+    }
+
+    // Cut words in any shot's action or prompt.
+    for (i, shot) in shots.iter().enumerate() {
+        let hay =
+            format!("{} {}", shot.action.as_deref().unwrap_or(""), shot.prompt).to_lowercase();
+        if let Some(word) = CUT_WORDS.iter().find(|w| hay.contains(*w)) {
+            return Err(PlanError::CutWords {
+                shot: i,
+                word: (*word).to_string(),
+            });
+        }
+    }
+
+    // A non-final shot must end on a static hold; the action carries the beat.
+    for (i, shot) in shots.iter().enumerate() {
+        let is_final = i + 1 == shots.len();
+        if is_final {
+            continue;
+        }
+        let action = shot
+            .action
+            .as_deref()
+            .unwrap_or(&shot.prompt)
+            .to_lowercase();
+        if !action.contains("static hold") {
+            return Err(PlanError::NoHoldEnding { shot: i });
+        }
+    }
+
+    // No two shots share an action (after trim + case-fold): a chained set of
+    // identical beats is a stutter, not continuity.
+    for a in 0..shots.len() {
+        for b in (a + 1)..shots.len() {
+            let fa = shots[a]
+                .action
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            let fb = shots[b]
+                .action
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            if !fa.is_empty() && fa == fb {
+                return Err(PlanError::IdenticalShots { a, b });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// The `world`-composition check: every composed `prompt` in a multi-shot plan
+/// must begin with the shared `world` string, or a UI edit has broken the
+/// verbatim composition the continuity depends on. Pure.
+pub fn validate_composition(world: &str, shots: &[Shot]) -> Result<(), PlanError> {
+    if shots.len() < 2 || world.trim().is_empty() {
+        return Ok(());
+    }
+    for (i, shot) in shots.iter().enumerate() {
+        if !shot.prompt.starts_with(world) {
+            return Err(PlanError::PromptMissingWorld { shot: i });
+        }
+    }
+    Ok(())
+}
+
+/// The `MixedResolution` advisory (not a rejection): the distinct non-empty
+/// resolutions a set's shots disagree on, if more than one. One resolution per
+/// set is the rule; a mixed set is a continuity hazard the user should see.
+pub fn mixed_resolution_advisory(shots: &[Shot]) -> Option<String> {
+    let mut seen: Vec<&str> = Vec::new();
+    for shot in shots {
+        if let Some(r) = shot.resolution.as_deref() {
+            if !r.is_empty() && !seen.contains(&r) {
+                seen.push(r);
+            }
+        }
+    }
+    (seen.len() > 1).then(|| {
+        format!(
+            "shots mix resolutions ({}); one per set is safer",
+            seen.join(", ")
+        )
+    })
 }
 
 /// Structural checks, in the documented order. Pure: registry/use-case/camera
@@ -398,6 +717,22 @@ pub fn validate(
                 });
             }
         }
+
+        // 5b. Fill-to-ceiling (memo D-F): a shot over the model's hard per-call
+        //     ceiling is rejected, not silently clamped — clamping a free-form
+        //     axis past its range would quietly lose target seconds. The
+        //     planner is expected to split (30s → 2×15 on H3 Max). Skipped for
+        //     a model with no known ceiling (a free-form axis with no range).
+        if let Some(ceiling) = model_ceiling(model, use_case) {
+            if shot.seconds > ceiling + f64::EPSILON {
+                return Err(PlanError::ShotOverCeiling {
+                    shot: i,
+                    model_id: shot.model_id.clone(),
+                    seconds: shot.seconds,
+                    ceiling,
+                });
+            }
+        }
     }
 
     // 6. Duration sum within ±10% of the target, on the *proposed* seconds —
@@ -415,6 +750,31 @@ pub fn validate(
     }
 
     Ok(())
+}
+
+/// The hard per-call ceiling of a **free-form** duration model, if it has a
+/// documented range. Returns `None` for an enumerated axis (which [`clamp_shot`]
+/// snaps toward its offered values instead) and for a free-form axis with no
+/// range (the provider validates the exact number, nothing to enforce here).
+///
+/// This is the number the planner is asked to fill to (30s → 2×15 on H3 Max),
+/// and the bound [`validate`] rejects a shot for exceeding — because a free-form
+/// axis cannot be capped past its range without silently losing target seconds.
+fn model_ceiling(model: &Model, use_case: UseCase) -> Option<f64> {
+    let route = model.routes.first()?;
+    let cap = capability::for_route(
+        &model.spec,
+        route.provider,
+        &route.slug,
+        use_case.input_mode(),
+        |_| None,
+    );
+    // Only a free-form axis (no enumerated offers) is enforced by a ceiling;
+    // an enumerated axis is snapped by `clamp_shot`.
+    if cap.duration_seconds().is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    cap.duration_range().map(|(_, max)| max)
 }
 
 /// Narrow one shot's seconds toward the chosen model's duration axis, reusing
@@ -471,9 +831,29 @@ pub fn clamp_shot(shot: &mut Shot, shot_index: usize, model: &Model, use_case: U
                 ));
                 shot.seconds = nearest;
             }
+            return;
         }
     }
-    // Free-form (`values` empty) or unknown: leave as-is.
+
+    // Free-form axis WITH a documented range (H3 Max 5–15, Wan 3.0 Prime 2–30):
+    // snap into the bound with the same-shaped advisory. 12 on H3 Max stays 12
+    // (5 ≤ 12 ≤ 15); 20 → 15. A free-form axis with no range, or an unknown
+    // axis, is still left as-is — the provider validates the exact number.
+    if let Some((min, max)) = cap.duration_range() {
+        let asked = shot.seconds;
+        if asked < min || asked > max {
+            let clamped = asked.clamp(min, max);
+            shot.advisories.push(format!(
+                "shot {}: {} runs {}–{}s, not {}s — clamped",
+                shot_index + 1,
+                model.display_name,
+                trim_secs(min),
+                trim_secs(max),
+                trim_secs(asked)
+            ));
+            shot.seconds = clamped;
+        }
+    }
 }
 
 /// The per-draft context, assembled into the user message so the corpus stays
@@ -495,6 +875,23 @@ fn build_user_message(
     out.push_str(&format!("\nOutput: {}", use_case.output()));
     out.push_str("\nAllowed model ids (choose modelId only from these): ");
     out.push_str(&model_prefs.join(", "));
+    // Fill-to-ceiling (memo D-F): hand the model each allowed model's hard
+    // per-call ceiling so it splits a long target into enough shots (30s on a
+    // 15s-ceiling model = 2×15) rather than proposing one over-long shot that
+    // the validator would reject with `ShotOverCeiling`.
+    let reg = registry();
+    let ceilings: Vec<String> = model_prefs
+        .iter()
+        .filter_map(|id| {
+            let model = reg.get(id)?;
+            let ceiling = model_ceiling(model, use_case)?;
+            Some(format!("{id} ≤ {}s per shot", trim_secs(ceiling)))
+        })
+        .collect();
+    if !ceilings.is_empty() {
+        out.push_str("\nPer-call length ceilings (split a longer target across shots): ");
+        out.push_str(&ceilings.join("; "));
+    }
     out.push_str("\nAllowed camera slugs (use one of these, or null): ");
     out.push_str(&cameras.join(", "));
     out.push_str("\n\nDraft the storyboard now. Reply with only the JSON object.");
@@ -575,6 +972,8 @@ mod tests {
                 continuity: None,
                 advisories: Vec::new(),
                 chainable: false,
+                action: None,
+                resolution: None,
             })
             .collect()
     }
@@ -907,6 +1306,8 @@ mod tests {
             continuity: None,
             advisories: Vec::new(),
             chainable: false,
+            action: None,
+            resolution: None,
         };
         clamp_shot(&mut shot, 2, model, UseCase::TextToVideo);
         assert_eq!(
@@ -936,6 +1337,8 @@ mod tests {
             continuity: None,
             advisories: Vec::new(),
             chainable: false,
+            action: None,
+            resolution: None,
         };
         clamp_shot(&mut shot, 0, model, UseCase::TextToVideo);
         assert_eq!(shot.seconds, 30.0);
@@ -1008,5 +1411,304 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PlanError::ShotCount(9)), "got {err:?}");
+    }
+
+    // ---- S16: duration range clamp + fill-to-ceiling (D5) ----
+
+    /// The H3 Max image-to-video model, a free-form 5–15s axis.
+    fn h3_max() -> &'static str {
+        "minimax_h3_max"
+    }
+
+    fn one_shot(model: &str, seconds: f64) -> Shot {
+        Shot {
+            title: "x".into(),
+            prompt: "x".into(),
+            action: None,
+            seconds,
+            camera: None,
+            model_id: model.to_string(),
+            role: ShotRole::Start,
+            continuity: None,
+            advisories: Vec::new(),
+            chainable: false,
+            resolution: None,
+        }
+    }
+
+    #[test]
+    fn clamp_shot_uses_the_range_for_a_free_form_model() {
+        let reg = registry();
+        let model = reg.get(h3_max()).expect("h3 max is registered");
+
+        // 12 on H3 Max stays 12 (5 ≤ 12 ≤ 15), no advisory.
+        let mut ok = one_shot(h3_max(), 12.0);
+        clamp_shot(&mut ok, 0, model, UseCase::ImageToVideo);
+        assert_eq!(ok.seconds, 12.0);
+        assert!(ok.advisories.is_empty());
+
+        // 20 → 15, one advisory naming the range.
+        let mut over = one_shot(h3_max(), 20.0);
+        clamp_shot(&mut over, 0, model, UseCase::ImageToVideo);
+        assert_eq!(over.seconds, 15.0);
+        assert_eq!(over.advisories.len(), 1);
+        assert!(
+            over.advisories[0].contains("5–15s"),
+            "{}",
+            over.advisories[0]
+        );
+    }
+
+    #[test]
+    fn a_single_shot_thirty_survives_only_when_the_range_reaches_it() {
+        // A model whose free-form range reaches 30 keeps a single 30s shot.
+        let wan = "wan3_0_prime";
+        let plan_ok = validate(&shots_on(wan, &[30.0]), 30.0, UseCase::TextToVideo, 0.0);
+        assert!(plan_ok.is_ok(), "wan 3.0 prime reaches 30s: {plan_ok:?}");
+
+        // A single 30s shot on H3 Max (ceiling 15) is rejected — split it.
+        let err = validate(
+            &shots_on(h3_max(), &[30.0]),
+            30.0,
+            UseCase::ImageToVideo,
+            0.0,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PlanError::ShotOverCeiling { ceiling, .. } if ceiling == 15.0),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn fill_to_ceiling_splits_thirty_into_two_fifteens() {
+        // A 2×15 H3 Max plan is accepted; the ceiling reaches the drafting
+        // prompt so the model knows to split.
+        let two = validate(
+            &shots_on(h3_max(), &[15.0, 15.0]),
+            30.0,
+            UseCase::ImageToVideo,
+            0.0,
+        );
+        assert!(two.is_ok(), "2×15 on h3 max is valid: {two:?}");
+
+        let msg = build_user_message(
+            "a 30s ad",
+            30.0,
+            UseCase::ImageToVideo,
+            &[h3_max().to_string()],
+        );
+        assert!(
+            msg.contains("≤ 15s per shot"),
+            "the ceiling must reach the model: {msg}"
+        );
+    }
+
+    // ---- S16: world block + validator (D6) ----
+
+    fn continuous_json(world: &str) -> String {
+        let model = h3_max();
+        format!(
+            r#"{{"world": "{world}",
+"shots": [
+  {{"title":"A","action":"The can beads with condensation. Ends on a static hold of the can centred.","seconds":15,"camera":null,"modelId":"{model}","role":"start"}},
+  {{"title":"B","action":"Opens on the same static hold of the can centred, then the drop falls.","seconds":15,"camera":null,"modelId":"{model}","role":"end"}}
+]}}"#
+        )
+    }
+
+    const WORLD: &str = "A matte-black cold-brew can with a copper rim on wet slate, studio product photography, deep teal palette";
+
+    #[test]
+    fn a_world_block_is_composed_verbatim_into_each_prompt() {
+        let out = plan(
+            &fake(&continuous_json(WORLD)),
+            "sys",
+            "a 30s cold-brew ad",
+            30.0,
+            UseCase::ImageToVideo,
+            &[h3_max().to_string()],
+        )
+        .expect("a continuous plan is accepted");
+        for shot in &out.shots {
+            assert!(shot.prompt.starts_with(WORLD), "prompt: {}", shot.prompt);
+        }
+    }
+
+    #[test]
+    fn identical_actions_are_rejected() {
+        let model = h3_max();
+        let dup = format!(
+            r#"{{"world":"{WORLD}","shots":[
+  {{"title":"A","action":"Ends on a static hold of the can.","seconds":15,"camera":null,"modelId":"{model}","role":"start"}},
+  {{"title":"B","action":"Ends on a static hold of the can.","seconds":15,"camera":null,"modelId":"{model}","role":"end"}}
+]}}"#
+        );
+        let err = plan(
+            &fake(&dup),
+            "sys",
+            "b",
+            30.0,
+            UseCase::ImageToVideo,
+            &[model.to_string()],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PlanError::IdenticalShots { a: 0, b: 1 }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_final_shot_without_a_hold_is_rejected() {
+        let model = h3_max();
+        let nohold = format!(
+            r#"{{"world":"{WORLD}","shots":[
+  {{"title":"A","action":"The can spins wildly with no pause at all.","seconds":15,"camera":null,"modelId":"{model}","role":"start"}},
+  {{"title":"B","action":"Opens on the same static hold, then it settles.","seconds":15,"camera":null,"modelId":"{model}","role":"end"}}
+]}}"#
+        );
+        let err = plan(
+            &fake(&nohold),
+            "sys",
+            "b",
+            30.0,
+            UseCase::ImageToVideo,
+            &[model.to_string()],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PlanError::NoHoldEnding { shot: 0 }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_short_world_is_rejected() {
+        let err = plan(
+            &fake(&continuous_json("three words here")),
+            "sys",
+            "b",
+            30.0,
+            UseCase::ImageToVideo,
+            &[h3_max().to_string()],
+        )
+        .unwrap_err();
+        assert!(matches!(err, PlanError::MissingWorld), "got {err:?}");
+    }
+
+    #[test]
+    fn a_cut_word_is_rejected() {
+        let model = h3_max();
+        let cut = format!(
+            r#"{{"world":"{WORLD}","shots":[
+  {{"title":"A","action":"The can beads. Ends on a static hold of the can. Meanwhile the label shifts.","seconds":15,"camera":null,"modelId":"{model}","role":"start"}},
+  {{"title":"B","action":"Opens on the same static hold, then it tilts.","seconds":15,"camera":null,"modelId":"{model}","role":"end"}}
+]}}"#
+        );
+        let err = plan(
+            &fake(&cut),
+            "sys",
+            "b",
+            30.0,
+            UseCase::ImageToVideo,
+            &[model.to_string()],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PlanError::CutWords { shot: 0, .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_broken_composition_is_caught() {
+        // A UI edit that prepended text to shot 0's prompt breaks the verbatim
+        // world composition. `validate_composition` catches it directly.
+        let mut shots = shots_on(h3_max(), &[15.0, 15.0]);
+        shots[0].prompt = format!("EXTRA {WORLD} beat one");
+        shots[1].prompt = format!("{WORLD} beat two");
+        let err = validate_composition(WORLD, &shots).unwrap_err();
+        assert!(
+            matches!(err, PlanError::PromptMissingWorld { shot: 0 }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn the_one_to_eight_bound_is_preserved() {
+        // The S15 D-G floor is untouched: one shot ok, zero rejected.
+        assert!(validate(
+            &shots_on(h3_max(), &[10.0]),
+            10.0,
+            UseCase::ImageToVideo,
+            0.0
+        )
+        .is_ok());
+        assert!(matches!(
+            validate(&[], 10.0, UseCase::ImageToVideo, 0.0),
+            Err(PlanError::ShotCount(0))
+        ));
+    }
+
+    #[test]
+    fn a_mixed_resolution_set_is_advised_not_rejected() {
+        let mut shots = shots_on(h3_max(), &[15.0, 15.0]);
+        shots[0].resolution = Some("768P".into());
+        shots[1].resolution = Some("1080P".into());
+        let advisory = mixed_resolution_advisory(&shots).expect("a mix is advised");
+        assert!(advisory.contains("768P") && advisory.contains("1080P"));
+        // A uniform set is silent.
+        shots[1].resolution = Some("768P".into());
+        assert!(mixed_resolution_advisory(&shots).is_none());
+    }
+
+    // ---- S16: score thresholds (D7) ----
+
+    fn scored(ssim: f64, dy: f64, du: f64, dv: f64) -> JoinScore {
+        JoinScore {
+            ssim: Some(ssim),
+            psnr: Some(30.0),
+            dy: Some(dy),
+            du: Some(du),
+            dv: Some(dv),
+        }
+    }
+
+    #[test]
+    fn join_passes_at_the_four_boundaries() {
+        let t = CONTINUITY_FLOOR; // 0.80 / 12 / 6
+                                  // Exactly on every boundary passes.
+        assert!(join_passes(&scored(0.80, 12.0, 6.0, 6.0), t));
+        // One over each of the four fails.
+        assert!(!join_passes(&scored(0.79, 12.0, 6.0, 6.0), t), "ssim floor");
+        assert!(!join_passes(&scored(0.80, 12.1, 6.0, 6.0), t), "dy ceiling");
+        assert!(!join_passes(&scored(0.80, 12.0, 6.1, 6.0), t), "du ceiling");
+        assert!(!join_passes(&scored(0.80, 12.0, 6.0, 6.1), t), "dv ceiling");
+        // Unscored is not failing (no spurious regenerate).
+        assert!(join_passes(&JoinScore::unscored(), t));
+        assert!(join_passes(
+            &JoinScore {
+                ssim: Some(0.1),
+                dy: None,
+                ..JoinScore::default()
+            },
+            t
+        ));
+    }
+
+    #[test]
+    fn continuity_rate_over_a_fake_store() {
+        let mut joins: Vec<JoinScore> = (0..19).map(|_| scored(0.95, 2.0, 1.0, 1.0)).collect();
+        joins.push(scored(0.5, 2.0, 1.0, 1.0)); // one fail
+        assert!((continuity_rate(&joins, CONTINUITY_FLOOR) - 0.95).abs() < 1e-9);
+        // Unscored joins are excluded from the rate.
+        joins.push(JoinScore::unscored());
+        assert!((continuity_rate(&joins, CONTINUITY_FLOOR) - 0.95).abs() < 1e-9);
+        // No scored joins → 1.0 (nothing has failed).
+        assert_eq!(
+            continuity_rate(&[JoinScore::unscored()], CONTINUITY_FLOOR),
+            1.0
+        );
     }
 }

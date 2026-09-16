@@ -65,6 +65,7 @@ export function Storyboard({
     shotIndices?: number[];
     storyboardId?: string;
     chained?: boolean;
+    autoRetry?: boolean;
   }) => Promise<StoryboardResult>;
   /** Called after a successful generate-all (App switches to the Library). */
   onGenerated: (result: StoryboardResult) => void;
@@ -93,6 +94,9 @@ export function Storyboard({
   // Defaults on only when every shot's model can serve image-to-video; the user
   // can override, and a re-draft re-applies the default.
   const [chained, setChained] = useState(false);
+  // S16 D9: opt into bounded auto-retry of a below-floor join (≤2 attempts,
+  // each priced first). Off by default — nothing spends without an opt-in.
+  const [autoRetry, setAutoRetry] = useState(false);
   const canChain = shots.length > 1;
   const allChainable = canChain && shots.every((s) => s.chainable ?? false);
 
@@ -287,9 +291,11 @@ export function Storyboard({
         // Chaining applies only to a first generate-all; a retry re-submits a
         // single failed shot and the runner's hook resumes the chain from it.
         chained: isRetry ? undefined : chained,
+        // Auto-retry rides on a chained first generate-all only.
+        autoRetry: isRetry ? undefined : chained && autoRetry,
       });
     },
-    [shots, brief, targetSeconds, tab, models, settings, enhancer, finalPrompts, onGenerate, chained],
+    [shots, brief, targetSeconds, tab, models, settings, enhancer, finalPrompts, onGenerate, chained, autoRetry],
   );
 
   const generate = useCallback(async () => {
@@ -613,6 +619,20 @@ export function Storyboard({
                     Some shots' models can't continue from a frame — those shots
                     will be generated from the prompt.
                   </p>
+                ) : null}
+                {chained ? (
+                  <label className="storyboard-autoretry-toggle">
+                    <input
+                      type="checkbox"
+                      checked={autoRetry}
+                      aria-label="Auto-retry low-continuity joins"
+                      onChange={(e) => setAutoRetry(e.currentTarget.checked)}
+                    />
+                    <span>
+                      Auto-retry a low-continuity join (up to 2×, each priced
+                      first)
+                    </span>
+                  </label>
                 ) : null}
               </div>
             ) : null}

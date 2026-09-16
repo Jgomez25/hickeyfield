@@ -904,6 +904,48 @@
   font-size: var(--text-200, 0.8rem);
 }
 
+/* S16: bounded auto-retry opt-in, shown only when chaining is on. */
+.storyboard-autoretry-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-150, 0.4rem);
+  font-size: var(--text-200, 0.8rem);
+  color: var(--muted, #9a9aa5);
+  cursor: pointer;
+}
+
+/* S16: a per-join continuity-score badge (Library set item + shot card).
+   `data-pass="false"` flags a below-floor join in the alert colour. */
+.storyboard-join {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-100, 0.25rem);
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-100, 0.3rem);
+  font-size: var(--text-200, 0.8rem);
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-200, #1c1c22);
+  color: var(--muted, #9a9aa5);
+}
+
+.storyboard-join[data-pass="true"] {
+  color: var(--ok, #5fd08a);
+}
+
+.storyboard-join[data-pass="false"] {
+  color: var(--alert, #e6795b);
+}
+
+/* S16: the "Regenerate shot N+1 from the same frame" action on a low join. */
+.storyboard-regenerate-join {
+  font-size: var(--text-200, 0.8rem);
+  color: var(--accent, #7aa2f7);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
 .storyboard-render-controls {
   display: flex;
   flex-wrap: wrap;

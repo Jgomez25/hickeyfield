@@ -149,6 +149,35 @@ describe("durationLadder", () => {
   it("offers nothing when the model has no duration axis", () => {
     expect(durationLadder(UNKNOWN_CAPABILITIES)).toEqual([]);
   });
+
+  it("offers fifteen and is not capped at twelve for an H3 Max range", () => {
+    // The owner's report: the generic ladder stopped at 12 while H3 Max
+    // renders 5–15s.
+    const ladder = durationLadder(
+      caps4({ durations: [], durationRange: [5, 15], defaultDuration: 5 }),
+    );
+    expect(ladder).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(ladder).toContain(15);
+    expect(Math.max(...ladder)).toBe(15);
+    expect(ladder.length).toBeLessThanOrEqual(12);
+  });
+
+  it("covers the full range thinned, keeping endpoints and default", () => {
+    const ladder = durationLadder(
+      caps4({ durations: [], durationRange: [2, 30], defaultDuration: 5 }),
+    );
+    expect(ladder.length).toBeLessThanOrEqual(12);
+    expect(ladder[0]).toBe(2);
+    expect(ladder[ladder.length - 1]).toBe(30);
+    expect(ladder).toContain(5);
+    expect(ladder.every((v) => v >= 2 && v <= 30)).toBe(true);
+  });
+
+  it("keeps the generic ladder when no range is known", () => {
+    expect(
+      durationLadder(caps4({ durations: [], durationRange: null })),
+    ).toEqual([3, 4, 5, 6, 8, 10, 12]);
+  });
 });
 
 describe("resolveSettings", () => {
@@ -163,6 +192,22 @@ describe("resolveSettings", () => {
     expect(resolveSettings(settings({ duration: 5 }), caps).duration).toBe(4);
     expect(resolveSettings(settings({ duration: 7 }), caps).duration).toBe(6);
     expect(resolveSettings(settings({ duration: 20 }), caps).duration).toBe(8);
+  });
+
+  it("clamps a free-form duration into a known range on model switch", () => {
+    // Switching to H3 Max must not leave 20s staged past its 15s ceiling.
+    const h3 = caps4({ durations: [], durationRange: [5, 15] });
+    expect(resolveSettings(settings({ duration: 20 }), h3).duration).toBe(15);
+    expect(resolveSettings(settings({ duration: 3 }), h3).duration).toBe(5);
+    // A value inside the range is untouched (same object back).
+    const inside = settings({ duration: 12 });
+    expect(resolveSettings(inside, h3)).toBe(inside);
+  });
+
+  it("leaves a free-form duration alone when no range is known", () => {
+    const free = caps4({ durations: [], durationRange: null });
+    const s = settings({ duration: 42 });
+    expect(resolveSettings(s, free)).toBe(s);
   });
 
   it("prefers the model's own default over the first option", () => {

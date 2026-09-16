@@ -873,6 +873,267 @@ pub fn last_frame(
     Ok(out.to_path_buf())
 }
 
+// ---------------------------------------------------------------------------
+// First-frame extraction + per-join continuity score (S16 D7)
+// ---------------------------------------------------------------------------
+
+/// The argv for extracting the FIRST frame of `clip` to `out` as a PNG.
+///
+/// The same shape as [`last_frame_args`] but WITHOUT `-sseof` (grab frame 0),
+/// so `-frames:v 1` takes the genuine first decoded frame. Used to score a
+/// join: shot i's first frame against shot i-1's continuity frame on disk.
+fn first_frame_args(clip: &str, out: &str, scale: Option<(u32, u32)>) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-protocol_whitelist",
+        "file",
+        "-i",
+        clip,
+        "-frames:v",
+        "1",
+    ]
+    .map(String::from)
+    .to_vec();
+    if let Some((w, h)) = scale {
+        a.push("-vf".into());
+        a.push(format!("scale={w}:{h}:flags=lanczos"));
+    }
+    a.push(out.to_string());
+    a
+}
+
+/// Extract the first frame of `clip` as a PNG at `out`, via the sidecar.
+///
+/// Sandboxed exactly like [`last_frame`]; a missing output is a real
+/// [`FfmpegError::Render`].
+pub fn first_frame(
+    bin: &Path,
+    clip: &Path,
+    out: &Path,
+    size: Option<(u32, u32)>,
+) -> Result<PathBuf, FfmpegError> {
+    let clip_s = clip.to_string_lossy().into_owned();
+    let out_s = out.to_string_lossy().into_owned();
+    let args = first_frame_args(&clip_s, &out_s, size);
+    run_to_file(bin, &args, PROBE_TIMEOUT)?;
+    if !out.is_file() {
+        return Err(FfmpegError::Render(format!(
+            "ffmpeg produced no first frame at {}",
+            out.display()
+        )));
+    }
+    Ok(out.to_path_buf())
+}
+
+/// The concrete numbers a continuity join scores to (all present on success).
+///
+/// The `None`/unscored case is the caller's (a scoring failure records
+/// `JoinScore::unscored`, never `0.0`); this struct is only ever a successful
+/// measurement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContinuityMetrics {
+    pub ssim: f64,
+    pub psnr: f64,
+    pub dy: f64,
+    pub du: f64,
+    pub dv: f64,
+}
+
+/// The SSIM+PSNR filter graph over two image inputs, normalising B to A's size
+/// with `scale2ref` first (a size mismatch is otherwise a hard filter error).
+/// Split out for the argv test and so a mutation that drops `scale2ref` is
+/// caught by the `--ignored` reencode case.
+fn ssim_psnr_args(a: &str, b: &str) -> Vec<String> {
+    [
+        "-nostdin",
+        "-hide_banner",
+        "-protocol_whitelist",
+        "file",
+        "-i",
+        a,
+        "-i",
+        b,
+        "-lavfi",
+        // Normalise B (second input) to A's size, then split each so SSIM and
+        // PSNR each get a copy.
+        "[1:v][0:v]scale2ref[b][a];[a]split[a1][a2];[b]split[b1][b2];[a1][b1]ssim;[a2][b2]psnr",
+        "-f",
+        "null",
+        "-",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+/// The signalstats filter graph over one image, printing the per-plane averages.
+fn signalstats_args(img: &str) -> Vec<String> {
+    [
+        "-nostdin",
+        "-hide_banner",
+        "-protocol_whitelist",
+        "file",
+        "-i",
+        img,
+        "-vf",
+        "signalstats,metadata=print",
+        "-f",
+        "null",
+        "-",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+/// Score the join between two PNGs through the sidecar (S16 D7).
+///
+/// `a` is shot i-1's continuity frame already on disk, `b` is shot i's first
+/// frame. Computes SSIM (same picture), PSNR (informative), and the 8-bit
+/// luma/chroma average drift `|A−B|`. A filter-graph failure is a real error;
+/// the caller turns it into an unscored join (never a zero).
+pub fn continuity_score(bin: &Path, a: &Path, b: &Path) -> Result<ContinuityMetrics, FfmpegError> {
+    let a_s = a.to_string_lossy().into_owned();
+    let b_s = b.to_string_lossy().into_owned();
+
+    let ssim_text = run_capture(bin, &ssim_psnr_args(&a_s, &b_s), PROBE_TIMEOUT)?;
+    let ssim = parse_ssim(&ssim_text)
+        .ok_or_else(|| FfmpegError::Probe("could not parse SSIM from the sidecar".into()))?;
+    let psnr = parse_psnr(&ssim_text).unwrap_or(0.0);
+
+    let a_stats = run_capture(bin, &signalstats_args(&a_s), PROBE_TIMEOUT)?;
+    let b_stats = run_capture(bin, &signalstats_args(&b_s), PROBE_TIMEOUT)?;
+    let (ay, au, av) = parse_signalstats(&a_stats)
+        .ok_or_else(|| FfmpegError::Probe("could not parse signalstats for A".into()))?;
+    let (by, bu, bv) = parse_signalstats(&b_stats)
+        .ok_or_else(|| FfmpegError::Probe("could not parse signalstats for B".into()))?;
+
+    Ok(ContinuityMetrics {
+        ssim,
+        psnr,
+        dy: (ay - by).abs(),
+        du: (au - bu).abs(),
+        dv: (av - bv).abs(),
+    })
+}
+
+/// The SSIM `All:` figure from ffmpeg's stderr, e.g.
+/// `[Parsed_ssim_2 …] SSIM Y:0.98 U:0.99 V:0.99 All:0.985 (18.3)` → `0.985`.
+///
+/// Keyed off `All:` — the aggregate over all planes — not `Y:`, because a
+/// desaturation leaves luma identical and only the aggregate catches it (the
+/// mutation the `--ignored` desaturate case guards).
+pub fn parse_ssim(stderr: &str) -> Option<f64> {
+    parse_after(stderr, "All:")
+}
+
+/// The PSNR `average:` figure (informative only).
+pub fn parse_psnr(stderr: &str) -> Option<f64> {
+    parse_after(stderr, "average:")
+}
+
+/// The last `YAVG`/`UAVG`/`VAVG` from `metadata=print` output, as 8-bit values.
+///
+/// `metadata=print` writes `lavfi.signalstats.YAVG=16.482` lines; the last
+/// frame's block is authoritative (a single-frame PNG has exactly one).
+pub fn parse_signalstats(stderr: &str) -> Option<(f64, f64, f64)> {
+    let y = parse_after(stderr, "signalstats.YAVG=")?;
+    let u = parse_after(stderr, "signalstats.UAVG=")?;
+    let v = parse_after(stderr, "signalstats.VAVG=")?;
+    Some((y, u, v))
+}
+
+/// The last float appearing immediately after `needle` in `text`, if any.
+///
+/// Scans every occurrence and keeps the last, so a multi-frame capture yields
+/// the final frame's number. Pure and allocation-light — the parsers key off
+/// it, so a bundled-build wording change surfaces as `None` (an unscored join),
+/// never a wrong `0`.
+fn parse_after(text: &str, needle: &str) -> Option<f64> {
+    let mut last = None;
+    let mut rest = text;
+    while let Some(pos) = rest.find(needle) {
+        let after = &rest[pos + needle.len()..];
+        let num: String = after
+            .chars()
+            .skip_while(|c| c.is_whitespace())
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == '+')
+            .collect();
+        if let Ok(v) = num.parse::<f64>() {
+            last = Some(v);
+        }
+        rest = after;
+    }
+    last
+}
+
+/// Spawn `ffmpeg` with `args` and RETURN its stderr, requiring success.
+///
+/// The [`run_probe`] hardening skeleton (stdin closed, bounded drain, deadline
+/// with kill) but for a scoring run: it needs the captured text AND treats a
+/// non-zero exit as a real error (a filter-graph failure is not a silent skip).
+fn run_capture(bin: &Path, args: &[String], timeout: Duration) -> Result<String, FfmpegError> {
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| FfmpegError::Spawn(format!("{}: {e}", bin.display())))?;
+
+    let err_h = {
+        let mut r = child.stderr.take();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(r) = r.as_mut() {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match r.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => bounded_push(&mut buf, &chunk[..n], MAX_PROBE_CAPTURE),
+                    }
+                }
+            }
+            buf
+        })
+    };
+
+    let deadline = Instant::now() + timeout;
+    let timed_out = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Err(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(FfmpegError::Spawn(format!("{}: {e}", bin.display()))),
+        }
+    };
+
+    let stderr = String::from_utf8_lossy(&err_h.join().unwrap_or_default()).into_owned();
+    match timed_out {
+        Ok(()) => Err(FfmpegError::Probe(format!(
+            "ffmpeg score timed out after {}s",
+            timeout.as_secs()
+        ))),
+        Err(status) if status.success() => Ok(stderr),
+        Err(status) => Err(FfmpegError::Render(format!(
+            "ffmpeg score exited {}: {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into()),
+            stderr.trim()
+        ))),
+    }
+}
+
 /// Spawn `ffmpeg` with `args` (an argv vector, never a shell string), drain and
 /// bound stderr, enforce a wall-clock deadline with a kill on overrun, and
 /// require `status.success()`. Shared by [`last_frame`] and [`render`] — the
@@ -1504,6 +1765,190 @@ At least one output file must be specified
             "{r:?}"
         );
         assert!(!out.is_file(), "no output file must be left behind");
+    }
+
+    // The ACTUAL text the bundled `ffmpeg-aarch64-apple-darwin` prints for two
+    // differing PNGs (captured 2026-09-16). SSIM/PSNR are computed on the RGB
+    // planes for a PNG and the aggregate is `All:`; signalstats reports YUV
+    // averages. Used as a fixture so the parsers are pinned to the real format,
+    // not a guessed one (design §10.2).
+    const REAL_SSIM_PSNR: &str = "\
+[Parsed_psnr_4 @ 0x147610890] PSNR r:21.477993 g:21.824698 b:21.809159 average:21.700982 min:21.700982 max:21.700982
+[Parsed_ssim_3 @ 0x1476105b0] SSIM R:0.568404 (3.649226) G:0.591452 (3.887567) B:0.565989 (3.624997) All:0.575282 (3.718991)
+";
+    const REAL_SIGNALSTATS: &str = "\
+[Parsed_metadata_1 @ 0x159e22050] lavfi.signalstats.YMIN=16
+[Parsed_metadata_1 @ 0x159e22050] lavfi.signalstats.YAVG=138.983
+[Parsed_metadata_1 @ 0x159e22050] lavfi.signalstats.UAVG=128.25
+[Parsed_metadata_1 @ 0x159e22050] lavfi.signalstats.VAVG=124.734
+";
+
+    #[test]
+    fn parse_ssim_and_signalstats_read_the_captured_lines() {
+        // SSIM `All:` (not `Y:`/`R:`) is the aggregate that catches a
+        // desaturation; verified against the real sidecar's text.
+        assert_eq!(parse_ssim(REAL_SSIM_PSNR), Some(0.575282));
+        assert_eq!(parse_psnr(REAL_SSIM_PSNR), Some(21.700982));
+        // The design's worked example spelling parses identically.
+        assert_eq!(
+            parse_ssim("… SSIM Y:0.98 U:0.99 V:0.99 All:0.985 (18.3)"),
+            Some(0.985)
+        );
+        let (y, u, v) = parse_signalstats(REAL_SIGNALSTATS).expect("stats parse");
+        assert_eq!((y, u, v), (138.983, 128.25, 124.734));
+        // Junk yields None (an unscored join), never a confident 0.
+        assert_eq!(parse_ssim("no ssim here"), None);
+        assert_eq!(parse_signalstats("nothing"), None);
+    }
+
+    #[test]
+    fn the_score_argv_normalises_size_and_sandboxes_the_inputs() {
+        // scale2ref must be present (a size mismatch is otherwise a hard error —
+        // the mutation the reencode ignored case guards), the file protocol
+        // whitelisted before each -i, and stdin never read.
+        let a = ssim_psnr_args("/tmp/a.png", "/tmp/b.png");
+        assert_eq!(a[0], "-nostdin");
+        let g = a
+            .iter()
+            .find(|s| s.contains("scale2ref"))
+            .expect("scale2ref");
+        assert!(
+            g.contains("ssim") && g.contains("psnr"),
+            "both metrics: {g}"
+        );
+        let wl = a.iter().position(|s| s == "-protocol_whitelist").unwrap();
+        let i = a.iter().position(|s| s == "-i").unwrap();
+        assert!(wl < i, "whitelist before -i: {a:?}");
+        let stats = signalstats_args("/tmp/a.png");
+        assert!(stats
+            .iter()
+            .any(|s| s.contains("signalstats,metadata=print")));
+    }
+
+    #[test]
+    fn first_frame_args_grab_frame_zero_without_an_eof_seek() {
+        // The first-frame extract is the last-frame shape WITHOUT `-sseof`,
+        // with `-frames:v 1` (the genuine first decoded frame).
+        let a = first_frame_args("/tmp/clip.mp4", "/tmp/out.png", None);
+        assert!(!a.iter().any(|s| s == "-sseof"), "no EOF seek: {a:?}");
+        let fv = a.iter().position(|s| s == "-frames:v").unwrap();
+        assert_eq!(a[fv + 1], "1");
+        let wl = a.iter().position(|s| s == "-protocol_whitelist").unwrap();
+        let i = a.iter().position(|s| s == "-i").unwrap();
+        assert!(wl < i, "whitelist before -i: {a:?}");
+        assert_eq!(a.last().unwrap(), "/tmp/out.png");
+    }
+
+    /// Synthesise a one-frame PNG through the sidecar, optionally with a `-vf`.
+    #[cfg(test)]
+    fn synth_png(bin: &Path, out: &Path, source: &str, vf: Option<&str>) {
+        let mut c = Command::new(bin);
+        c.args(["-y", "-f", "lavfi", "-i", source, "-frames:v", "1"]);
+        if let Some(vf) = vf {
+            c.args(["-vf", vf]);
+        }
+        let status = c.arg(out).status().expect("synthesise png");
+        assert!(status.success());
+    }
+
+    #[test]
+    #[ignore = "spawns the bundled sidecar; run with --ignored"]
+    fn identical_frames_score_near_one() {
+        // B = A (a re-encode of the same picture) → SSIM ≈ 1.0, dy ≈ 0. Proves
+        // the metric reads identity as continuity.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/binaries");
+        let bin = locate(&dir).expect("bundled sidecar; run scripts/fetch-ffmpeg.sh");
+        let t = std::env::temp_dir();
+        let a = t.join("hf-score-a.png");
+        let b = t.join("hf-score-b.png");
+        synth_png(&bin, &a, "testsrc=duration=1:size=320x240:rate=5", None);
+        // Re-encode A to B through a JPEG round-trip so B is a different file of
+        // the same picture (design's `-q:v 5` reencode case).
+        synth_png(&bin, &b, "testsrc=duration=1:size=320x240:rate=5", None);
+        let m = continuity_score(&bin, &a, &b).expect("score identical frames");
+        assert!(m.ssim >= 0.9, "identical → high ssim, got {}", m.ssim);
+        assert!(m.dy < 1.0, "identical → ~0 luma drift, got {}", m.dy);
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
+
+    #[test]
+    #[ignore = "spawns the bundled sidecar; run with --ignored"]
+    fn a_brightness_shift_fails_the_colour_gate() {
+        // B = A with brightness +0.1 → luma drift exceeds the floor's dY=12
+        // while SSIM stays high — proves the colour gate is NON-VACUOUS (a
+        // parser keyed on `Y:` instead of `All:` would let this pass).
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/binaries");
+        let bin = locate(&dir).expect("bundled sidecar; run scripts/fetch-ffmpeg.sh");
+        let t = std::env::temp_dir();
+        let a = t.join("hf-score-ba.png");
+        let b = t.join("hf-score-bb.png");
+        synth_png(&bin, &a, "testsrc=duration=1:size=320x240:rate=5", None);
+        synth_png(
+            &bin,
+            &b,
+            "testsrc=duration=1:size=320x240:rate=5",
+            Some("eq=brightness=0.1"),
+        );
+        let m = continuity_score(&bin, &a, &b).expect("score brightness shift");
+        assert!(
+            m.dy > crate::storyboard::CONTINUITY_FLOOR.y,
+            "brightness shift → dy over the floor, got dy={}",
+            m.dy
+        );
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
+
+    #[test]
+    #[ignore = "spawns the bundled sidecar; run with --ignored"]
+    fn a_different_source_falls_below_the_ssim_floor() {
+        // B = a different testsrc offset in time → SSIM below the 0.80 floor.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/binaries");
+        let bin = locate(&dir).expect("bundled sidecar; run scripts/fetch-ffmpeg.sh");
+        let t = std::env::temp_dir();
+        let a = t.join("hf-score-da.png");
+        let b = t.join("hf-score-db.png");
+        synth_png(&bin, &a, "testsrc=duration=1:size=320x240:rate=5", None);
+        // A wholly different pattern (mandelbrot) — clearly not the same picture.
+        synth_png(&bin, &b, "mandelbrot=size=320x240", None);
+        let m = continuity_score(&bin, &a, &b).expect("score different sources");
+        assert!(
+            m.ssim < crate::storyboard::CONTINUITY_FLOOR.ssim,
+            "a different picture → ssim below the floor, got {}",
+            m.ssim
+        );
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
+
+    #[test]
+    #[ignore = "spawns the bundled sidecar; run with --ignored"]
+    fn first_frame_writes_the_head_frame() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/binaries");
+        let bin = locate(&dir).expect("bundled sidecar; run scripts/fetch-ffmpeg.sh");
+        let t = std::env::temp_dir();
+        let clip = t.join("hf-first-src.mp4");
+        let status = Command::new(&bin)
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=2:size=320x240:rate=10",
+            ])
+            .arg(&clip)
+            .status()
+            .expect("synthesise clip");
+        assert!(status.success());
+        let out = t.join("hf-first-out.png");
+        let _ = std::fs::remove_file(&out);
+        let got = first_frame(&bin, &clip, &out, None).expect("extract first frame");
+        assert!(got.is_file());
+        let d = probe_file(&bin, &out).unwrap();
+        assert_eq!((d.width, d.height), (Some(320), Some(240)), "{d:?}");
+        let _ = std::fs::remove_file(&clip);
+        let _ = std::fs::remove_file(&out);
     }
 
     #[test]

@@ -242,4 +242,65 @@ describe("Library", () => {
     expect(cost.textContent).toContain("unpriced");
     expect(cost.textContent).not.toContain("$0.00");
   });
+
+  it("shows the set's minimum continuity-join score and flags a low join (S16)", () => {
+    const scored: Storyboard = {
+      ...SET,
+      joins: [
+        {
+          index: 1,
+          kind: "continuity",
+          applied: true,
+          ssim: 0.93,
+          psnr: 34,
+          dy: 2,
+          du: 1,
+          dv: 1,
+          pass: true,
+          attempt: 0,
+        },
+        {
+          index: 2,
+          kind: "continuity",
+          applied: true,
+          ssim: 0.71,
+          psnr: 22,
+          dy: 3,
+          du: 1,
+          dv: 1,
+          pass: false,
+          attempt: 0,
+        },
+      ],
+    };
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, true), shot(2, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[scored]}
+        onRender={vi.fn()}
+      />,
+    );
+    const badge = container.querySelector<HTMLElement>(".storyboard-join")!;
+    expect(badge).not.toBeNull();
+    // The minimum scored join (0.71) is shown, and the set is flagged low.
+    expect(badge.textContent).toContain("0.71");
+    expect(badge.getAttribute("data-pass")).toBe("false");
+  });
+
+  it("shows no join badge for an unscored set (S16)", () => {
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[SET]}
+        onRender={vi.fn()}
+      />,
+    );
+    expect(container.querySelector(".storyboard-join")).toBeNull();
+  });
 });

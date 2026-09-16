@@ -153,9 +153,31 @@ describe("storyboard bridge", () => {
       targetSeconds: 30,
       planJson: "{}",
       createdAt: 5,
+      joins: [],
+      autoRetry: false,
     });
 
     invokeMock.mockRejectedValueOnce(new Error("no command"));
     expect(await listStoryboards()).toEqual([]);
+  });
+
+  it("parses a set's join scores and auto-retry flag (S16)", async () => {
+    invokeMock.mockResolvedValueOnce([
+      {
+        id: "sb-2",
+        brief: "b",
+        target_seconds: 30,
+        plan_json: "{}",
+        created_at: 5,
+        joins_json:
+          '[{"index":1,"kind":"continuity","applied":true,"ssim":0.71,"psnr":30,"dy":2,"du":1,"dv":1,"pass":false,"attempt":0}]',
+        auto_retry: true,
+      },
+    ]);
+    const rows = await listStoryboards();
+    expect(rows[0].autoRetry).toBe(true);
+    expect(rows[0].joins).toHaveLength(1);
+    expect(rows[0].joins?.[0].ssim).toBe(0.71);
+    expect(rows[0].joins?.[0].pass).toBe(false);
   });
 });

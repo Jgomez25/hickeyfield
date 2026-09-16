@@ -415,4 +415,38 @@ describe("Storyboard", () => {
       expect.objectContaining({ chained: true }),
     );
   });
+
+  it("the auto-retry toggle appears only when chaining, and rides the payload (S16)", async () => {
+    const props = await draftWith(chainableShots([true, true]));
+    // Chaining is on (both shots chainable) → the auto-retry toggle is offered,
+    // off by default (nothing spends without an opt-in).
+    const auto = container.querySelector<HTMLInputElement>(
+      ".storyboard-autoretry-toggle input",
+    )!;
+    expect(auto).not.toBeNull();
+    expect(auto.checked).toBe(false);
+
+    // Turning chaining OFF hides the auto-retry toggle entirely.
+    const chain = container.querySelector<HTMLInputElement>(
+      ".storyboard-chain-toggle input",
+    )!;
+    act(() => chain.click());
+    expect(
+      container.querySelector(".storyboard-autoretry-toggle"),
+    ).toBeNull();
+
+    // Back on, opt into auto-retry, and generate → the payload carries it.
+    act(() => chain.click());
+    const auto2 = container.querySelector<HTMLInputElement>(
+      ".storyboard-autoretry-toggle input",
+    )!;
+    act(() => auto2.click());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-generate")!.click();
+    });
+    await flush();
+    expect(props.onGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({ chained: true, autoRetry: true }),
+    );
+  });
 });

@@ -296,6 +296,10 @@ pub struct CapabilitiesDto {
     pub supports_duration: bool,
     pub durations: Vec<f64>,
     pub default_duration: Option<f64>,
+    /// The provider's real `[min, max]` free-form duration bound, when known.
+    /// The UI ladder builds chips up to `max` from this (H3 Max 5–15, Wan
+    /// 3.0 Prime 2–30) instead of a generic ladder capped at 12.
+    pub duration_range: Option<(f64, f64)>,
     pub supports_resolution: bool,
     pub resolutions: Vec<String>,
     pub default_resolution: Option<String>,
@@ -333,6 +337,7 @@ impl CapabilitiesDto {
         CapabilitiesDto {
             supports_duration: c.duration.support.is_yes(),
             durations: num(&c.duration),
+            duration_range: c.duration_range(),
             default_duration: c
                 .duration_seconds()
                 .and_then(|_| c.default_duration_seconds()),
@@ -356,6 +361,7 @@ impl From<hickeyfield_core::catalog::Capabilities> for CapabilitiesDto {
         CapabilitiesDto {
             supports_duration: c.supports_duration,
             durations: c.durations,
+            duration_range: c.duration_range,
             default_duration: c.default_duration,
             supports_resolution: c.supports_resolution,
             resolutions: c.resolutions,
@@ -1032,6 +1038,45 @@ pub fn submit_job(state: State<'_, AppState>, input: SubmitInput) -> Result<Stri
 /// membership. `storyboard_id`/`shot_index` are `None` for a standalone job,
 /// which is exactly the standalone case, so nothing about single-job submit
 /// changes.
+/// Clamp a duration outside the model's documented range into that range,
+/// returning any advisory to attach to the job.
+///
+/// The range is never widened and a value already inside it is untouched (no
+/// advisory). Pure over the settings so the money-path behaviour is pinned by a
+/// test: the clamp runs BEFORE pricing, so the estimate is for what will render.
+fn clamp_duration_to_range(
+    settings: &mut SettingsDto,
+    range: Option<(f64, f64)>,
+    display_name: &str,
+) -> Vec<String> {
+    let (Some(d), Some((min, max))) = (settings.duration, range) else {
+        return Vec::new();
+    };
+    if d >= min && d <= max {
+        return Vec::new();
+    }
+    let clamped = d.clamp(min, max);
+    settings.duration = Some(clamped);
+    vec![format!(
+        "{} runs {}–{}s; {}s clamped to {}s",
+        display_name,
+        fmt_secs(min),
+        fmt_secs(max),
+        fmt_secs(d),
+        fmt_secs(clamped),
+    )]
+}
+
+/// Seconds as a human string: a whole number drops the `.0` (`15`, not
+/// `15.0`), a fraction keeps it. Used only for advisory copy.
+fn fmt_secs(v: f64) -> String {
+    if v.fract() == 0.0 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
 pub(crate) fn submit_one(
     store: &Arc<crate::store::SqliteStore>,
     prices: &Arc<crate::pricing::Prices>,
@@ -1050,7 +1095,20 @@ pub(crate) fn submit_one(
     // never re-compiled) or, on the quick path, a fresh enhance+compile.
     let compiled = compiled_for_submit(model, input)?;
 
-    let billable = Billable::from(&input.settings);
+    // Clamp a duration outside the model's documented range BEFORE pricing, so
+    // the estimate is for what will actually render. The range is read offline
+    // from the spec (the same bound the UI ladder showed and never wider than
+    // the live one for our roster — AC6/D10 guards that), so this stays
+    // network-free on the money path. A value already inside the range is
+    // untouched and carries no advisory; the range is never widened.
+    let mut settings = input.settings.clone();
+    let range_advisories = clamp_duration_to_range(
+        &mut settings,
+        model.spec.duration_range,
+        &model.display_name,
+    );
+
+    let billable = Billable::from(&settings);
     let route = hickeyfield_core::route::resolve(
         &model.routes,
         &available,
@@ -1086,7 +1144,7 @@ pub(crate) fn submit_one(
         enhanced_prompt: compiled.enhanced.clone(),
         enhancer_version: compiled.version.clone(),
         enhance_note: compiled.note.clone(),
-        advisories: Vec::new(),
+        advisories: range_advisories,
         preset_id: input.preset_id.clone(),
         created_at: now_secs(),
         updated_at: now_secs(),
@@ -1097,7 +1155,7 @@ pub(crate) fn submit_one(
         priced_at,
         actual_source: None,
         fail_reason: None,
-        settings: serde_json::to_value(&input.settings).unwrap_or(serde_json::Value::Null),
+        settings: serde_json::to_value(&settings).unwrap_or(serde_json::Value::Null),
         // Persisted so Rerun repeats the generation the user actually ran.
         media: input.media.clone(),
         // A fresh job has timed out zero times and is not stalled.
@@ -1270,6 +1328,11 @@ pub struct StoryboardGenerateInput {
     /// defaults to `DEFAULT_CROSSFADE_SECONDS`.
     #[serde(default)]
     pub overlap_seconds: Option<f64>,
+    /// S16 D9: opt into bounded auto-retry of a below-floor continuity join (at
+    /// most 2 regenerations, each priced first). Default off — nothing spends
+    /// without an explicit opt-in and the total shown.
+    #[serde(default)]
+    pub auto_retry: bool,
 }
 
 /// One shot's fate in a generate-all batch. A shot that failed (a refusal, a
@@ -1455,24 +1518,36 @@ fn generate_storyboard_inner(
     // job rows join the original storyboard; a first generate mints a fresh group.
     let sid = match input.storyboard_id.clone() {
         Some(existing) => {
-            if state
+            let Some(sb) = state
                 .store
                 .storyboard(&existing)
                 .map_err(|e| e.to_string())?
-                .is_none()
-            {
+            else {
                 return Err(format!("no such storyboard to retry into: {existing}"));
-            }
+            };
             // A shot that already started (a non-Failed row at that index) must
             // never be resubmitted — a successful shot cannot be double-billed.
+            //
+            // S16 D7 relaxes this for exactly one case: a **Completed** shot
+            // whose continuity join scored **below the floor** (`pass == false`)
+            // may be regenerated "from the same frame". Gated on the recorded
+            // `joins_json` verdict, so a *passing* or *still-running* shot is
+            // still refused — the relaxation is only for a measured low join.
+            let below_floor: std::collections::BTreeSet<u32> =
+                crate::store::parse_joins(sb.joins_json.as_deref())
+                    .into_iter()
+                    .filter(|j| j.pass == Some(false))
+                    .map(|j| j.index as u32)
+                    .collect();
             let existing_jobs = state
                 .store
                 .jobs_in_storyboard(&existing)
                 .map_err(|e| e.to_string())?;
             for &idx in &indices {
-                if existing_jobs.iter().any(|j| {
+                let started = existing_jobs.iter().any(|j| {
                     j.shot_index == Some(idx) && j.status != hickeyfield_core::JobStatus::Failed
-                }) {
+                });
+                if started && !below_floor.contains(&idx) {
                     return Err(format!(
                         "shot {} has already started — refusing to resubmit it.",
                         idx + 1
@@ -1518,6 +1593,8 @@ fn generate_storyboard_inner(
                         .unwrap_or(hickeyfield_core::storyboard::DEFAULT_CROSSFADE_SECONDS)
                 }),
                 joins_json: None,
+                // S16 D9: the opt-in auto-retry toggle, off unless the UI set it.
+                auto_retry: input.auto_retry,
             };
             state
                 .store
@@ -1597,6 +1674,12 @@ pub struct StoryboardDto {
     pub target_seconds: f64,
     pub plan_json: String,
     pub created_at: i64,
+    /// S16: the recorded per-join continuity scores (a serialised
+    /// `Vec<JoinRecord>`), so the Library can badge each join and show the set's
+    /// minimum score. `None` for an unscored or pre-S16 set.
+    pub joins_json: Option<String>,
+    /// S16: whether the set opted into auto-retry (surfaced for the badge copy).
+    pub auto_retry: bool,
 }
 
 #[tauri::command]
@@ -1612,6 +1695,8 @@ pub fn list_storyboards(state: State<'_, AppState>) -> Result<Vec<StoryboardDto>
             target_seconds: s.target_seconds,
             plan_json: s.plan_json,
             created_at: s.created_at,
+            joins_json: s.joins_json,
+            auto_retry: s.auto_retry,
         })
         .collect())
 }
@@ -1732,6 +1817,78 @@ pub fn library_root(state: State<'_, AppState>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_duration_outside_the_range_is_clamped_with_an_advisory() {
+        // H3 Max, 20s → 15s, one advisory naming the range, and the estimate
+        // is priced on the clamped value, not the 20s the user staged.
+        let mut s = SettingsDto {
+            duration: Some(20.0),
+            resolution: Some("768P".into()),
+            aspect: Some("16:9".into()),
+            batch: 1,
+            ..Default::default()
+        };
+        let adv = clamp_duration_to_range(&mut s, Some((5.0, 15.0)), "MiniMax H3 Max");
+        assert_eq!(s.duration, Some(15.0));
+        assert_eq!(adv.len(), 1);
+        assert!(adv[0].contains("5–15s"), "{}", adv[0]);
+        assert!(adv[0].contains("20s clamped to 15s"), "{}", adv[0]);
+
+        // The estimate follows the clamped value: the billable seconds are 15,
+        // not 20, so a per-second price cannot quote the un-renderable length.
+        let clamped = Billable::from(&s);
+        assert_eq!(clamped.seconds, Some(15.0));
+        let mut unclamped = SettingsDto {
+            duration: Some(20.0),
+            ..s.clone()
+        };
+        // (No clamp applied to the copy — proves 20 and 15 are different bills.)
+        let _ = &mut unclamped;
+        assert_ne!(Billable::from(&unclamped).seconds, clamped.seconds);
+    }
+
+    #[test]
+    fn a_duration_inside_the_range_is_untouched() {
+        let mut s = SettingsDto {
+            duration: Some(10.0),
+            batch: 1,
+            ..Default::default()
+        };
+        let adv = clamp_duration_to_range(&mut s, Some((5.0, 15.0)), "MiniMax H3 Max");
+        assert_eq!(s.duration, Some(10.0));
+        assert!(adv.is_empty());
+        // A model with no documented range never clamps either.
+        let mut free = SettingsDto {
+            duration: Some(99.0),
+            ..Default::default()
+        };
+        assert!(clamp_duration_to_range(&mut free, None, "Free").is_empty());
+        assert_eq!(free.duration, Some(99.0));
+    }
+
+    #[test]
+    fn the_dto_carries_the_duration_range() {
+        use hickeyfield_core::capability::for_route;
+        use hickeyfield_core::media::InputMode;
+        use hickeyfield_core::provider::ProviderId;
+        // H3 Max: fal publishes no min/max, the registry declares 5–15, so the
+        // offline capability carries it and the DTO copies it verbatim.
+        let spec = hickeyfield_core::registry::registry()
+            .remove("minimax_h3_max")
+            .expect("h3 max is registered")
+            .spec;
+        let cap = for_route(
+            &spec,
+            ProviderId::Fal,
+            "minimax/h3-max/image-to-video",
+            InputMode::Image,
+            |_| None,
+        );
+        assert_eq!(cap.duration_range(), Some((5.0, 15.0)));
+        let dto = CapabilitiesDto::from_capability(&cap);
+        assert_eq!(dto.duration_range, Some((5.0, 15.0)));
+    }
 
     #[test]
     fn the_catalogue_is_exposed_and_launch_models_come_first() {
@@ -2487,6 +2644,7 @@ mod tests {
             chained: false,
             overlap_seconds: None,
             shots: vec![shot_input("no-such-model-a"), shot_input("no-such-model-b")],
+            auto_retry: false,
         };
         // Call the inner logic directly with a plain &AppState (the #[command]
         // wrapper only adds the State extractor).
@@ -2526,6 +2684,7 @@ mod tests {
                 shot_input("nope-b"),
                 shot_input("nope-c"),
             ],
+            auto_retry: false,
         };
         let out = generate_storyboard_inner(&state, input).unwrap();
         let indices: Vec<u32> = out.shots.iter().map(|s| s.shot_index).collect();
@@ -2608,6 +2767,7 @@ mod tests {
                 shots_json: None,
                 overlap_seconds: None,
                 joins_json: None,
+                auto_retry: false,
             })
             .unwrap();
 
@@ -2643,6 +2803,7 @@ mod tests {
             chained: false,
             overlap_seconds: None,
             shots: vec![shot_input("nope")],
+            auto_retry: false,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("brief is too large"), "got: {err}");
@@ -2661,6 +2822,7 @@ mod tests {
             chained: false,
             overlap_seconds: None,
             shots: vec![shot_input("nope")],
+            auto_retry: false,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("plan is too large"), "got: {err}");
@@ -2680,6 +2842,7 @@ mod tests {
             chained: false,
             overlap_seconds: None,
             shots: (0..9).map(|_| shot_input("nope")).collect(),
+            auto_retry: false,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("at most 8 shots"), "got: {err}");
@@ -2709,6 +2872,7 @@ mod tests {
                 shot_input("no-such-model"),
                 shot_input("no-such-model"),
             ],
+            auto_retry: false,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("does not exist"), "got: {err}");
@@ -2754,6 +2918,7 @@ mod tests {
             chained: false,
             overlap_seconds: None,
             shots: (0..4).map(|_| shot_input(&model)).collect(),
+            auto_retry: false,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("does not match the plan"), "got: {err}");
@@ -2818,6 +2983,7 @@ mod tests {
             chained: false,
             overlap_seconds: None,
             shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
+            auto_retry: false,
         };
         let out = generate_storyboard_inner(&state, input)
             .expect("a one-shot plan validates under the 1..=8 floor");
@@ -2854,6 +3020,7 @@ mod tests {
                 shots_json: None,
                 overlap_seconds: None,
                 joins_json: None,
+                auto_retry: false,
             })
             .unwrap();
         // Seed the first-generate outcome: shots 0/1/3 started (Queued), shot 2
@@ -2881,6 +3048,7 @@ mod tests {
             // The pinned Vaig route belongs to `kling3_0` (so the route-pin
             // passes) but has no adapter, so `route::resolve` fails offline.
             shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
+            auto_retry: false,
         };
         let out = generate_storyboard_inner(&state, input).expect("retry is accepted");
 
@@ -2925,6 +3093,7 @@ mod tests {
                 shots_json: None,
                 overlap_seconds: None,
                 joins_json: None,
+                auto_retry: false,
             })
             .unwrap();
         // Shot 2 already STARTED (Queued, not Failed).
@@ -2943,9 +3112,90 @@ mod tests {
             chained: false,
             overlap_seconds: None,
             shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
+            auto_retry: false,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("already started"), "got: {err}");
+    }
+
+    #[test]
+    fn a_below_floor_join_may_be_regenerated_but_a_passing_one_may_not() {
+        // S16 D7: the S13 "refuse-if-not-Failed" guard is relaxed for exactly a
+        // Completed shot whose continuity join scored BELOW the floor. A passing
+        // (or unscored) join at a started index is still refused, so a good shot
+        // cannot be double-billed.
+        let below = crate::store::JoinRecord {
+            index: 2,
+            kind: "continuity".into(),
+            applied: true,
+            ssim: Some(0.4),
+            psnr: Some(20.0),
+            dy: Some(2.0),
+            du: Some(1.0),
+            dv: Some(1.0),
+            pass: Some(false),
+            attempt: 0,
+        };
+        let make_state = |pass: bool| {
+            let state = test_state();
+            let sid = "sb-regen".to_string();
+            let mut rec = below.clone();
+            rec.pass = Some(pass);
+            let joins = serde_json::to_string(&vec![rec]).unwrap();
+            state
+                .store
+                .upsert_storyboard(&crate::store::Storyboard {
+                    id: sid.clone(),
+                    brief: "b".into(),
+                    target_seconds: 20.0,
+                    plan_json: kling_plan_json(4, 5.0),
+                    created_at: now_secs(),
+                    chained: true,
+                    shots_json: None,
+                    overlap_seconds: Some(0.0),
+                    joins_json: Some(joins),
+                    auto_retry: false,
+                })
+                .unwrap();
+            // Shot 2 is COMPLETED (a successful shot), not Failed.
+            let mut job = blank_job("regen-2");
+            job.storyboard_id = Some(sid.clone());
+            job.shot_index = Some(2);
+            job.status = hickeyfield_core::JobStatus::Completed;
+            state.store.upsert(&job).unwrap();
+            (state, sid)
+        };
+
+        let input = |sid: &str| StoryboardGenerateInput {
+            brief: "b".into(),
+            target_seconds: 20.0,
+            plan_json: Some(kling_plan_json(4, 5.0)),
+            shot_indices: Some(vec![2]),
+            storyboard_id: Some(sid.to_string()),
+            chained: false,
+            overlap_seconds: None,
+            shots: vec![kling_shot(5.0, Some("vaig:klingai/kling-v3.0"))],
+            auto_retry: false,
+        };
+
+        // Below floor → the guard does NOT refuse (it may fail later at submit,
+        // but never with "already started").
+        let (state, sid) = make_state(false);
+        let out = generate_storyboard_inner(&state, input(&sid));
+        if let Err(e) = &out {
+            assert!(
+                !e.contains("already started"),
+                "a low join must be regenerable: {e}"
+            );
+        }
+
+        // Passing join at a started index → still refused.
+        let (state, sid) = make_state(true);
+        let err = generate_storyboard_inner(&state, input(&sid)).unwrap_err();
+        assert!(
+            err.contains("already started"),
+            "a passing join must not resubmit: {err}"
+        );
     }
 
     #[test]
@@ -2967,6 +3217,7 @@ mod tests {
                 shots_json: None,
                 overlap_seconds: None,
                 joins_json: None,
+                auto_retry: false,
             })
             .unwrap();
         let mut job = blank_job("first-2");
@@ -2985,6 +3236,7 @@ mod tests {
             overlap_seconds: None,
             // Plan clamped shot 2 to 5s, but this submits 30s.
             shots: vec![kling_shot(30.0, None)],
+            auto_retry: false,
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
         assert!(err.contains("clamped it to 5"), "got: {err}");

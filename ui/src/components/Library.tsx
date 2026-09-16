@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type {
   JobSet,
+  JoinRecord,
   RenderProgress,
   Storyboard,
   StoryboardRender,
@@ -13,6 +14,32 @@ import { EmptyState } from "./EmptyState";
 
 /** A shot is "done" when it completed and its clip is downloaded locally — the
  * gate for rendering, since the stitch reads the local files. */
+/**
+ * S16: the set's minimum continuity-join score, as a badge. Reads the scored
+ * joins (an unscored join carries `null` numbers, never 0, so it is excluded).
+ * `data-pass` is false when any scored join is below the floor, so the badge can
+ * flag a low set at a glance. Returns null when nothing has been scored.
+ */
+function joinSummary(joins: JoinRecord[] | undefined) {
+  const scored = (joins ?? []).filter((j) => j.ssim != null);
+  if (scored.length === 0) return null;
+  const min = scored.reduce(
+    (lo, j) => (j.ssim != null && j.ssim < lo ? j.ssim : lo),
+    1,
+  );
+  const anyBelow = scored.some((j) => j.pass === false);
+  return (
+    <span
+      className="storyboard-join"
+      data-pass={anyBelow ? "false" : "true"}
+      title="Lowest continuity-join score across the set"
+    >
+      join {min.toFixed(2)}
+      {anyBelow ? " — low" : " — continuous"}
+    </span>
+  );
+}
+
 function isDone(job: JobSet): boolean {
   return (
     job.status === "completed" &&
@@ -185,6 +212,7 @@ export function Library({
                 <span className="library-storyboard-count">
                   {g.jobs.length} shot{g.jobs.length === 1 ? "" : "s"}
                 </span>
+                {joinSummary(g.storyboard.joins)}
               </h2>
               <div className="library-grid">
                 {g.jobs.map((job) =>

@@ -1847,6 +1847,12 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
         ),
     ] {
         out.push(ModelSpec {
+            // fal renders 5–15s but publishes no `minimum`/`maximum` for this
+            // endpoint (the number lives only in the prose constraint below),
+            // so the offline range is the twin of that prose; the live schema
+            // supplies nothing to override it. AC6/D10 guards it against a
+            // published range should fal ever add one.
+            duration_range: Some((5.0, 15.0)),
             constraints: vec![
                 format!(
                     "fal renders {note_speed} clips of 5-15 seconds (default 5); \
@@ -2165,6 +2171,11 @@ fn picker_only_specs(base: &BTreeMap<String, ModelSpec>) -> Vec<ModelSpec> {
     });
 
     out.push(ModelSpec {
+        // fal publishes this bound live (`anyOf[{integer 2..30},{null}]`); the
+        // offline fallback is set to the same numbers so an offline draft
+        // clamps identically to an online one (Q2), and the live schema still
+        // wins when reachable.
+        duration_range: Some((2.0, 30.0)),
         constraints: vec![
             "fal declares `duration` as a plain integer from 2 to 30 seconds (default 5), so the \
              app offers it free-form and the endpoint enforces the range."
@@ -2434,6 +2445,7 @@ fn spec(
             })
             .collect(),
         constraints: Vec::new(),
+        duration_range: None,
     }
 }
 
@@ -2444,6 +2456,7 @@ fn derived(base: &ModelSpec, id: &str, display: &str, why: &str) -> ModelSpec {
         modality: base.modality,
         flags: base.flags.clone(),
         constraints: vec![why.to_string()],
+        duration_range: base.duration_range,
     }
 }
 

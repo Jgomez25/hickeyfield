@@ -29,15 +29,24 @@ use crate::pricing::Prices;
 use crate::runner::Runner;
 use crate::store::SqliteStore;
 use hickeyfield_core::engine::JobStore;
-use hickeyfield_core::{ffmpeg, registry, use_case, MediaRef, MediaRole, Phase, UseCase};
+use hickeyfield_core::{ffmpeg, registry, MediaRef, MediaRole, Phase, UseCase};
 use std::path::Path;
 use std::sync::Arc;
 
-/// Can this model continue from a start frame — i.e. does it have a route that
-/// binds `MediaRole::Start` on an image-to-video endpoint? This is exactly the
-/// per-model authority the picker uses for the Animate Image tab, so the chain
-/// cannot attach a frame to a route that would ignore it (the S9 harm).
+/// Can this model continue from a start frame — i.e. can it run image-to-video?
+///
+/// AC0-H2 tried to tighten this to a per-route `can_bind(Start)` check, but on
+/// `Dialect::Fal` `can_bind` is deliberately *permissive* for an endpoint whose
+/// modes are unmeasured (the schema gate at submit is the backstop). That made
+/// the per-route check LOOSER, not tighter: it reported `gemini_omni` — a
+/// measured media-ignoring model that `use_case::supports` correctly excludes —
+/// as chainable. Per the design's own escape hatch (§10.4), the tightening is
+/// **reverted** to the coarse `use_case::supports`, which already excludes the
+/// media-ignoring roster (`NO_MEDIA_MODELS`) and keeps H3 Max i2v chainable. See
+/// `implement.md` (AC0-H2). `storyboard::plan` reads the same predicate, so the
+/// toggle default and the scheduler cannot drift.
 pub fn chainable_model(model: &hickeyfield_core::Model) -> bool {
+    use hickeyfield_core::use_case;
     use_case::supports(model, UseCase::ImageToVideo)
 }
 
@@ -239,6 +248,207 @@ pub fn advance(
     }
 }
 
+/// Score the continuity join *into* the shot that just settled (S16 D7).
+///
+/// Runs beside [`advance`] in the settled hook: independent of it (the score is
+/// for the join into the settled shot; advance submits the *next* shot). Spawns
+/// only the bundled ffmpeg sidecar on local PNGs — no network, no charge. A low
+/// join never blocks the chain; it flags. **A scoring failure records
+/// `JoinScore::unscored` (all `None`), never `0.0`** — a zero would read as a
+/// failed join and fire a needless paid regenerate.
+///
+/// Returns the recorded [`crate::store::JoinRecord`] for callers that act on it
+/// (the auto-retry loop), or `None` when there is nothing to score (shot 0, an
+/// all-at-once set, or a missing clip).
+pub fn score_join(
+    store: &Arc<SqliteStore>,
+    ffmpeg_dir: &Path,
+    renders_root: &Path,
+    settled: &hickeyfield_core::engine::JobSet,
+) -> Option<crate::store::JoinRecord> {
+    use hickeyfield_core::storyboard::{join_passes, JoinScore, CONTINUITY_FLOOR};
+
+    let sid = settled.storyboard_id.clone()?;
+    let mut sb = store.storyboard(&sid).ok()??;
+    if !sb.chained {
+        return None;
+    }
+    if settled.status.phase() != Phase::Completed {
+        return None;
+    }
+    let i = settled.shot_index? as usize;
+    if i == 0 {
+        return None; // no join into the first shot
+    }
+    let clip = settled.results.iter().find_map(|o| o.local_path.clone())?;
+
+    // Continuity was applied for this join iff the shot was submitted with a
+    // start frame (the render + score authority, D8). Absent → a crossfade join.
+    let applied = settled.media.iter().any(|m| m.role == MediaRole::Start);
+    let kind = if applied { "continuity" } else { "crossfade" };
+
+    let prev_frame = renders_root
+        .join(&sid)
+        .join("frames")
+        .join(format!("shot{}.png", i - 1));
+
+    // Keep the existing attempt count for this index (the regenerate path is
+    // what increments it); default 0 for a first score.
+    let mut joins = crate::store::parse_joins(sb.joins_json.as_deref());
+    let attempt = joins
+        .iter()
+        .find(|j| j.index == i)
+        .map(|j| j.attempt)
+        .unwrap_or(0);
+
+    // Score only a continuity join whose conditioning frame is on disk; a
+    // crossfade join or a missing frame records the kind with an unscored score.
+    let score = if applied && prev_frame.is_file() {
+        match ffmpeg::locate(ffmpeg_dir).ok() {
+            Some(bin) => {
+                let first = renders_root
+                    .join(&sid)
+                    .join("frames")
+                    .join(format!("first{i}.png"));
+                match ffmpeg::first_frame(&bin, Path::new(&clip), &first, None)
+                    .and_then(|_| ffmpeg::continuity_score(&bin, &prev_frame, &first))
+                {
+                    Ok(m) => JoinScore {
+                        ssim: Some(m.ssim),
+                        psnr: Some(m.psnr),
+                        dy: Some(m.dy),
+                        du: Some(m.du),
+                        dv: Some(m.dv),
+                    },
+                    Err(e) => {
+                        tracing::warn!("chain {sid}: join {i} scoring failed: {e}");
+                        JoinScore::unscored()
+                    }
+                }
+            }
+            None => JoinScore::unscored(),
+        }
+    } else {
+        JoinScore::unscored()
+    };
+
+    let pass = score
+        .is_scored()
+        .then(|| join_passes(&score, CONTINUITY_FLOOR));
+    let record = crate::store::JoinRecord {
+        index: i,
+        kind: kind.to_string(),
+        applied,
+        ssim: score.ssim,
+        psnr: score.psnr,
+        dy: score.dy,
+        du: score.du,
+        dv: score.dv,
+        pass,
+        attempt,
+    };
+    crate::store::upsert_join(&mut joins, record.clone());
+    sb.joins_json = serde_json::to_string(&joins).ok();
+    if let Err(e) = store.upsert_storyboard(&sb) {
+        tracing::warn!("chain {sid}: could not persist join {i} score: {e}");
+    }
+    Some(record)
+}
+
+/// The bounded auto-retry ceiling (memo §0.4, house "two repairs then
+/// escalate"): at most two regenerations of a below-floor join.
+pub const AUTO_RETRY_CAP: u32 = 2;
+
+/// Whether a scored join warrants an auto-retry: the toggle is on, the join
+/// scored **below the floor** (`pass == false`), and it has not yet hit the cap.
+/// An unscored join (`pass == None`) is never retried — a missing score must not
+/// spend money. Pure, so the loop's bound is pinned by a test.
+pub fn should_auto_retry(rec: &crate::store::JoinRecord, enabled: bool) -> bool {
+    enabled && rec.pass == Some(false) && rec.attempt < AUTO_RETRY_CAP
+}
+
+/// Auto-retry a below-floor join once, through the same money-gated regenerate
+/// path as the manual button (D9). Fires only when the set's toggle is on and
+/// the just-scored `record` is below the floor under the cap. Re-uses the
+/// identical conditioning frame on disk, offsets the seed by the new attempt,
+/// and submits through `submit_one` — which prices the shot on its own row
+/// **before** it spends, so nothing spends without the total shown. The bumped
+/// `attempt` in `joins_json` is what bounds the loop across settles.
+#[allow(clippy::too_many_arguments)]
+pub fn maybe_auto_retry(
+    store: &Arc<SqliteStore>,
+    prices: &Arc<Prices>,
+    runner: &Runner,
+    ffmpeg_dir: &Path,
+    renders_root: &Path,
+    settled: &hickeyfield_core::engine::JobSet,
+    record: &crate::store::JoinRecord,
+) {
+    let Some(sid) = settled.storyboard_id.clone() else {
+        return;
+    };
+    let Ok(Some(mut sb)) = store.storyboard(&sid) else {
+        return;
+    };
+    if !should_auto_retry(record, sb.auto_retry) {
+        return;
+    }
+    let i = record.index;
+    // The conditioning frame is the previous shot's continuity frame, kept on
+    // disk since it was extracted (identical pixels — a regenerate changes only
+    // the seed).
+    let frame = renders_root
+        .join(&sid)
+        .join("frames")
+        .join(format!("shot{}.png", i - 1));
+    if !frame.is_file() {
+        return;
+    }
+    let Some(shots_json) = sb.shots_json.as_deref() else {
+        return;
+    };
+    let Ok(shots): Result<Vec<crate::commands::SubmitInput>, _> = serde_json::from_str(shots_json)
+    else {
+        return;
+    };
+    let Some(base) = shots.get(i).cloned() else {
+        return;
+    };
+    let Some(model) = registry().get(&base.model_id).cloned() else {
+        return;
+    };
+
+    // Bump the attempt FIRST and persist, so a settle that fires before this
+    // returns sees the incremented count and the loop stays bounded.
+    let new_attempt = record.attempt + 1;
+    let mut joins = crate::store::parse_joins(sb.joins_json.as_deref());
+    if let Some(rec) = joins.iter_mut().find(|j| j.index == i) {
+        rec.attempt = new_attempt;
+    }
+    sb.joins_json = serde_json::to_string(&joins).ok();
+    let _ = store.upsert_storyboard(&sb);
+
+    // Same frame, seed offset by the new attempt (memo §0.3 item 6 — a retry
+    // MUST change the seed or identical inputs reproduce the identical output).
+    let seed = storyboard_seed(&sid) + new_attempt as u64;
+    let (input, _applied, _adv) =
+        prepare_next_shot(&model, base, Some(frame.as_path()), seed, None);
+    let _ = ffmpeg_dir; // (the frame is already extracted; no sidecar needed here)
+
+    match crate::commands::submit_one(
+        store,
+        prices,
+        runner,
+        &model,
+        &input,
+        Some(&sid),
+        Some(i as u32),
+    ) {
+        Ok(_) => tracing::info!("chain {sid}: auto-retry {new_attempt} of join {i}"),
+        Err(e) => tracing::warn!("chain {sid}: auto-retry of join {i} did not submit: {e}"),
+    }
+}
+
 /// Reconcile every chained set at startup (§D2.5).
 ///
 /// A crash *between* shot N downloading and shot N+1 being submitted leaves
@@ -402,6 +612,7 @@ mod tests {
                 shots_json: Some(serde_json::to_string(&shots).unwrap()),
                 overlap_seconds: Some(0.0),
                 joins_json: None,
+                auto_retry: false,
             })
             .unwrap();
     }
@@ -521,6 +732,7 @@ mod tests {
                 shots_json: None,
                 overlap_seconds: None,
                 joins_json: None,
+                auto_retry: false,
             })
             .unwrap();
         let mut s0 = settled_shot("plain", 0);
@@ -552,5 +764,163 @@ mod tests {
             &last,
         );
         assert_eq!(store.jobs_in_storyboard("one").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn chainable_model_keeps_h3_max_and_excludes_media_ignorers() {
+        // AC0-H2 (reverted to coarse — see the fn doc): H3 Max i2v stays
+        // chainable, and a measured media-ignoring model (`gemini_omni`) does
+        // NOT chain — the case the tightened per-route check regressed.
+        let reg = registry();
+        let h3 = reg.get("minimax_h3_max").expect("h3 max is registered");
+        assert!(chainable_model(h3), "H3 Max i2v must stay chainable");
+        if let Some(g) = reg.get("gemini_omni") {
+            assert!(!chainable_model(g), "a media-ignoring model must not chain");
+        }
+        // And it agrees with the picker's authority for the whole roster.
+        for m in reg.values() {
+            assert_eq!(
+                chainable_model(m),
+                use_case::supports(m, UseCase::ImageToVideo),
+                "{} must match the Animate-Image picker authority",
+                m.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_scoring_failure_is_none_never_zero() {
+        // AC9: the sidecar is missing, so the join cannot be scored — the record
+        // must be unscored (`pass == None`, ssim `None`), NEVER a `0.0` that
+        // would read as a failed join and fire a paid regenerate.
+        let store: Arc<SqliteStore> = Arc::new(SqliteStore::in_memory().unwrap());
+        let model = an_i2v_model();
+        chained_board(&store, "sid", &model.id, 2);
+        // Shot 1 settled, submitted WITH a start frame (a continuity join), but
+        // no sidecar is available to score it.
+        let mut shot1 = settled_shot("sid", 1);
+        shot1
+            .media
+            .push(MediaRef::local(MediaRole::Start, "/f.png".to_string()));
+        let rec = score_join(
+            &store,
+            std::path::Path::new("/no/sidecar/here"),
+            std::path::Path::new("/tmp/renders-missing"),
+            &shot1,
+        )
+        .expect("a continuity join records something");
+        assert_eq!(rec.kind, "continuity");
+        assert!(rec.applied);
+        assert_eq!(rec.ssim, None, "unscored, not zero");
+        assert_eq!(rec.pass, None, "unscored is not a failed join");
+        // And it does not warrant an auto-retry even with the toggle on.
+        assert!(!should_auto_retry(&rec, true));
+    }
+
+    #[test]
+    fn auto_retry_stops_after_two_attempts() {
+        // AC10: a FakeScorer returning 0.6, 0.6, 0.95 (below floor twice, then
+        // pass) drives EXACTLY two regenerates when the toggle is on, and zero
+        // when it is off. Pure over `should_auto_retry` + the attempt counter,
+        // the same bound the settled-hook loop uses.
+        use crate::store::JoinRecord;
+        let scores = [0.6_f64, 0.6, 0.95];
+        let floor = hickeyfield_core::storyboard::CONTINUITY_FLOOR.ssim;
+
+        let run = |enabled: bool| -> u32 {
+            let mut attempt = 0u32;
+            let mut regenerates = 0u32;
+            loop {
+                // Score this attempt; a scorer index past the last stays passing.
+                let ssim = *scores.get(attempt as usize).unwrap_or(&0.95);
+                let pass = ssim >= floor;
+                let rec = JoinRecord {
+                    index: 1,
+                    kind: "continuity".into(),
+                    applied: true,
+                    ssim: Some(ssim),
+                    psnr: Some(30.0),
+                    dy: Some(1.0),
+                    du: Some(1.0),
+                    dv: Some(1.0),
+                    pass: Some(pass),
+                    attempt,
+                };
+                if should_auto_retry(&rec, enabled) {
+                    regenerates += 1;
+                    attempt += 1;
+                } else {
+                    break;
+                }
+            }
+            regenerates
+        };
+
+        assert_eq!(run(true), 2, "two below-floor scores → exactly two retries");
+        assert_eq!(run(false), 0, "toggle off → never retries");
+    }
+
+    #[test]
+    fn a_completed_predecessor_would_advance_so_the_failed_guard_bites() {
+        // AC0-H3: prove the `Phase::Completed` guard — not the missing provider —
+        // is what stops a failed predecessor. `advance` creates the set's
+        // `frames/` directory AFTER the guard and BEFORE any submit, so it is an
+        // observable that a Completed predecessor reaches and a Failed one does
+        // not, WITHOUT needing a configured provider (which would be the vacuous
+        // dependency the old test conflated). A Completed predecessor advances;
+        // a Failed one returns at the guard.
+        let store: Arc<SqliteStore> = Arc::new(SqliteStore::in_memory().unwrap());
+        let runner = test_runner(&store);
+        let model = an_i2v_model();
+        let root = std::env::temp_dir().join(format!("hf-h3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // Failed predecessor: the guard returns before the frames dir is made.
+        chained_board(&store, "bad", &model.id, 2);
+        let failed = {
+            let mut s = settled_shot("bad", 0);
+            s.id = "bad-0".into();
+            s.status = JobStatus::Failed;
+            s.results.clear();
+            s
+        };
+        store.upsert(&failed).unwrap();
+        advance(
+            &store,
+            &Arc::new(Prices::bundled()),
+            &Arc::new(Library::new(std::env::temp_dir().join("hf-h3-lib"))),
+            std::path::Path::new("/no/sidecar"),
+            &root,
+            &runner,
+            &failed,
+        );
+        assert!(
+            !root.join("bad").join("frames").is_dir(),
+            "a failed predecessor must not get past the guard"
+        );
+
+        // Completed predecessor: advance proceeds past the guard and prepares
+        // the set's frames dir (then attempts the submit).
+        chained_board(&store, "ok", &model.id, 2);
+        let done = {
+            let mut s = settled_shot("ok", 0);
+            s.id = "ok-0".into();
+            s
+        };
+        store.upsert(&done).unwrap();
+        advance(
+            &store,
+            &Arc::new(Prices::bundled()),
+            &Arc::new(Library::new(std::env::temp_dir().join("hf-h3-lib"))),
+            std::path::Path::new("/no/sidecar"),
+            &root,
+            &runner,
+            &done,
+        );
+        assert!(
+            root.join("ok").join("frames").is_dir(),
+            "a completed predecessor must advance past the guard"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

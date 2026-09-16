@@ -35,6 +35,13 @@ export interface ModelCapabilities {
   /** Seconds. Empty when free-form or absent — check `supportsDuration`. */
   durations: number[];
   defaultDuration?: number | null;
+  /**
+   * The provider's real `[min, max]` free-form duration bound, when known.
+   * The ladder builds chips up to `max` from this (H3 Max 5–15, Wan 3.0 Prime
+   * 2–30) instead of a generic ladder capped at 12; the clamp keeps a staged
+   * duration inside it. Absent when neither fal nor the registry states one.
+   */
+  durationRange?: [number, number] | null;
   supportsResolution: boolean;
   resolutions: string[];
   defaultResolution?: string | null;
@@ -202,6 +209,9 @@ export interface Continuity {
 export interface Shot {
   title: string;
   prompt: string;
+  /** S16: the per-shot beat, distinct from the shared `world`. The planner
+   * composes `prompt = "{world} {action}"`; edit this to keep continuity. */
+  action?: string | null;
   seconds: number;
   camera: string | null;
   modelId: string;
@@ -213,14 +223,33 @@ export interface Shot {
    * image-to-video route). Computed server-side; the Chain toggle defaults on
    * only when every shot is chainable. */
   chainable?: boolean;
+  /** S16: an optional per-shot resolution (one per set is the rule). */
+  resolution?: string | null;
 }
 
 /** A whole storyboard plan, drafted from one brief. Mirrors `StoryboardPlan`. */
 export interface StoryboardPlan {
+  /** S16: the shared world block composed verbatim into every shot's prompt. */
+  world?: string;
   brief: string;
   targetSeconds: number;
   useCase: string;
   shots: Shot[];
+}
+
+/** S16: one join's recorded continuity score. Mirrors the Rust `JoinRecord`.
+ * A scoring failure carries `null` numbers (never 0) and `pass: null`. */
+export interface JoinRecord {
+  index: number;
+  kind: "continuity" | "crossfade";
+  applied: boolean;
+  ssim: number | null;
+  psnr: number | null;
+  dy: number | null;
+  du: number | null;
+  dv: number | null;
+  pass: boolean | null;
+  attempt: number;
 }
 
 /** One shot's fate in a generate-all batch. Mirrors `ShotOutcome`. */
@@ -246,6 +275,11 @@ export interface Storyboard {
   targetSeconds: number;
   planJson: string;
   createdAt: number;
+  /** S16: the recorded per-join continuity scores, for the Library badges and
+   * the set's minimum-score summary. Empty for an unscored or pre-S16 set. */
+  joins?: JoinRecord[];
+  /** S16: whether the set opted into bounded auto-retry. */
+  autoRetry?: boolean;
 }
 
 /** S15: a finished, stitched storyboard ad on disk. Mirrors the Rust

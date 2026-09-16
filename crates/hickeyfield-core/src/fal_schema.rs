@@ -43,7 +43,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// The input contract for one endpoint.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct EndpointSchema {
     /// Every field the endpoint declares.
     pub accepted: BTreeSet<String>,
@@ -69,6 +69,20 @@ pub struct EndpointSchema {
     /// Defaulted on deserialize so an older serialised snapshot still loads.
     #[serde(default)]
     pub pinned: BTreeSet<String>,
+    /// The `[min, max]` bound of a numeric field, where the endpoint declares
+    /// one.
+    ///
+    /// Recorded because a range is NOT an enum: turning `minimum:5 /
+    /// maximum:15` into `[5,6,…,15]` would invent members fal never published
+    /// (the LTX-class bug the enum reader already guards). fal states a
+    /// duration bound two ways — directly (`{type:"integer", minimum, maximum}`)
+    /// and, for a nullable field, inside `anyOf[{integer, minimum, maximum},
+    /// {null}]` (Wan 3.0 Prime) — and both must be read or the range the UI
+    /// shows is wrong for half the roster.
+    ///
+    /// Defaulted on deserialize so an older serialised snapshot still loads.
+    #[serde(default)]
+    pub ranges: BTreeMap<String, (f64, f64)>,
 }
 
 impl EndpointSchema {
@@ -361,8 +375,17 @@ pub fn parse(doc: &serde_json::Value) -> Option<EndpointSchema> {
         .collect();
     let mut enums = BTreeMap::new();
     let mut pinned = BTreeSet::new();
+    let mut ranges = BTreeMap::new();
     if let Some(props) = input.get("properties").and_then(|p| p.as_object()) {
         for (name, prop) in props {
+            // A numeric bound, read alongside the enum/const read (a `const`-
+            // pinned or fully-enumerated field carries no range; a nullable
+            // range field is not an enum, so the two never collide). This is
+            // the ONE place `anyOf`/`oneOf` is descended — for a range, never
+            // for an enum.
+            if let Some((min, max)) = numeric_range(prop) {
+                ranges.insert(name.clone(), (min, max));
+            }
             // `const` first, and it beats a sibling `enum`: fal generates these
             // from a pydantic `Literal[...]`, so the enum in that case is the
             // wider declared type rather than a second offer. A `const` that is
@@ -419,7 +442,41 @@ pub fn parse(doc: &serde_json::Value) -> Option<EndpointSchema> {
         required,
         enums,
         pinned,
+        ranges,
     })
+}
+
+/// The `[min, max]` numeric bound of a property, read directly or from the
+/// first `anyOf`/`oneOf` member that carries both `minimum` and `maximum`.
+///
+/// Records `(min, max)` only when both are present and `min <= max`; a field
+/// with neither returns `None`. A `const` field has no range (a pin, not a
+/// bound); a fully enumerated field has no range (the offers are the bound).
+fn numeric_range(prop: &serde_json::Value) -> Option<(f64, f64)> {
+    if prop.get("const").is_some() || prop.get("enum").is_some() {
+        return None;
+    }
+    if let Some(r) = range_of(prop) {
+        return Some(r);
+    }
+    for key in ["anyOf", "oneOf"] {
+        if let Some(members) = prop.get(key).and_then(|m| m.as_array()) {
+            for member in members {
+                if let Some(r) = range_of(member) {
+                    return Some(r);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `(minimum, maximum)` of a schema object when both are present numbers and
+/// ordered; otherwise `None`.
+fn range_of(obj: &serde_json::Value) -> Option<(f64, f64)> {
+    let min = obj.get("minimum").and_then(|v| v.as_f64())?;
+    let max = obj.get("maximum").and_then(|v| v.as_f64())?;
+    (min <= max).then_some((min, max))
 }
 
 /// Fetch and cache the schema for one endpoint.
@@ -583,6 +640,7 @@ mod tests {
             .into_iter()
             .collect(),
             pinned: Default::default(),
+            ranges: Default::default(),
         };
         assert_eq!(s.coerce("resolution", "1k").as_deref(), Some("1K"));
         assert_eq!(s.coerce("resolution", "4K").as_deref(), Some("4K"));
@@ -601,6 +659,7 @@ mod tests {
             .into_iter()
             .collect(),
             pinned: Default::default(),
+            ranges: Default::default(),
         };
         assert_eq!(s.coerce("duration", "4").as_deref(), Some("4s"));
         assert_eq!(s.coerce("duration", "8s").as_deref(), Some("8s"));
@@ -618,6 +677,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             pinned: Default::default(),
+            ranges: Default::default(),
         };
         assert_eq!(s.coerce("resolution", "4k"), None);
         assert_eq!(s.coerce("resolution", "1080p"), None);
@@ -630,6 +690,7 @@ mod tests {
             required: Default::default(),
             enums: Default::default(),
             pinned: Default::default(),
+            ranges: Default::default(),
         };
         assert_eq!(s.coerce("prompt", "anything").as_deref(), Some("anything"));
     }
@@ -823,6 +884,7 @@ mod tests {
             .into_iter()
             .collect(),
             pinned: Default::default(),
+            ranges: Default::default(),
         }
     }
 
@@ -988,6 +1050,42 @@ mod tests {
         let s = parsed(doc);
         assert!(!s.enums.contains_key("duration"), "{:?}", s.enums);
         assert!(s.pinned.is_empty());
+    }
+
+    #[test]
+    fn a_nullable_integer_range_is_recorded_from_anyof() {
+        // `alibaba/wan-3.0-prime/*`, verbatim: the range lives inside
+        // `anyOf[{integer 2..30}, {null}]`, which the enum reader ignores.
+        let doc = r#"{"components":{"schemas":{"XInput":{"properties":{
+            "duration":{"default":5,"anyOf":[{"type":"integer","minimum":2,"maximum":30},{"type":"null"}]}}}}}}"#;
+        let s = parsed(doc);
+        assert_eq!(s.ranges.get("duration").copied(), Some((2.0, 30.0)));
+        assert!(s.enums.is_empty(), "{:?}", s.enums);
+        assert!(s.pinned.is_empty());
+    }
+
+    #[test]
+    fn a_direct_integer_min_max_is_recorded() {
+        // The H3 Max shape, were fal to publish min/max directly.
+        let doc = r#"{"components":{"schemas":{"XInput":{"properties":{
+            "duration":{"type":"integer","minimum":5,"maximum":15,"default":5}}}}}}"#;
+        let s = parsed(doc);
+        assert_eq!(s.ranges.get("duration").copied(), Some((5.0, 15.0)));
+    }
+
+    #[test]
+    fn a_field_with_no_bound_has_no_range() {
+        // A plain string, a `const`, and a full enum each carry no range.
+        let doc = r#"{"components":{"schemas":{"XInput":{"properties":{
+            "prompt":{"type":"string"},
+            "mode":{"const":"balanced","type":"string"},
+            "resolution":{"type":"string","enum":["480P","768P"]},
+            "duration":{"type":"integer","minimum":5,"maximum":15}}}}}}"#;
+        let s = parsed(doc);
+        assert_eq!(s.ranges.get("prompt"), None);
+        assert_eq!(s.ranges.get("mode"), None);
+        assert_eq!(s.ranges.get("resolution"), None);
+        assert_eq!(s.ranges.get("duration").copied(), Some((5.0, 15.0)));
     }
 
     #[test]

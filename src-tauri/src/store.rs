@@ -11,8 +11,48 @@
 
 use hickeyfield_core::engine::{JobError, JobSet, JobStore};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
+
+/// One join's recorded continuity in a chained set (S16 D7), serialised into
+/// [`Storyboard::joins_json`]. `index` is the join *into* shot `index` (there is
+/// no join 0). A scoring failure records the numbers as `None`, never `0.0` — a
+/// zero would read as a failed join and fire a needless paid regenerate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JoinRecord {
+    pub index: usize,
+    /// `"continuity"` (a start frame was applied — a hard cut) or `"crossfade"`
+    /// (no start frame — a blended join). The render reads this per join (D8).
+    pub kind: String,
+    pub applied: bool,
+    pub ssim: Option<f64>,
+    pub psnr: Option<f64>,
+    pub dy: Option<f64>,
+    pub du: Option<f64>,
+    pub dv: Option<f64>,
+    /// `Some(true/false)` once scored against the floor; `None` when unscored.
+    pub pass: Option<bool>,
+    /// How many regenerations this join has had. Bounds the auto-retry loop.
+    pub attempt: u32,
+}
+
+/// Parse the join records from a set's `joins_json`, or an empty list.
+pub fn parse_joins(joins_json: Option<&str>) -> Vec<JoinRecord> {
+    joins_json
+        .and_then(|s| serde_json::from_str::<Vec<JoinRecord>>(s).ok())
+        .unwrap_or_default()
+}
+
+/// Insert or replace the record for its `index`, keeping the list ordered.
+/// The newest score for a join wins (latest by write — Q5).
+pub fn upsert_join(joins: &mut Vec<JoinRecord>, rec: JoinRecord) {
+    match joins.iter_mut().find(|j| j.index == rec.index) {
+        Some(existing) => *existing = rec,
+        None => joins.push(rec),
+    }
+    joins.sort_by_key(|j| j.index);
+}
 
 pub struct SqliteStore {
     conn: Mutex<Connection>,
@@ -44,6 +84,10 @@ pub struct Storyboard {
     /// measured continuity. Written by the deferred per-join SSIM scorer; stored
     /// and round-tripped now so that slice is purely additive. `None` today.
     pub joins_json: Option<String>,
+    /// S16 (D9): the optional "auto-retry low joins" toggle. `false` (off) for
+    /// every set generated before this slice — the safe default that spends
+    /// nothing without an explicit opt-in.
+    pub auto_retry: bool,
 }
 
 /// S15: one finished, stitched ad for a storyboard set. Re-rendering overwrites
@@ -271,6 +315,21 @@ impl SqliteStore {
             )
             .map_err(map_err)?;
         }
+
+        if version < 10 {
+            // S16: an optional per-set "auto-retry low joins" toggle (D9). One
+            // additive nullable column, default 0 (off) — old sets read as off,
+            // the honest value. NOT a `UNIQUE(storyboard_id, shot_index)` index
+            // (design Q7): a retry/regenerate mints a new job id at an existing
+            // index, which such an index would make illegal.
+            conn.execute_batch(
+                r#"
+                ALTER TABLE storyboards ADD COLUMN auto_retry INTEGER NOT NULL DEFAULT 0;
+                PRAGMA user_version = 10;
+                "#,
+            )
+            .map_err(map_err)?;
+        }
         Ok(())
     }
 
@@ -293,8 +352,8 @@ impl SqliteStore {
                 r#"
                 INSERT INTO storyboards
                     (id, brief, target_seconds, plan_json, created_at,
-                     chained, shots_json, overlap_seconds, joins_json)
-                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                     chained, shots_json, overlap_seconds, joins_json, auto_retry)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
                 ON CONFLICT(id) DO UPDATE SET
                     brief           = excluded.brief,
                     target_seconds  = excluded.target_seconds,
@@ -302,7 +361,8 @@ impl SqliteStore {
                     chained         = excluded.chained,
                     shots_json      = excluded.shots_json,
                     overlap_seconds = excluded.overlap_seconds,
-                    joins_json      = excluded.joins_json
+                    joins_json      = excluded.joins_json,
+                    auto_retry      = excluded.auto_retry
                 "#,
                 params![
                     s.id,
@@ -314,6 +374,7 @@ impl SqliteStore {
                     s.shots_json,
                     s.overlap_seconds,
                     s.joins_json,
+                    s.auto_retry as i64,
                 ],
             )
             .map(|_| ())
@@ -394,7 +455,7 @@ impl SqliteStore {
             .unwrap()
             .query_row(
                 "SELECT id, brief, target_seconds, plan_json, created_at, \
-                        chained, shots_json, overlap_seconds, joins_json \
+                        chained, shots_json, overlap_seconds, joins_json, auto_retry \
                  FROM storyboards WHERE id = ?1",
                 params![id],
                 row_to_storyboard,
@@ -409,7 +470,7 @@ impl SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, brief, target_seconds, plan_json, created_at, \
-                        chained, shots_json, overlap_seconds, joins_json \
+                        chained, shots_json, overlap_seconds, joins_json, auto_retry \
                  FROM storyboards ORDER BY created_at DESC",
             )
             .map_err(map_err)?;
@@ -458,6 +519,7 @@ fn row_to_storyboard(row: &rusqlite::Row<'_>) -> rusqlite::Result<Storyboard> {
         shots_json: row.get::<_, Option<String>>("shots_json").unwrap_or(None),
         overlap_seconds: row.get::<_, Option<f64>>("overlap_seconds").unwrap_or(None),
         joins_json: row.get::<_, Option<String>>("joins_json").unwrap_or(None),
+        auto_retry: row.get::<_, i64>("auto_retry").unwrap_or(0) != 0,
     })
 }
 
@@ -729,7 +791,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 9, "in_memory must migrate to the latest schema");
+        assert_eq!(v, 10, "in_memory must migrate to the latest schema");
 
         let mut j = job("p", JobStatus::Completed);
         j.priced_from = Some(PriceProvenance::Feed);
@@ -778,6 +840,7 @@ mod tests {
             shots_json: None,
             overlap_seconds: None,
             joins_json: None,
+            auto_retry: false,
         };
         s.upsert_storyboard(&sb).unwrap();
         assert_eq!(s.storyboard("sb1").unwrap().unwrap(), sb);
@@ -826,6 +889,7 @@ mod tests {
             shots_json: None,
             overlap_seconds: None,
             joins_json: None,
+            auto_retry: false,
         })
         .unwrap();
         // Insert out of order; the query must return shot_index order.
@@ -865,6 +929,7 @@ mod tests {
             shots_json: Some(r#"[{"modelId":"m","prompt":"p"}]"#.into()),
             overlap_seconds: Some(0.0),
             joins_json: None,
+            auto_retry: false,
         };
         s.upsert_storyboard(&sb).unwrap();
         assert_eq!(s.storyboard("chain").unwrap().unwrap(), sb);
@@ -894,7 +959,67 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 9, "migration 9 must have run");
+        assert_eq!(version, 10, "migrations up to 10 must have run");
+    }
+
+    #[test]
+    fn joins_and_the_auto_retry_toggle_round_trip() {
+        // S16: the per-join score records and the auto-retry toggle survive a
+        // write/read, and `user_version` is 10.
+        let s = SqliteStore::in_memory().unwrap();
+        let mut joins = Vec::new();
+        upsert_join(
+            &mut joins,
+            JoinRecord {
+                index: 1,
+                kind: "continuity".into(),
+                applied: true,
+                ssim: Some(0.93),
+                psnr: Some(34.0),
+                dy: Some(2.0),
+                du: Some(1.0),
+                dv: Some(1.0),
+                pass: Some(true),
+                attempt: 0,
+            },
+        );
+        // A scoring failure records None, never 0 — and upsert replaces by index.
+        upsert_join(
+            &mut joins,
+            JoinRecord {
+                index: 1,
+                kind: "continuity".into(),
+                applied: true,
+                ssim: None,
+                psnr: None,
+                dy: None,
+                du: None,
+                dv: None,
+                pass: None,
+                attempt: 1,
+            },
+        );
+        assert_eq!(joins.len(), 1, "upsert replaces by index");
+        assert_eq!(joins[0].attempt, 1);
+
+        let sb = Storyboard {
+            id: "sc".into(),
+            brief: "b".into(),
+            target_seconds: 30.0,
+            plan_json: "{}".into(),
+            created_at: 1,
+            chained: true,
+            shots_json: None,
+            overlap_seconds: Some(0.0),
+            joins_json: Some(serde_json::to_string(&joins).unwrap()),
+            auto_retry: true,
+        };
+        s.upsert_storyboard(&sb).unwrap();
+        let got = s.storyboard("sc").unwrap().unwrap();
+        assert_eq!(got, sb, "joins_json + auto_retry round-trip");
+        assert!(got.auto_retry);
+        let parsed = parse_joins(got.joins_json.as_deref());
+        assert_eq!(parsed[0].ssim, None, "unscored stays None, never 0");
     }
 
     #[test]

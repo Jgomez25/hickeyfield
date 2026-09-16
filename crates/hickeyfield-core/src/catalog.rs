@@ -165,6 +165,9 @@ pub struct Capabilities {
     pub supports_duration: bool,
     pub durations: Vec<f64>,
     pub default_duration: Option<f64>,
+    /// A documented free-form duration bound, from [`ModelSpec::duration_range`].
+    /// Flows to the capability axis as the offline/unpublished fallback range.
+    pub duration_range: Option<(f64, f64)>,
 
     pub supports_resolution: bool,
     pub resolutions: Vec<String>,
@@ -203,7 +206,7 @@ fn numeric_options(f: &FlagSpec) -> Vec<f64> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModelSpec {
     /// Higgsfield's `job_set_type`, e.g. `seedance_2_0`. We reuse it as our own
     /// model id so their preset and cost data line up without a mapping table.
@@ -214,6 +217,15 @@ pub struct ModelSpec {
     /// Prose constraints, kept verbatim — several encode cross-field rules the
     /// table cannot express ("At most 14 image references are allowed").
     pub constraints: Vec<String>,
+    /// A documented `[min, max]` duration bound fal states only in prose, not
+    /// in its published schema (MiniMax H3 Max renders 5–15s but publishes no
+    /// `minimum`/`maximum`). It is NOT a `ValueSpec::Range`: the wire type of
+    /// `duration` is genuinely a free-form `Number` and the reconcile/coerce
+    /// path must keep treating it as one; this is the additional documented
+    /// bound the UI ladder and the submit clamp read. `None` for a model with
+    /// no documented bound (the live schema then supplies any range it does
+    /// publish, e.g. Wan 3.0 Prime's `anyOf` 2..30).
+    pub duration_range: Option<(f64, f64)>,
 }
 
 impl ModelSpec {
@@ -250,6 +262,7 @@ impl ModelSpec {
             default_duration: dur
                 .and_then(|f| f.default.as_deref())
                 .and_then(parse_seconds),
+            duration_range: self.duration_range,
 
             supports_resolution: res.is_some(),
             resolutions: res.map(enum_options).unwrap_or_default(),
@@ -309,6 +322,7 @@ pub fn parse(md: &str) -> Vec<ModelSpec> {
                 modality,
                 flags: Vec::new(),
                 constraints: Vec::new(),
+                duration_range: None,
             });
             continue;
         }

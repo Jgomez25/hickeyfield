@@ -571,6 +571,7 @@ mod tests {
             modality: Modality::Video,
             flags,
             constraints: vec![],
+            duration_range: None,
         }
     }
 
