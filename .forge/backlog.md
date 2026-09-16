@@ -243,3 +243,8 @@ mandatory slice; tracked here for prioritization.
   (~:481-524) and the unmounted `ResultsFeed.tsx` — delete; `WorkspaceTabs.tsx` nav tabs keep
   `aria-controls="generator-panel"` while Library has no panel; `--text-tertiary` legal notice ≈3.5:1 on
   the card (was 3.1:1) — consider #7a7a7a; `<1200px` meta rail as an Overlay sheet instead of a stacked column.
+
+- **S13 minors (non-blocking):** a retried storyboard shot leaves the original `Failed` row in the group
+  (two tiles at one shot_index — cosmetic; mirrors Rerun); `generate_storyboard` does not dedupe
+  within-batch `shot_indices` (local webview only); a retry's plan is not compared with the group's
+  stored plan; storyboard JSON hit-rate measured only on llama3.2:3b. Fold into S15 render or a hygiene slice.

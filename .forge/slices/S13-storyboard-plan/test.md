@@ -181,3 +181,111 @@ tests are non-vacuous. The full gate reproduces at the claimed 848 Rust / 285 UI
 with 0 failures, and B1/M1 and the L1–L3 hardening are genuinely fixed and pinned.
 
 VERDICT: PASS
+
+---
+
+## RE-TEST (HEAD 7250335)
+
+Repair 2 landed after a reviewer found **M2**: repair-1's "Retry failed" built
+`plan_json` from ONLY the failed subset, so the server's round-1 re-validation
+(`storyboard::validate`: 3..=8 shots, ±10% sum) rejected any retry of fewer than
+3 shots — and the round-1 vitest passed only because its `vi.fn` mock ignored
+`planJson`. I re-tested the delta `git show 7250335` first-hand. Same rules: no
+key, no hosted call, no money; repo read-only apart from this file; mutations run
+in a copy OUTSIDE the repo.
+
+### Gate re-run at HEAD 7250335 (real output)
+
+```
+cargo test --workspace  → 704 (core) + 3 (audit_fal) + 2 (fal_diff) + 143 (shell) = 852 passed, 0 failed
+cargo fmt --all --check  → FMT_CLEAN (exit 0)
+cargo clippy --workspace --all-targets -- -D warnings → Finished (exit 0, 0 warnings)
+./scripts/lint-provenance.py → CDN PASS, Copy provenance PASS (80015 shingles)
+audit_fal (keys unset)   → PINNED 0, UNREACHABLE 0 (unchanged)
+cd ui && pnpm test       → Test Files 23 passed (23) / Tests 285 passed (285)
+cd ui && pnpm build      → tsc + vite ✓ built in 2.90s (dist emitted)
+```
+Shell suite rose 139 → 143 (+4 retry tests); total 848 → **852**, matching the
+coordinator's report. `tauri build` not re-run (only Rust/TS/CSS logic changed).
+
+### Retry path driven offline, exactly as the new Rust tests do
+
+All four new `commands.rs` tests pass in a clean checkout:
+```
+a_retry_subset_plan_is_rejected_with_a_clear_error ... ok
+a_retry_with_the_full_plan_targets_the_existing_group_and_only_the_failed_index ... ok
+a_retry_of_an_already_started_shot_is_rejected ... ok
+a_retry_shot_whose_duration_does_not_match_the_plan_is_rejected ... ok
+```
+Reading the code + tests confirms the four coordinator scenarios:
+- **4-shot plan, index 2 failed → one shot into the SAME group at shot_index 2.**
+  `a_retry_with_..._only_the_failed_index` asserts `out.storyboard_id == sid` (no
+  fresh group), `out.shots.len() == 1`, `out.shots[0].shot_index == 2` (original
+  index, not re-based 0), and that the 4 seeded rows are undisturbed. The single
+  submit is driven to a deterministic offline error via the adapter-less Vaig
+  route (no network POST), so no money path is exercised.
+- **Retry with a subset plan rejected.** `a_retry_subset_plan_is_rejected...`
+  sends a 1-shot `plan_json`; the server re-validates the whole plan and returns
+  "…3 to 8 shots…", with `store.all().len() == 0` (nothing written).
+- **Retry of an already-started index rejected.** `a_retry_of_an_already_started_shot`
+  seeds a Queued (non-Failed) row at index 2; the retry is refused with "already
+  started" BEFORE any submit — a started shot cannot be double-billed.
+- **Duration mismatch rejected.** `a_retry_shot_whose_duration_does_not_match`
+  submits 30s where the plan clamped index 2 to 5s; rejected with "clamped it to 5".
+
+### Mutation checks — retry delta (scratch copy OUTSIDE the repo)
+
+Each flipped its target test red, then was reverted:
+
+1. Neuter the already-started guard (`j.shot_index == Some(idx)` → `Some(9999)`):
+   `a_retry_of_an_already_started_shot_is_rejected ... FAILED`.
+2. Neuter the duration pin (`if shot.settings.duration != Some(planned.seconds)`
+   → `if false`): `a_retry_shot_whose_duration_does_not_match_the_plan_is_rejected
+   ... FAILED` — without the pin the 30s shot proceeds to `submit_one` and only a
+   provider-side "takes duration … not 30" error results, i.e. it would have billed.
+3. Retry mints a fresh group instead of joining the existing one (`existing` →
+   `mint_storyboard_id()`): the full-plan retry test FAILED on
+   `assertion failed: retry joined the original group`.
+4. Skip the whole-plan `storyboard::validate` on the plan_json branch:
+   `a_retry_subset_plan_is_rejected_with_a_clear_error ... FAILED` (a sub-3-shot
+   subset plan is no longer caught).
+
+### UI: the mock can no longer mask the M2 defect
+
+The round-2 vitest mock re-validates the FULL plan from `planJson` (throws
+"3 to 8 shots" for a <3-shot plan) and honours `shotIndices`/`storyboardId`.
+Two UI mutations (scratch copy) both flip the partial-failure test red:
+
+5. Retry sends the submitted subset as the plan (`shots` → `indices.map(i=>shots[i])`):
+   `× a partial failure shows the failed shots and retry submits only those` — the
+   mock's 3..=8 gate rejects the 1-shot subset plan (this is exactly the defect the
+   round-1 mock hid).
+6. Drop `shotIndices` on retry (`isRetry ? indices : undefined` → `undefined`):
+   same test FAILED on `expect(retryArg.shotIndices).toEqual([2])`.
+
+The full UI suite (285) is green with the code intact; the test also asserts the
+retry sends the FULL 4-shot plan, exactly one shot, `shotIndices === [2]`, and
+`storyboardId === "sb1"`, plus that the retry total renders BEFORE resubmit.
+
+### First-generate-all still positional
+
+With `shot_indices: None` and `storyboard_id: None`, `indices = 0..shots.len()`,
+a fresh group is minted, and shots submit positionally — pinned by the still-green
+`generate_numbers_outcomes_densely_from_zero` (indices [0,1,2]),
+`generate_records_the_set_even_when_shots_fail` ([0,1]), and
+`generate_rejects_shots_that_do_not_match_the_plan` (one-for-one plan match). The
+new per-index duration pin also holds on first-generate (the UI sends
+`duration = shot.seconds`, equal to the plan's clamped seconds); no existing test
+regresses (852/0).
+
+### Conclusion
+
+M2 is genuinely fixed: the retry sends the full validated plan + original shot
+indices into the original group, the server pins each resubmit to its plan slot
+by model + duration (+route), refuses an already-started index, and no longer
+count/sum-gates a sub-3-shot subset. Six delta mutations (4 Rust + 2 UI) confirm
+the new tests are non-vacuous, and the round-2 mock no longer masks the
+integration defect. Gate reproduces at 852 Rust / 285 UI, 0 failures. No money,
+no key, no hosted call. Everything the first PASS rested on still holds.
+
+VERDICT: PASS

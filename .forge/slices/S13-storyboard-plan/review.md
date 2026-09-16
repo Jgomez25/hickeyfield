@@ -324,3 +324,93 @@ B1, m1, m2, m3, and the L1–L3 hardening are genuinely fixed. M1's surfacing is
 remedy is broken by M2.
 
 VERDICT: FAIL
+
+---
+
+## RE-REVIEW 2 (HEAD 7250335)
+
+Read-only re-review of the repair-2 delta (`git show 7250335`) — the M2 fix — plus a
+regression scan of anything it could have broken. No source, docs, or backlog changed.
+Gate re-run locally.
+
+### Gate re-run (measured, dummy keys, Node 24)
+- `cargo fmt --all --check`: clean (exit 0).
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean (0 warnings).
+- `cargo test --workspace`: **852 passed, 0 failed**. Matches implement.md.
+- `cd ui && pnpm test`: **285 passed** (23 files). No net-new count (the retry test was
+  rewritten, not added) — consistent, not a masked deletion.
+- `tauri build` not re-run (Rust + TS + CSS only, no native/tooling change). No hosted/fal
+  call, no money.
+
+### M2 (retry rejected by server re-validation) — FIXED, verified end to end
+The subset `plan_json` is gone. `submitBatch` now always serialises the FULL plan
+(`shots`, not the failed subset) and, on a retry, passes `shotIndices` (the failed shots'
+original plan indices) + `storyboardId` (`Storyboard.tsx` ~229-272). `generate_storyboard_inner`
+re-runs `storyboard::validate` on the whole plan (so the `3..=8`/±10% gate sees the full,
+already-valid list — no longer a shrunken one), then `zip`s each submitted shot to its plan
+index via `shot_indices` and matches model + priced duration + route per index
+(`commands.rs` ~1310-1455). This is the correct shape and it closes the contradiction I flagged.
+
+Correctness end to end:
+- **No double submit.** A retry naming an index whose set row is non-`Failed` is rejected
+  before any submit ("…already started…") — tested `a_retry_of_an_already_started_shot_is_rejected`.
+  The UI only ever retries `outcome.shots.filter(s => s.error)` indices, and the server is the
+  independent second gate. No successful shot can be re-billed.
+- **Group reunited / write-once holds.** A retry with `storyboard_id: Some` writes into the
+  existing group (no fresh `mint_storyboard_id`); each retried shot is a NEW `mint_job_id` row
+  carrying `storyboard_id = sid` and its ORIGINAL `shot_index`, so the write-once columns are
+  set fresh on a fresh id (never an `ON CONFLICT` re-tag). Tested
+  `a_retry_with_the_full_plan_targets_the_existing_group_and_only_the_failed_index`
+  (`out.storyboard_id == sid`, one outcome, `shot_index == 2` not a re-based 0, the other three
+  rows untouched). The offline drive via the no-adapter Vaig route to a deterministic
+  `route::resolve` failure is a fair way to reach `submit_one` without a network POST.
+- **Positional contract for first generate unchanged.** `shot_indices: None` ⇒
+  `indices = 0..len`, the one-for-one `plan.shots.len() == input.shots.len()` match still fires
+  (`!is_retry_subset`), and a fresh group is minted — identical to before. The pre-existing
+  offline tests (`…records_the_set_even_when_shots_fail`, `…numbers_outcomes_densely_from_zero`,
+  the two mismatch/count tests) still pass with the new `None`/`None` fields.
+- **Per-index checks not brittle for legitimate edits.** Prompt text is not checked. Duration
+  is `== planned.seconds`, and route must belong to the plan model — but in the real UI the
+  `plan_json` is rebuilt from the same `shots` the shot inputs derive from, so both sides carry
+  the identical value; the equality only bites a tampered/direct caller (L4, tested
+  `a_retry_shot_whose_duration_does_not_match_the_plan_is_rejected`). Prompt/seconds edits the
+  user makes flow into both the plan and the shot together, so they are allowed.
+- **UI merge.** `retried.shots` already speak in original indices (server-tagged), so the old
+  re-basing is removed; `merged` keeps the original `storyboardId` and replaces only the failed
+  entries; hands off to the Library once every shot has a non-error outcome. The retry subset
+  total is rendered before the resubmit (money-first). The rewritten vitest is server-faithful —
+  it re-validates the FULL plan's `3..=8` and would throw on a subset plan, and asserts
+  `planJson` has 4 shots, `shotIndices == [2]`, `storyboardId == "sb1"` — so the mock can no
+  longer mask the integration defect the way repair-1's did.
+
+### New observations (non-blocking)
+- **m4 (minor) — a retried shot leaves the original `Failed` row in the group, so the reunited
+  set carries two rows at that `shot_index`.** `src-tauri/src/commands.rs` `submit_one` mints a
+  fresh id for the retry and never supersedes the earlier `Failed` row (written when the first
+  attempt failed at `submit_to_provider`; a `route::resolve` failure writes no row, so only the
+  `submit_to_provider`-failure case duplicates). `Library.tsx sortByShot` (:182) sorts by
+  `shotIndex` without dedup, so the group would show a stale `Failed` tile beside the retried
+  tile at the same position, and the group count reads N+1. This is consistent with the app's
+  existing Rerun model (a failed job stays visible and Rerun creates a new one), causes no
+  double-bill and no silent loss, so it is a minor/cosmetic follow-up, not a blocker. Fix if
+  desired: mark/delete the superseded `Failed` row on a successful retry, or dedup by
+  `shotIndex` keeping the newest in the group view.
+- **m5 (minor/informational) — within-batch duplicate `shot_indices` are not dedup-guarded.**
+  The already-started check compares against persisted rows only, not within the submitted
+  batch, so a direct caller sending `shot_indices: [2, 2]` (both matching the plan) would
+  submit index 2 twice. Not reachable from the UI (`failedIndices` is unique per outcome), and
+  bounded by the same local-webview trust boundary as the earlier L-findings, so Low. A
+  `HashSet` uniqueness check on `indices` would close it.
+
+### Checked clean
+- CHANGELOG addition is honest and matches the shipped behaviour (retry re-uses the full plan +
+  subset total, lands retried shots in the original set). No stale counts. No dead code — the
+  new `shot_indices`/`storyboard_id` fields, `is_retry_subset`, and the per-index pins are all
+  used. `#[serde(default)]` on the two new optional inputs keeps older callers/tests valid.
+- No id-shape or money-path regression from B1/repair-1: `submit_one` body still verbatim; the
+  loop still routes every shot through it.
+
+B1, M1 (surfacing + retry), m1, m2, m3, and L1–L4 are all resolved. The only open items are
+the two minors above, neither on a blocking path.
+
+VERDICT: PASS

@@ -97,8 +97,9 @@
     {
       "id": "S13-storyboard-plan",
       "title": "storyboard-plan",
-      "status": "in-progress",
-      "started": "2026-09-16"
+      "status": "released",
+      "started": "2026-09-16",
+      "branch": "forge/s13-storyboard-plan"
     }
   ]
 }

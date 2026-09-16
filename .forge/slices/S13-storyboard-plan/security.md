@@ -242,3 +242,108 @@ just model identity — it is not a standalone blocking slice. L3's size caps ar
 implemented.
 
 VERDICT: PASS
+
+---
+
+## RE-CHECK 2 (HEAD 7250335)
+
+Read-only re-review of repair round 2 only (`git show 7250335 -- src-tauri/src/commands.rs
+ui/src/components/Storyboard.tsx ui/src/api.ts ui/src/mock.ts`). No source/docs/config
+changed by this reviewer. Prior PASS sections stand. Delta: `StoryboardGenerateInput` gains
+`shot_indices` and `storyboard_id`; the server re-validates the FULL plan, pins each
+submitted shot to its plan index (model, duration ±0, route-belongs-to-model), submits only
+the named subset, writes a retry into the existing group, and rejects a retry naming an
+already-started (non-`Failed`) index.
+
+### L4 (duration/route pin) — CLOSED
+`commands.rs:1359-1400`. Each submitted shot is zipped to its plan index and the plan slot
+is now authoritative for magnitude, not just identity: `shot.model_id` must equal
+`planned.model_id` (:1367), `shot.settings.duration` must equal `Some(planned.seconds)` with
+no tolerance (:1379), and a supplied `route_id` must be one of `planned.model_id`'s routes
+(:1388-1400). So the total that bills is the total the re-validated plan implies; a caller
+can no longer pass `validate` with a cheap in-catalogue duration while billing an inflated
+one. Pinned by `a_retry_shot_whose_duration_does_not_match_the_plan_is_rejected`. This closes
+the residual L4 from the previous re-check.
+
+### M2 subset-retry — CLOSED (functional, security-adjacent)
+The retry now sends the FULL original plan (`Storyboard.tsx:248` `shots` not `batch`) plus
+`shot_indices`, so `storyboard::validate` runs against the whole 3..=8-shot plan and the
+subset is selected afterward — a 1-shot retry no longer trips the count/sum gate. The old
+per-index remap in the UI is gone; the server returns the real plan indices
+(`mockGenerateStoryboard` mirrors this).
+
+### No-double-billing path — verified, with one residual (see L5)
+- A retry into an existing group refuses any index whose stored row already started: the
+  `Some(existing)` branch reads `jobs_in_storyboard(&existing)` and rejects if any
+  `j.shot_index == Some(idx) && j.status != Failed` BEFORE the submit loop
+  (`commands.rs:1416-1431`). A successful or in-flight shot cannot be resubmitted — pinned by
+  `a_retry_of_an_already_started_shot_is_rejected`. Confirmed.
+- Out-of-range index is rejected: `plan.shots.get(pi)` errors with "shot index N is out of
+  range" (`commands.rs:1361-1366`). Confirmed.
+- The UI path cannot double-bill: `retryFailed` derives its indices from
+  `outcome.shots.filter(s => s.error)` (distinct, failed-only), and `onGenerated` fires only
+  once every shot has a `job_set_id`. Confirmed.
+
+### Existing-group write / ownership — single-user OK, plan-match UNCHECKED
+`commands.rs:1406-1432`. A `storyboard_id: Some(existing)` retry verifies only that the group
+EXISTS (`store.storyboard(&existing)`, else "no such storyboard to retry into") and that the
+named indices are not already started. It does NOT verify that the call's `plan_json`/`brief`
+matches the stored group's `plan_json`/`brief`. Because this is a single-user local app with
+no remote surface and no tenant boundary, "someone else's storyboard" does not apply — there
+is no cross-user exposure. But I am stating explicitly (as asked): **the submitted plan is
+not checked against the stored group's plan.** A direct/tampered caller could name group A's
+id while sending plan B; the shots would be re-validated against B yet tagged into A, and A's
+stored `plan_json` would be the one S14 later reads — a row-integrity mismatch. It is
+Low/informational on a single-user desktop app (self-inflicted), not a boundary breach; noted
+as L6 for optional hardening.
+
+### Guards vs. store write / submit ordering — CONFIRMED
+Every rejection (size caps, empty, `>8`, `indices.len() != shots.len()`, serde parse, unknown
+use case, `validate`, per-index model/duration/route pins, out-of-range index, group
+existence, already-started) returns `Err` BEFORE the first side effect. On a retry the
+`Some(existing)` branch performs only store READS; on a first generate the sole write
+(`upsert_storyboard`) is in the `None` branch, reached only after all plan/pin guards pass;
+the submit loop (`commands.rs:1454`) runs last. No store write and no submit happens ahead of
+any guard. `a_retry_subset_plan_is_rejected...` and `generate_rejects_a_plan_with_a_bad_model`
+both assert `store.all().len() == 0` after rejection.
+
+### Untrusted text in errors / logs — CLEAN
+New error strings interpolate only indices, `model_id`/`route_id`/`storyboard_id`
+identifiers, the numeric `duration`/`seconds`, and validator/serde messages. The sensitive
+free text (brief, prompt bodies, keys) is never echoed. No new logging statement is added in
+this delta (grep of `git show 7250335` for `println!/eprintln!/console.*/tracing::/log::/dbg!`
+is empty); errors return as `Err(String)` to the bridge and render React-escaped.
+
+### Re-check-2 findings (ranked)
+
+#### L5 — `shot_indices` is not deduplicated; the already-started guard is store-only, not within-batch (Low)
+`commands.rs:1318-1323, 1416-1431, 1454`. `indices` is taken from `input.shot_indices`
+verbatim (no dedup / no HashSet), and the already-started check tests each index against the
+STORE's existing rows, not against the other entries of the same call. Exploit/failure path:
+a caller that reaches `generate_storyboard` directly with `shot_indices = [2, 2]` (two shots
+both matching plan slot 2, whose stored row is `Failed` or absent) passes every guard and the
+loop submits BOTH — two paid POSTs written to `shot_index 2`, i.e. the same slot billed
+twice. The store-only already-started guard does not catch it because neither submit has been
+written yet when the batch is validated. Bounded to Low: the command is reachable only from
+the app's own local webview (no remote surface; XSS found clean, so injected content cannot
+forge the IPC call shape), the UI's own retry always passes distinct failed-only indices, and
+a direct IPC caller can already spend arbitrarily via `submit_job` directly — so this grants
+no capability beyond direct local access and is self-inflicted on a single-user app. Fix
+(cheap): dedup `indices` (reject duplicates) and also refuse any index that appears more than
+once in the same batch. Not blocking.
+
+#### L6 — retry does not verify the call's plan matches the targeted group's stored plan (Low/Informational)
+`commands.rs:1406-1415`. See "Existing-group write" above. A retry can be validated against a
+different plan than the one stored on the group it writes into. Single-user local, so no
+cross-user impact; row-integrity note only. Fix (optional): compare a hash of (or the
+canonical `plan_json`/`brief` of) the call's plan against the stored group's before accepting
+the retry.
+
+### Backlog recommendation
+No Critical or High. Repair 2 closes L4 (magnitude now pinned) and M2 (subset-retry), and the
+already-started guard blocks the primary double-bill path. L5 (dedup `shot_indices` + reject
+in-batch duplicate indices) and L6 (plan-match on retry-into-existing-group) are small
+hardening items worth folding into S14; neither is a standalone blocking slice given the
+single-user local-webview trust boundary.
+
+VERDICT: PASS
