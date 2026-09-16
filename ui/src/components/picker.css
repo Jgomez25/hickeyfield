@@ -215,7 +215,9 @@
  * same pinned class names — does not inherit the grid. */
 .model-list {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  /* Auto-fit against a 220px floor: the sheet was 520px wide and five fixed
+   * columns made 85px tiles whose names wrapped one word per line. */
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: var(--space-300);
   margin: 0;
   padding: 0;
@@ -249,6 +251,19 @@
   border-radius: var(--radius-200);
   background-size: cover;
   background-position: 50%;
+  overflow: hidden;
+}
+
+/* The launch badge sits on the thumbnail, so it can never collide with the
+ * name below however narrow the tile gets. */
+.model-list .model-item-badge {
+  position: absolute;
+  top: var(--space-200);
+  left: var(--space-200);
+  margin: 0;
+  background: var(--dark-60);
+  color: var(--text-brand);
+  backdrop-filter: blur(8px);
 }
 
 .model-list .model-item-main {
@@ -265,16 +280,22 @@
 }
 
 .model-list .model-item-name {
-  display: flex;
-  align-items: center;
+  display: block;
   font-family: var(--font-brand);
-  font-size: var(--text-sm);
+  font-size: var(--text-md);
   font-weight: 700;
+  line-height: 1.2;
   letter-spacing: var(--tracking-caps);
+  overflow-wrap: anywhere;
 }
 
 .model-list .model-item-sub {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
   font-size: var(--text-xs);
+  line-height: 1.4;
   color: var(--text-secondary);
 }
 

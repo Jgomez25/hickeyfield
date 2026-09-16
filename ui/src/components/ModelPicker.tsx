@@ -49,7 +49,7 @@ export function ModelPicker({
   };
 
   return (
-    <Overlay open={open} onClose={onClose} title="Select model" variant="sheet">
+    <Overlay open={open} onClose={onClose} title="Select model" variant="full">
       <div className="model-filters" role="group" aria-label="Filter models">
         <button
           type="button"
@@ -108,6 +108,9 @@ export function ModelPicker({
                       }}
                     >
                       <span className="media-bevel" />
+                      {model.isLaunch ? (
+                        <span className="badge model-item-badge">LAUNCH</span>
+                      ) : null}
                     </span>
                     <button
                       type="button"
@@ -120,9 +123,6 @@ export function ModelPicker({
                     >
                       <span className="model-item-name">
                         {model.displayName}
-                        {model.isLaunch ? (
-                          <span className="badge">LAUNCH</span>
-                        ) : null}
                       </span>
                       <span className="model-item-sub">
                         {/* Never the raw id: that is a slug, not a description. */}

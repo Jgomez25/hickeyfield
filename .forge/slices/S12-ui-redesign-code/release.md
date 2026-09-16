@@ -10,3 +10,10 @@ review on the installed build stands in.
 **Landing:** commits on forge/s12-redesign-code, ff to main (local fork only, never upstream),
 `tauri build --bundles app`, ad-hoc codesign, reinstalled to /Applications.
 **Status:** released (local main).
+
+**HOTFIX (2026-09-16, owner report "overlapping text on Select model"):** the picker opened as the
+520px sheet with five fixed columns → ~85px tiles, names wrapping one word per line, LAUNCH badge
+over the name. Fix: overlay variant `full`, grid `repeat(auto-fill, minmax(220px, 1fr))`, badge moved
+onto the thumbnail, name 16px block with wrap, subtitle 2-line clamp. Verified in the browser mock at
+1440×900 (symmetric 5-across, legible); pnpm test 272/272, build ok, provenance PASS. Landed as
+`forge/s12-hotfix-picker` → main, rebuilt + reinstalled.

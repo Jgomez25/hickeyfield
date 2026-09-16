@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "ui-dev", "runtimeExecutable": "sh", "runtimeArgs": ["-c", "export PATH=/private/tmp/claude-501/-Users-jorge-Documents-GitHub-hickeyfield/79be25e2-8f71-4192-9e6d-cd0e9d068f1c/scratchpad/node-v24.8.0-darwin-arm64/bin:$HOME/.local/bin:$PATH; cd ui && exec pnpm dev --port 1420 --strictPort"], "port": 1420 }
+  ]
+}
