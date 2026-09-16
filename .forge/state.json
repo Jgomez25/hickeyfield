@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S13-storyboard-plan",
+  "currentSlice": "S14-minimax-h3-max-constant-fields",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -100,6 +100,12 @@
       "status": "released",
       "started": "2026-09-16",
       "branch": "forge/s13-storyboard-plan"
+    },
+    {
+      "id": "S14-minimax-h3-max-constant-fields",
+      "title": "minimax-h3-max-constant-fields",
+      "status": "in-progress",
+      "started": "2026-09-16"
     }
   ]
 }

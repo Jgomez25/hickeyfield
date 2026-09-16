@@ -1,0 +1,4 @@
+<!-- FORGE-STUB: replace this file with real evidence, then delete this line. -->
+# S14-minimax-h3-max-constant-fields — DESIGN
+Files to touch, interfaces, data flow, and existing code reused (with paths).
+Scope to THIS slice. 'N/A — <reason>' is a valid recorded answer, not a skip.
