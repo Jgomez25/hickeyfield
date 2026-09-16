@@ -69,8 +69,9 @@
     {
       "id": "S9-fal-schema-const-and-int-enums",
       "title": "fal-schema-const-and-int-enums",
-      "status": "in-progress",
-      "started": "2026-09-15"
+      "status": "released",
+      "started": "2026-09-15",
+      "branch": "forge/s9-fal-schema-const"
     }
   ]
 }

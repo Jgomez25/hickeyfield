@@ -217,3 +217,7 @@ mandatory slice; tracked here for prioritization.
   `nano_banana_2_edit` defaults to 0.5K but is priced at 1K; `fal_diff --dump --offline` restamps
   stale data with a new date; snapshot `thumbnailUrl` values (418 storage.googleapis.com,
   1 pbs.twimg.com) are parsed but never rendered — must stay unrendered (hotlink/provenance).
+
+- **pin-aware-cost-estimate** (from S9 SECURITY/REVIEW, non-blocking): `estimated_usd` (commands.rs ~:1013) is priced from settings BEFORE `reconcile` may coerce a pinned cost-bearing field (e.g. a per-second route whose duration fal pins). Unreachable for today's landed set (Veo Extend's 7s is mirrored in the spec). Fix in the pricing slice: re-price after reconcile or from the settled body.
+
+- **dependency-advisories-h2-rustls** (from S9 SECURITY/REVIEW, non-blocking): `cargo deny check advisories` fails on main: RUSTSEC-2026-0258 (h2 0.4.15 → >=0.4.16), RUSTSEC-2026-0285 (rustls 0.23.43 → >=0.23.45), plus a stale RUSTSEC-2024-0429 ignore at deny.toml:77 (`advisory-not-detected`). `cargo update -p h2 -p rustls`, drop the stale ignore, re-run the gate.
