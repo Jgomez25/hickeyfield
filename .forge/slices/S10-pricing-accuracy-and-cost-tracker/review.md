@@ -46,3 +46,45 @@ All ranked minor. No blocker or major on a critical path.
 Slice delivers AC1–AC7 against the diff: estimator-honesty fixes are correct and tested, the floor is data-driven and dormant-by-design, the ffmpeg probe is robust and fails safe to `None`, the actual-cost path prices the settled quantity (unit × measured) and never zero, migration 7 is additive with genuine write-once semantics and no S1 regression, the live seam is key-safe and money-safe, and the UI is parity-correct with locked test classes. The full keyless gate reproduces green (816/0, clippy/fmt/provenance clean, audit_fal unchanged, MISMATCH 0, UI 245/build). All findings are minor and either dormant, pre-existing, or honestly disclosed; none is a blocker or a major on a critical path.
 
 VERDICT: PASS
+
+---
+
+## RE-REVIEW (HEAD 63e6fc2)
+
+Read-only re-review of the follow-up delta only (`git show 63e6fc2`). No key, no money, live seam never run.
+
+### Gate re-run (mine, keyless, HEAD 63e6fc2)
+
+- `cargo test --workspace` → **820 passed, 0 failed** (core lib 690, integ 3+2, tauri 125; 11 ignored). Matches the coordinator's 820/0.
+- `cargo fmt --all --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` → 0; `lint-provenance.py` → PASS.
+- `--example price_check` (keyless) → **MISMATCH 0 / OK 11 / PROSE 46 / UNPUBLISHED 8 / NO-SNAPSHOT 1** — unchanged. The two corrected literals are `PerSecondTiered`, which the audit's `comparable_literal` leaves as PROSE, so there is no audit-count regression.
+
+### Judged against the snapshot prose (the audit log carries fal's own sentences)
+
+- **`minimax/h3`** — prose: *"Video costs $0.05 per second at 480p, $0.06 per second at 768p, $0.13 per second at 2K and $0.16 per second at 4K."* Literal `[(480,0.05),(768,0.06),(1440,0.13),(2160,0.16)]` — 2K→1440, 4K→2160, each rate exact. The smallest-first `height <= max_h` lookup maps 480/768/2K/4K correctly and rounds an unlabelled 1080p up into the 2K tier (reasonable). The old flat `$0.26/s` over-quoted 1.6×–5× per tier; the fix is faithful. Dependent tests updated honestly (2K/5s = $0.65 = 0.13×5; fal now undercuts VAIG at 720p, flipping the cheapest-provider assertion — the old "fal is exactly 2× VAIG" encoded the over-quote). **Correct.**
+- **`grok-imagine-video/edit-video` & `/extend-video`** — prose: *"…at 480p, every second costs $0.06 ($0.05 output + $0.01 input), and at 720p, every second costs $0.08 ($0.07 output + $0.01 input)."* Literal `[(480,0.06),(720,0.08)]` — the output+input **total** per second. Since an edit/extend always carries a video input, billing the total (not the bare $0.05 output rate the old literal used) is the correct read. **Correct.**
+
+### Security L1 — rate-derived $0 → None (cost.rs `estimate`/`estimate_inner`)
+
+`estimate` now wraps `estimate_inner` and returns `None` unless `est.usd.is_finite() && est.usd > 0.0`, with `Flat` exempt so an authored free route (`z_image` local) still prices $0.00. A poisoned feed rate of 0 for a per-second/image/megapixel/tiered shape now reads unknown, not free. Test `a_zero_rate_is_unknown_not_free_but_flat_zero_stays_free` covers all arms. The wrapper does not affect the audit (which compares literals via `comparable_literal`, not `estimate`) nor the floor path. **Sound.**
+
+### Batch fix — confirmed no under-count (runner.rs `settled_billable`)
+
+For an image-output job (`images>0 && videos==0`), `batch` is held at `1` so per-image `estimate` no longer squares the count. The billed quantity is the **actual number of image outputs** fal returned (`b.images = images`), which is exactly fal's per-image basis — a 3-image job prices 3×$0.15 = $0.45 (`a_batched_image_job_is_not_double_counted`), not 1×rate and not 9×rate. **No under-count of multi-image jobs.** Video keeps the requested `batch` (its `images` is ignored by the per-second shape), which is right. Benign edge: a mixed image+video result set (`videos>0`) would retain the requested batch, but per-image models do not emit video outputs, so it is unreachable.
+
+### Security M1 — ffmpeg probe timeout/kill (ffmpeg.rs `run_probe`)
+
+Checked for thread leaks and zombies:
+- **Normal exit:** `try_wait` → `Some` → both drain threads reach EOF when the child's pipes close → `join()` returns; `try_wait` reaps the child. No leak, no zombie.
+- **Timeout:** `child.kill()` then `child.wait()` reaps the process; the closed pipes EOF the drain threads → both `join()`. No leak, no zombie.
+- **Deadlock safety:** stdout and stderr are drained on separate threads and the drain loop keeps reading (discarding past the cap) so a full pipe cannot block `try_wait`; `bounded_push` caps memory at 64 KiB and truncates a straddling chunk rather than dropping it. `-nostdin` + `Stdio::null()` stdin means no stdin block. `-protocol_whitelist file` precedes `-i` (asserted by `probe_args_sandbox_the_untrusted_input`), refusing http/concat chaining. **Sound.**
+
+### Findings (this delta)
+
+1. **[minor] `run_probe` error path leaks on the near-unreachable `try_wait` Err.** `crates/hickeyfield-core/src/ffmpeg.rs:775` (the `Err(e) => return …` arm inside the wait loop) returns without `join`-ing the two drain threads or reaping the child. `try_wait` erroring is effectively unreachable (it would need an OS-level `waitpid` failure), and the drain threads will still terminate when the child eventually exits, but strictly this one path skips the kill/reap the rest of the function guarantees. Cosmetic; recommend a `child.kill()`+`wait()` and thread `join` before the early return.
+
+2. **[minor, carried] `price-audit-tiered-prose` deferred, not built.** My prior finding (b) — extending the hermetic teeth to the regular resolution tables — is logged to `.forge/backlog.md` with a reason rather than implemented. The two most-wrong literals this delta corrects (`minimax/h3`, grok edit/extend) were caught by the human verifier reading prose, not by a machine check, which is exactly the gap that backlog item names. Acceptable to defer; the coverage limitation remains honestly disclosed.
+
+The two prior minor findings this delta targeted — the per-image `batch²` (my (c)) and, from SECURITY, the probe hardening and rate-derived $0 — are resolved. No new blocker or major on a critical path; the corrected literals are faithful to fal's prose and reduce real over-quotes.
+
+VERDICT: PASS

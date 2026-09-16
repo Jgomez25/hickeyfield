@@ -76,8 +76,9 @@
     {
       "id": "S10-pricing-accuracy-and-cost-tracker",
       "title": "pricing-accuracy-and-cost-tracker",
-      "status": "in-progress",
-      "started": "2026-09-15"
+      "status": "released",
+      "started": "2026-09-15",
+      "branch": "forge/s10-pricing"
     }
   ]
 }

@@ -123,3 +123,63 @@ minimax/h3 and grok residual over/under-quotes are real but are pre-existing, ou
 not a broken claim.
 
 VERDICT: PASS
+
+## RE-TEST (HEAD 63e6fc2)
+
+Coordinator applied my caveats in commit `63e6fc2`. I re-tested only that delta
+(`git show 63e6fc2`), keyless, no live seam, repo read-only apart from this file.
+
+### Gate at HEAD 63e6fc2 (re-run by me)
+- `cargo test --workspace` → **exit 0**, **820 passed / 0 failed / 11 ignored** (core lib 690:
+  +3 new; tauri 125: +1 new). Matches the coordinator's 820/0.
+- `cargo fmt --all --check` → FMT=0. `cargo clippy --workspace --all-targets -- -D warnings` →
+  exit 0, no warnings. `./scripts/lint-provenance.py` → PROV=0.
+- keyless `price_check` → `MISMATCH 0 / OK 11 / UNMODELLABLE 0 / PROSE 46 / UNPUBLISHED 8 /
+  NO-SNAPSHOT 1`; coverage unchanged. `minimax/h3` and grok edit/extend remain PROSE rows (a
+  tiered literal is still not hard-compared to multi-figure prose) — MISMATCH stays 0.
+- keyless `audit_fal` → PINNED 0 / UNREACHABLE 0 / CHECKED 66 (unchanged).
+- `cargo test -p hickeyfield-core --lib ffmpeg::tests -- --ignored` → real-sidecar probe
+  **1 passed** with the new hardened argv.
+
+### The two corrected literals, re-derived by me from the snapshot prose
+- `minimax/h3` snapshot prose: *"$0.05/s 480p, $0.06/s 768p, $0.13/s 2K, $0.16/s 4K"* →
+  literal `PerSecondTiered [(480,0.05),(768,0.06),(1440,0.13),(2160,0.16)]`. The four figures
+  are **exactly** fal's; tier heights map 2K→1440, 4K→2160 (a 1080p request lands in the 2K tier
+  at $0.13, the nearest published rate — a defensible round-up, not a fabricated number).
+  Estimates: 5s@2K = 5×$0.13 = **$0.65** (= VAIG); 5s@720p = 5×$0.06 = **$0.30**; 5s@480p =
+  **$0.25**. All within 1.2× of fal. The old flat $0.26/s (1.6×–5× over) is gone.
+- grok edit/extend prose: *"480p every second $0.06 ($0.05 out + $0.01 in), 720p $0.08 ($0.07 out
+  + $0.01 in)"* → literal `PerSecondTiered [(480,0.06),(720,0.08)]` (output+input totals, correct
+  because an edit/extend always has a video input). 5s@720p = **$0.40** (was $0.25, a 1.6× under);
+  5s@480p = **$0.30**. Both now equal fal.
+
+### Other delta pieces, verified
+- `cost::estimate` now returns `None` on a rate-derived `$0`/non-finite, with `Flat` exempt so a
+  deliberate free route (z-image `Flat{0.0}`) still prices `$0.00`. Logic read; test present.
+- `settled_billable` batch² double-count fixed: a batch of N images no longer multiplies count×batch
+  (N=3 @ $0.15 → $0.45, not $1.35); video keeps requested batch since `images` is ignored per-second.
+- ffmpeg probe argv is `-nostdin -hide_banner -protocol_whitelist file -i <file>` (whitelist before
+  `-i`, no `-y`), draining both pipes on threads, 20s deadline + kill, capture bounded to 64 KiB;
+  a timeout returns `FfmpegError::Probe` → runner's `probe_file(...).unwrap_or(none)` → all-`None`
+  dims → unknown cost, never 0.
+
+### Mutation checks (fresh scratch copy at HEAD, outside the repo)
+Baseline: all five target tests green. Each mutation caught:
+1. `minimax/h3` tier `(1440,0.13)`→`(1440,0.26)` ⇒ `gateway_routes_win_where_the_plan_says_they_do`
+   **FAILED** (2K estimate no longer $0.65).
+2. Removed the rate-derived-`$0` guard in `cost.rs` ⇒
+   `a_zero_rate_is_unknown_not_free_but_flat_zero_stays_free` **FAILED**.
+3. Dropped `-nostdin` from `probe_args` ⇒ `probe_args_sandbox_the_untrusted_input` **FAILED**.
+4. Made `bounded_push` extend the whole chunk (ignore cap) ⇒ `probe_capture_is_bounded` **FAILED**.
+5. Reverted the `if videos == 0 { b.batch = 1; }` fix in `runner::settled_billable` ⇒
+   `a_batched_image_job_is_not_double_counted` **FAILED** ($1.35 instead of $0.45).
+All source restored after each; the timeout-kill path is not fixture-tested (acknowledged in a
+code comment) but is deterministically bounded and exercised by the real-sidecar probe.
+
+### Disposition
+The delta resolves both residual wrong prices I flagged (minimax/h3, grok edit/extend) with literals
+that match fal's published prose exactly, hardens the untrusted-media probe, and fixes a real
+batch² over-count — each covered by a test that fails when the fix is reverted. Full gate green at
+820/0; keyless audits unchanged. No AC is refuted; no regression found in the delta.
+
+VERDICT: PASS

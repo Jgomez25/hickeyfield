@@ -112,3 +112,44 @@ L1 ("treat a non-positive feed price as unknown, not $0.00") into that or a pric
 slice.
 
 VERDICT: PASS
+
+## RE-CHECK (HEAD 63e6fc2)
+
+Re-reviewed only the fix delta (`git show 63e6fc2 -- crates/hickeyfield-core/src/ffmpeg.rs
+crates/hickeyfield-core/src/cost.rs`). Both prior findings are resolved.
+
+- **M1 resolved.** `probe_file` now routes through `run_probe`
+  (`crates/hickeyfield-core/src/ffmpeg.rs:686-793`).
+  - *Whitelist blocks egress (argv order verified):* `probe_args` (`:698-708`) emits
+    `[-nostdin, -hide_banner, -protocol_whitelist, file, -i, <file>]` — the whitelist
+    precedes `-i` and permits only the `file` protocol, so an HLS/`concat`/remote input
+    that chains to `http`/`https`/`tcp` is refused and the SSRF egress vector (M1-B) is
+    closed. A `concat`→local-`file` reference remains openable, but with no output file and
+    stderr parsed only for `Duration:`/`Video:`, there is no exfiltration channel — no
+    residual risk. `-nostdin` + `Stdio::null()` stdin closes the interactive path too.
+  - *No zombie / no leaked drain thread:* on overrun the loop calls `child.kill()` then
+    `child.wait()` (`:766-769`), reaping the process (SIGKILL cannot be ignored); the killed
+    child's pipe write-ends close, so both drain threads read `Ok(0)` and return, and both
+    are `join`ed on every exit path (`:775-776`). No orphaned process, no detached thread.
+  - *Bounded capture cannot deadlock a chatty ffmpeg:* each pipe is drained on its own
+    thread that keeps `read`ing and merely discards bytes past the 64 KiB cap
+    (`bounded_push` no-ops, no `break`, `:731-745`), so a pipe buffer never fills and the
+    `try_wait` loop is never blocked by back-pressure. Timeout maps to `FfmpegError::Probe`
+    → `probe_file` err → `probe_first_local` `.unwrap_or(none)` → all-`None` dims → unknown
+    cost, never `0`. The 20s ceiling bounds a wedged demuxer.
+  - Note (non-blocking): the timeout+kill branch is not fixture-tested (acknowledged in an
+    in-file comment); the deterministic pieces — sandbox argv and bounded push — are unit-
+    tested (`probe_args_sandbox_the_untrusted_input`, `probe_capture_is_bounded`).
+- **L1 resolved.** `CostModel::estimate` (`crates/hickeyfield-core/src/cost.rs:150-163`) now
+  returns `None` when a rate-derived `usd` is not finite-and-positive, with `Flat` exempt.
+  The exemption is *not* reachable by a feed-supplied zero: a `Flat { usd }` quote must pass
+  `cost_is_sane` → `positive(*usd)` (`prices.rs:468`), and `Quote::cost_model` returns `None`
+  on an insane cost (`prices.rs:416`), so a poisoned/erroneous `Flat { 0 }` (or negative /
+  non-finite) is rejected at the feed boundary and never reaches `estimate`. Only an authored
+  registry literal (the genuinely free z_image) can carry `Flat { 0 }` through, which is the
+  intended behaviour. `PerSecond`/`PerImage`/`PerSecondTiered`/`PerMegapixel`/`PerToken` zeros
+  now read as unknown, closing the false-`$0.00` path.
+
+No new findings in the delta. No unresolved Critical/High.
+
+VERDICT: PASS

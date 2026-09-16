@@ -9,7 +9,8 @@ S6 refusal-guard · S7 prompt-preview/edit/retry · **S8 fal-catalogue-sync (rel
 main 2672040: 11 verified fal models, Seedance 2.5 native 30s t2v-only, fal_diff tool; LTX 2.5 ×2,
 Veo 3.1 Extend and Seedance i2v withdrawn → S9)** · **S9 fal-schema-const-and-int-enums (released
 2026-09-16, main 6f083b9: parser reads const + int enums, audit check 5, the four paths re-landed)**.
-Tests 801 Rust / 232 UI at S9.
+Tests 801 Rust / 232 UI at S9 · **S10 pricing-accuracy-and-cost-tracker (released 2026-09-16:
+hermetic price audit, 2 literals fixed, settled actual cost + migration 7, UI delta)**. Tests 820 / 245 at S10.
 
 ## NUMBERING NOTE (2026-09-16): `new-slice.sh` numbers by state.json count, so the parser slice
 is **S9-fal-schema-const-and-int-enums**; "S9 pricing" below is therefore S10, "S10 redesign" is
