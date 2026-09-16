@@ -237,3 +237,100 @@ CHANGELOG [Unreleased]          → Added + Fixed bullets, provenance lint passe
 5. **`actual_source` for a probed per-image route** is `Probe` when any dimension came off the file,
    else `OutputCount`; a per-megapixel image priced purely from probed dims reads as `Probe`, which
    is accurate.
+
+---
+
+## ADDENDUM — post-verification repairs (coordinator round 2)
+
+Four in-slice repairs after TEST/REVIEW/SECURITY. Uncommitted; coordinator commits.
+
+### 1. AC1 — the two genuinely-wrong fal literals the verifier flagged, now fixed to fal's prose
+Both were pre-existing `Prose` rows the audit's parse-to-Rate mechanism structurally cannot flag,
+but AC1 says every mismatch found is fixed in-slice. Corrected in `registry.rs::priced_routes`
+against `vendor/fal-catalogue-snapshot.json`, quoting the prose in each route note:
+
+- **`minimax/h3` (fal):** was `per_second(0.26)` flat (over-quoted 1.6x–5x). fal prose: *"Video costs
+  $0.05 per second at 480p, $0.06 per second at 768p, $0.13 per second at 2K and $0.16 per second at
+  4K."* → `PerSecondTiered { [(480,0.05),(768,0.06),(1440,0.13),(2160,0.16)] }` (the published table,
+  no made-up average).
+- **`grok_edit_video` / `grok_extend_video` (fal):** were `per_second(0.05)` (dropped the input
+  surcharge, under-quoted 720p). fal prose: *"at 480p, every second costs $0.06 ($0.05 output +
+  $0.01 input), and at 720p, every second costs $0.08 ($0.07 output + $0.01 input)."* An edit/extend
+  always has a video input, so the billed rate is the total per second →
+  `PerSecondTiered { [(480,0.06),(720,0.08)] }`.
+
+Two dependent registry tests encoded the *old over-quote* and were corrected (with comments):
+`gateway_routes_win_where_the_plan_says_they_do` asserted "fal H3 is 2× VAIG" — the corrected fal now
+equals VAIG's $0.13/s at 2K and undercuts it at 720p; and
+`the_cheapest_provider_by_price_is_the_arbitrage_one` now expects H3 cheapest on **Fal** at 8s/720p
+($0.48 vs VAIG $1.04) — the price fix flipped the arbitrage. The VAIG H3 note ("exactly half fal")
+was corrected too.
+
+New `price_check` table (keyless): unchanged counts — the corrected routes stay `Prose` because fal
+states them with resolution words the strict parser refuses:
+```
+MISMATCH 0 / OK 11 / UNMODELLABLE 0 / PROSE 46 / UNPUBLISHED 8 / NO-SNAPSHOT 1
+coverage: 66 endpoints checked / 57 with fal prose / 8 with null prose
+```
+
+**Tiered-prose parser (reviewer's optional suggestion): NOT added, logged to backlog** as
+`price-audit-tiered-prose`. A tier-by-tier prose parser would cover wan/ltx/minimax/grok-v1.5, but a
+robust one exceeds the ~150-line budget the coordinator set: the prose is irregular and several rows
+carry multiple figures near one resolution token (grok edit/extend's `$0.06 ($0.05 output + $0.01
+input)`, veo3.1's audio+resolution pair), and an `AuditRow::Mismatch` **fails the build** — a
+mis-pair would break CI on a correct price, the exact hazard `fal_catalogue::parse_pricing` avoids.
+Scoped as its own slice with per-shape fixtures. Reasoning recorded in `.forge/backlog.md`.
+
+### 2. Security M1 — the `ffmpeg -i` probe is now bounded and sandboxed
+`crates/hickeyfield-core/src/ffmpeg.rs`: new `run_probe` replaces the plain `Command::output()` for
+the untrusted-media probe. No new dependency (`wait-timeout` is not in `Cargo.lock`) — uses a
+thread-drained pipe + `try_wait` deadline + `child.kill()`:
+- **20s wall-clock timeout with kill** (`PROBE_TIMEOUT`); on overrun → `FfmpegError::Probe`, which
+  `probe_first_local` maps to all-`None` dims → `actual_usd = None`, never 0.
+- **`-nostdin`** and **`stdin(Stdio::null())`** (never blocks on stdin).
+- **`-protocol_whitelist file` before `-i`** (an input cannot chain to `http`/`concat`/etc.).
+- **stderr/stdout capture capped at 64 KiB** (`MAX_PROBE_CAPTURE`, `bounded_push`), drained on
+  threads so a full pipe cannot deadlock the wait.
+
+Tests: `probe_args_sandbox_the_untrusted_input` (argv: `-nostdin`, whitelist-before-`-i`, no `-y`),
+`probe_capture_is_bounded` (cap enforced, chunk truncated not dropped). The real-sidecar
+`#[ignore]` probe still passes through the hardened path. The **timeout+kill path is not
+fixture-tested** — making the real sidecar hang deterministically without a network or a crafted
+malicious file is not feasible in a keyless unit test, and a sleep-based fake binary would be a
+platform-specific fixture; the deterministic pieces (argv, bounded capture) are unit-tested and the
+timeout wiring runs end-to-end in the ignored probe. Recorded here per the task.
+
+### 3. Security L1 — a rate-derived `$0` now reads as unknown, not free
+`crates/hickeyfield-core/src/cost.rs`: `estimate` is now a guard over `estimate_inner` — a
+non-positive or non-finite computed usd returns `None` (a poisoned/erroneous feed publishing
+`unit_price = 0`, or a mistyped literal, must not render "$0.00 free"). **`Flat` is exempt**: there
+IS a genuinely free route (`z_image`, open weights on a local ComfyUI endpoint,
+`CostModel::Flat { usd: 0.0 }`) that must still price as $0.00, and the feed's own `cost_is_sane`
+already refuses a non-positive `Flat`, so no bad data reaches that arm. Test
+`a_zero_rate_is_unknown_not_free_but_flat_zero_stays_free` covers PerSecond/PerImage/PerSecondTiered
+$0 → `None`, `Flat{0.0}` → `$0.00`, and a normal positive rate unaffected.
+
+### 4. Review (c) — `batch²` double-count fixed
+`src-tauri/src/runner.rs::settled_billable`: `Billable::from` sets both `images` and `batch` to the
+requested batch, and per-image `estimate` multiplies by both. For an image-output job the settled
+image count IS the whole quantity, so `batch` is held at 1 (video keeps the requested batch, since
+`images` is ignored for a per-second shape). Test `a_batched_image_job_is_not_double_counted`: a
+batch-of-3 image job at $0.15 → `$0.45`, not `$1.35`, source `OutputCount`.
+
+### Gate (round 2, all green, dummy keys; live seam / first_light never run)
+```
+cargo test --workspace   → 820 passed, 0 failed, 11 ignored
+  (core lib 690, tauri 125, integration 3+2, live_fal 1 ignored)
+cargo fmt --all --check  → FMT OK
+cargo clippy --workspace --all-targets -- -D warnings → Finished, no warnings
+./scripts/lint-provenance.py → PROV PASS (0)
+env -u hickeyfield_FAL_KEY -u FAL_KEY cargo run -q -p hickeyfield-core --example audit_fal
+  → PINNED (0), UNREACHABLE (0), CHECKED (66)  [unchanged]
+env -u ... --example price_check → MISMATCH 0 / OK 11
+cd ui && pnpm test → 245 passed (15 files)
+cd ui && pnpm build → built, tsc clean
+```
+
+New tests this round: `a_zero_rate_is_unknown_not_free_but_flat_zero_stays_free` (cost.rs),
+`probe_args_sandbox_the_untrusted_input` + `probe_capture_is_bounded` (ffmpeg.rs),
+`a_batched_image_job_is_not_double_counted` (runner.rs), plus two updated registry assertions.

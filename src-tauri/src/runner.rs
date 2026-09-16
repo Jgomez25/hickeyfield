@@ -329,14 +329,29 @@ fn settled_billable(job: &JobSet, dims: hickeyfield_core::ffmpeg::MediaDims) -> 
         (Some(w), Some(h)) => Some((w as f64 * h as f64) / 1_000_000.0),
         _ => None,
     };
-    // The count of image outputs fal actually returned.
+    // The count of outputs fal actually returned, by kind.
     let images = job
         .results
         .iter()
         .filter(|o| o.kind == hickeyfield_core::engine::OutputKind::Image)
         .count() as u32;
+    let videos = job
+        .results
+        .iter()
+        .filter(|o| o.kind == hickeyfield_core::engine::OutputKind::Video)
+        .count() as u32;
     if images > 0 {
         b.images = Some(images);
+        // The settled image count IS the whole billed quantity. `Billable::from`
+        // sets *both* `images` and `batch` to the requested batch, and a
+        // per-image `estimate` multiplies by both — so leaving `batch` here
+        // would square the count (review (c)). For an image job the batch
+        // multiplier is already folded into the output count; hold it at 1.
+        // (Video keeps the requested batch: `images` is ignored for a
+        // per-second shape, so `batch` is the only place N clips can be counted.)
+        if videos == 0 {
+            b.batch = 1;
+        }
     }
     b
 }
@@ -863,6 +878,44 @@ mod tests {
         let r = m.route("fal:google/gemini-omni-flash").unwrap();
         let settled = settled_billable(&j, dims10);
         assert_eq!(a10, Some(prices.estimate(m, r, &settled).unwrap().usd));
+    }
+
+    #[test]
+    fn a_batched_image_job_is_not_double_counted() {
+        // review (c): `Billable::from` sets both `images` and `batch` = batch,
+        // and per-image `estimate` multiplies by both. The settled path must not
+        // square the count — a batch of 3 images at $0.15 is $0.45, not $1.35.
+        let prices = crate::pricing::Prices::bundled();
+        let mut j = job("img");
+        j.model_id = "nano_banana_2".into();
+        j.route_id = "fal:fal-ai/nano-banana-pro".into(); // per_image(0.15)
+        j.status = JobStatus::Completed;
+        j.settings = serde_json::json!({ "batch": 3 });
+        j.results = (0..3)
+            .map(|i| Output {
+                url: format!("https://a/{i}.png"),
+                kind: OutputKind::Image,
+                local_path: Some(format!("/lib/{i}.png")),
+            })
+            .collect();
+        // No probed dims for an image count.
+        let none = MediaDims {
+            seconds: None,
+            width: None,
+            height: None,
+        };
+        let b = settled_billable(&j, none);
+        assert_eq!(b.images, Some(3));
+        assert_eq!(
+            b.batch, 1,
+            "batch must not re-multiply the settled image count"
+        );
+        let (actual, src) = compute_actual(&j, &prices, none);
+        assert!(
+            (actual.unwrap() - 0.45).abs() < 1e-9,
+            "3 x $0.15, not 3^2 x $0.15; got {actual:?}"
+        );
+        assert_eq!(src, Some(ActualSource::OutputCount));
     }
 
     #[test]

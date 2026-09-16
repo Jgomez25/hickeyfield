@@ -148,6 +148,21 @@ impl CostModel {
     /// handle the unknown rather than seeing a zero, which on the Generate
     /// button would read as "free".
     pub fn estimate(&self, b: &Billable) -> Option<Estimate> {
+        let est = self.estimate_inner(b)?;
+        // Security L1: a *rate-derived* price of exactly 0 (or non-finite) is bad
+        // data — a poisoned or erroneous feed publishing `unit_price = 0`, or a
+        // mistyped literal — not a real quote, and must read as unknown rather
+        // than a false "$0.00 free". `Flat` is exempt: a flat 0 is an authored,
+        // deliberate price (`z_image` runs free on a detected local endpoint),
+        // and the feed's own `cost_is_sane` already refuses a non-positive
+        // `Flat`, so no poisoned value can reach this arm.
+        if !matches!(self, CostModel::Flat { .. }) && !(est.usd.is_finite() && est.usd > 0.0) {
+            return None;
+        }
+        Some(est)
+    }
+
+    fn estimate_inner(&self, b: &Billable) -> Option<Estimate> {
         let batch = b.batch_factor();
         match self {
             CostModel::Unknown => None,
@@ -405,6 +420,42 @@ mod tests {
     fn unknown_price_is_none_never_zero() {
         // A zero here would tell the user a paid generation is free.
         assert!(CostModel::Unknown.estimate(&Billable::image(1)).is_none());
+    }
+
+    #[test]
+    fn a_zero_rate_is_unknown_not_free_but_flat_zero_stays_free() {
+        // Security L1: a poisoned/erroneous feed rate of $0 must read as unknown
+        // (None), never "$0.00 free", for the rate-derived shapes.
+        let b = Billable::video(5.0, 1280, 720);
+        assert!(CostModel::PerSecond {
+            usd: 0.0,
+            audio_multiplier: 1.0
+        }
+        .estimate(&b)
+        .is_none());
+        assert!(CostModel::PerImage {
+            usd: 0.0,
+            usd_per_extra_input: 0.0
+        }
+        .estimate(&Billable::image(1))
+        .is_none());
+        let tiered = CostModel::PerSecondTiered {
+            tiers: vec![(720, 0.0)],
+        };
+        assert!(tiered.estimate(&b).is_none());
+        // But a genuinely free route (z-image, open weights on a local endpoint)
+        // uses Flat{0.0} on purpose and must still price as $0.00.
+        let free = CostModel::Flat { usd: 0.0 }
+            .estimate(&Billable::image(1))
+            .unwrap();
+        assert_eq!(free.usd, 0.0);
+        // A normal positive rate is unaffected.
+        assert!(CostModel::PerSecond {
+            usd: 0.10,
+            audio_multiplier: 1.0
+        }
+        .estimate(&b)
+        .is_some());
     }
 
     #[test]

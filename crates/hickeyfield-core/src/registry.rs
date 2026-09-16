@@ -926,16 +926,21 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
         // line, and the resolver sorts an unknown price last instead of
         // treating it as free — the estimate reads "price unavailable", which
         // is the honest thing to put next to a Generate button.
-        // $0.05/s of output plus a small per-input charge, from fal's prose.
-        // Modelled as the per-second part only: the surcharge is a fraction of
-        // a cent and inventing a second term would be a guess.
+        // fal prose (snapshot, xai/grok-imagine-video/edit-video): "At an output
+        // resolution of 480p, every second costs $0.06 ($0.05 for output and
+        // $0.01 for input), and at 720p, every second costs $0.08 ($0.07 for
+        // output and $0.01 for input)." An edit always has a video input, so the
+        // billed rate is the *total* (output + input) per second — the old flat
+        // $0.05 dropped the input surcharge and under-quoted every tier.
         "grok_edit_video" => vec![(
             Route::noted(
                 ProviderId::Fal,
                 "xai/grok-imagine-video/edit-video",
-                "whole-frame prompt editing; $0.05/s of output at 480p",
+                "$0.06/s at 480p, $0.08/s at 720p (output + input, per fal)",
             ),
-            per_second(0.05),
+            CostModel::PerSecondTiered {
+                tiers: vec![(480, 0.06), (720, 0.08)],
+            },
         )],
         // Imported from fal's index 2026-09-16, landed once the schema parser
         // could read a `const`. fal publishes a 4K tier at $0.30/s that the
@@ -967,13 +972,18 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
             ),
             per_second_audio(0.20, 2.0),
         )],
+        // Same fal prose and pricing table as edit-video (snapshot,
+        // xai/grok-imagine-video/extend-video): 480p $0.06/s, 720p $0.08/s,
+        // each the output+input total. Extend always has a video input.
         "grok_extend_video" => vec![(
             Route::noted(
                 ProviderId::Fal,
                 "xai/grok-imagine-video/extend-video",
-                "continues a clip; $0.05/s of output at 480p",
+                "$0.06/s at 480p, $0.08/s at 720p (output + input, per fal)",
             ),
-            per_second(0.05),
+            CostModel::PerSecondTiered {
+                tiers: vec![(480, 0.06), (720, 0.08)],
+            },
         )],
         "ray2_modify" => vec![(
             Route::noted(
@@ -1120,11 +1130,25 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
                 Route::noted(
                     ProviderId::Vaig,
                     "minimax/minimax-h3",
-                    "$0.13/s at 2K — exactly half fal",
+                    "flat $0.13/s — matches fal at 2K, dearer than fal below it",
                 ),
                 per_second(0.13),
             ),
-            (Route::new(ProviderId::Fal, "minimax/h3"), per_second(0.26)),
+            (
+                // fal prose (`vendor/fal-catalogue-snapshot.json`, minimax/h3):
+                // "Video costs $0.05 per second at 480p, $0.06 per second at
+                // 768p, $0.13 per second at 2K and $0.16 per second at 4K." The
+                // old flat $0.26/s over-quoted every tier by 1.6x–5x; model the
+                // published per-resolution table rather than a made-up average.
+                Route::noted(
+                    ProviderId::Fal,
+                    "minimax/h3",
+                    "$0.05/s 480p, $0.06/s 768p, $0.13/s 2K, $0.16/s 4K",
+                ),
+                CostModel::PerSecondTiered {
+                    tiers: vec![(480, 0.05), (768, 0.06), (1440, 0.13), (2160, 0.16)],
+                },
+            ),
         ],
         // The one model here whose fal route does not exist: `fal-ai/minimax/
         // hailuo-2.3` is in `media::FAL_MISSING_ROUTES`, measured absent
@@ -2788,13 +2812,21 @@ mod tests {
             0.65,
             "MiniMax H3 2K 5s",
         );
+        // S10 corrected the fal H3 literal from a flat $0.26/s (a 2x over-quote
+        // at 2K, per the verifier) to fal's own published per-resolution table.
+        // At 2K fal now equals VAIG's $0.13/s exactly, and at 720p fal ($0.06/s)
+        // undercuts VAIG ($0.13/s) — so the gateway no longer wins H3 across the
+        // board. The old "fal is 2x VAIG" assertion encoded the over-quote.
+        near(
+            usd("minimax_h3", "fal:minimax/h3", &vid),
+            0.65,
+            "MiniMax H3 2K 5s fal (matches VAIG after the fix)",
+        );
+        let vid_720 = Billable::video(5.0, 1280, 720);
         assert!(
-            (usd("minimax_h3", "fal:minimax/h3", &vid)
-                / usd("minimax_h3", "vaig:minimax/minimax-h3", &vid)
-                - 2.0)
-                .abs()
-                < 1e-9,
-            "fal should be exactly 2x VAIG on H3"
+            usd("minimax_h3", "fal:minimax/h3", &vid_720)
+                < usd("minimax_h3", "vaig:minimax/minimax-h3", &vid_720),
+            "fal H3 is cheaper than VAIG at 720p once priced from fal's own table"
         );
     }
 
@@ -2813,7 +2845,11 @@ mod tests {
         for (id, want) in [
             ("seedance_2_0", ProviderId::Vaig),
             ("seedance1_5", ProviderId::Vaig),
-            ("minimax_h3", ProviderId::Vaig),
+            // At 8s/720p, fal H3 ($0.06/s = $0.48) now undercuts VAIG's flat
+            // $0.13/s ($1.04): the S10 fix that replaced fal's over-quoted flat
+            // $0.26/s with its published per-resolution table flipped the
+            // cheapest provider for H3 at sub-2K resolutions.
+            ("minimax_h3", ProviderId::Fal),
             ("kling3_0", ProviderId::Fal),
         ] {
             let m = &reg[id];

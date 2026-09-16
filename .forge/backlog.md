@@ -220,4 +220,21 @@ mandatory slice; tracked here for prioritization.
 
 - **pin-aware-cost-estimate** (from S9 SECURITY/REVIEW, non-blocking): `estimated_usd` (commands.rs ~:1013) is priced from settings BEFORE `reconcile` may coerce a pinned cost-bearing field (e.g. a per-second route whose duration fal pins). Unreachable for today's landed set (Veo Extend's 7s is mirrored in the spec). Fix in the pricing slice: re-price after reconcile or from the settled body. **DONE (S10):** each completed job now records an `actual_usd` priced from the *settled* output (probed duration/resolution × the route rate), and a card advisory names the settled-vs-requested difference — so the settled-body price is now the authority the pre-`reconcile` estimate is reconciled against.
 
+- **price-audit-tiered-prose** (from S10 REVIEW/coordinator, non-blocking): the hermetic audit
+  (`prices::audit`) hard-compares only the ~11 fal routes whose prose reduces to a single rate; the
+  ~46 conditional rows stay `Prose`. A tier-by-tier parser for the *regular* resolution tables
+  (`$0.05/s at 480p, $0.06/s at 768p, …`; `$0.12/s for 720p or $0.17/s for 1080p`) would let the
+  audit verify wan/ltx/minimax/grok-v1.5 `PerSecondTiered` literals against fal's own table. **Not
+  done in S10:** a robust implementation exceeds the ~150-line budget the coordinator set, because
+  the prose is irregular ("per second at" / "per second for" / "at Xp," / "/sec") and several rows
+  carry multiple figures near one resolution token — grok edit/extend states `at 480p, every second
+  costs $0.06 ($0.05 for output and $0.01 for input)` (three figures), and veo3.1 states
+  `$0.20 without audio or $0.40 with audio for 720p or 1080p` (audio- and resolution-conditional).
+  An `AuditRow::Mismatch` **fails the build**, so a parser that mis-pairs a figure with a resolution
+  would break CI on a correct price — the exact "take the wrong number from a rate table" hazard the
+  strict `fal_catalogue::parse_pricing` was written to avoid. Do it as its own slice with a resolved
+  scope (which prose shapes are in/out) and fixture tests per shape; keep `fal_catalogue::parse_pricing`
+  and its 193-rate contract untouched. Until then these rows are covered by the human-run AC6 live
+  seam (`tests/live_fal_pricing.rs`).
+
 - **dependency-advisories-h2-rustls** (from S9 SECURITY/REVIEW, non-blocking): `cargo deny check advisories` fails on main: RUSTSEC-2026-0258 (h2 0.4.15 → >=0.4.16), RUSTSEC-2026-0285 (rustls 0.23.43 → >=0.23.45), plus a stale RUSTSEC-2024-0429 ignore at deny.toml:77 (`advisory-not-detected`). `cargo update -p h2 -p rustls`, drop the stale ignore, re-run the gate.

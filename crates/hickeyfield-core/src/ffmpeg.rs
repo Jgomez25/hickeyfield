@@ -20,9 +20,11 @@
 //! exists to make that catchable in CI rather than in a takedown notice.
 
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 /// The `externalBin` stem declared in `tauri.conf.json`.
 pub const SIDECAR_STEM: &str = "ffmpeg";
@@ -671,9 +673,121 @@ fn parse_dimensions(line: &str) -> Option<(u32, u32)> {
 /// genuine spawn failure still surfaces as [`FfmpegError::Spawn`]. Fields that
 /// cannot be read come back `None`, never `0`.
 pub fn probe_file(bin: &Path, file: &Path) -> Result<MediaDims, FfmpegError> {
-    let file = file.to_string_lossy();
-    let out = run(bin, &["-hide_banner", "-i", file.as_ref()])?;
+    let out = run_probe(bin, file)?;
     Ok(parse_probe(&out))
+}
+
+/// Wall-clock ceiling for one probe. A hostile or malformed downloaded file that
+/// makes the demuxer loop must not wedge a `spawn_blocking` thread forever
+/// (tokio's blocking pool is finite, so enough of them stall the whole runner).
+/// 20s is far longer than any real header read and short enough to bound the
+/// damage.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Cap on captured stderr. `ffmpeg -i` writes a fixed header block; anything
+/// past 64 KiB is a misbehaving input trying to exhaust memory, and the fields
+/// we read (`Duration:`, the first `Video:` line) are near the top regardless.
+const MAX_PROBE_CAPTURE: usize = 64 * 1024;
+
+/// The argv for probing untrusted media. Split out so the hardening flags are
+/// unit-testable without spawning: `-nostdin` (never block reading stdin),
+/// `-protocol_whitelist file` **before** `-i` (refuse `http`/`concat`/etc. an
+/// input file might chain to), and no output file (`-i` alone prints the header
+/// and exits non-zero, which is expected).
+fn probe_args(file: &str) -> [&str; 6] {
+    [
+        "-nostdin",
+        "-hide_banner",
+        "-protocol_whitelist",
+        "file",
+        "-i",
+        file,
+    ]
+}
+
+/// Append `chunk` to `buf` without letting it grow past `cap`. Extracted so the
+/// bound is testable without a process.
+fn bounded_push(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) {
+    if buf.len() >= cap {
+        return;
+    }
+    let room = cap - buf.len();
+    buf.extend_from_slice(&chunk[..chunk.len().min(room)]);
+}
+
+/// Spawn `ffmpeg -i <file>` on untrusted media with a wall-clock timeout, a kill
+/// on overrun, `stdin` closed, the file protocol whitelisted, and bounded
+/// capture. Returns the combined stdout+stderr, or a `Probe` error on timeout.
+///
+/// Both pipes are drained on their own threads so a full pipe buffer cannot
+/// deadlock the wait, and the drain itself caps at [`MAX_PROBE_CAPTURE`].
+fn run_probe(bin: &Path, file: &Path) -> Result<String, FfmpegError> {
+    let file = file.to_string_lossy().into_owned();
+    let args = probe_args(&file);
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| FfmpegError::Spawn(format!("{}: {e}", bin.display())))?;
+
+    let drain = |mut r: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(r) = r.as_mut() {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match r.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => bounded_push(&mut buf, &chunk[..n], MAX_PROBE_CAPTURE),
+                    }
+                }
+            }
+            buf
+        })
+    };
+    let out_h = drain(
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    );
+    let err_h = drain(
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    );
+
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let timed_out = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break false,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break true;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(FfmpegError::Spawn(format!("{}: {e}", bin.display()))),
+        }
+    };
+
+    let stdout = out_h.join().unwrap_or_default();
+    let stderr = err_h.join().unwrap_or_default();
+    if timed_out {
+        return Err(FfmpegError::Probe(format!(
+            "ffmpeg -i timed out after {}s probing {}",
+            PROBE_TIMEOUT.as_secs(),
+            bin.display()
+        )));
+    }
+    let mut text = String::from_utf8_lossy(&stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&stderr));
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -1011,6 +1125,45 @@ At least one output file must be specified
         .unwrap();
         assert_eq!((w, h), (1920, 1080));
     }
+
+    #[test]
+    fn probe_args_sandbox_the_untrusted_input() {
+        // Security M1: the probe must close stdin, whitelist only the file
+        // protocol *before* -i (so an input cannot chain to http/concat), and
+        // pass no output file. Asserted on the argv so it holds without a spawn.
+        let a = probe_args("/tmp/x.mp4");
+        assert_eq!(a[0], "-nostdin");
+        let wl = a.iter().position(|s| *s == "-protocol_whitelist").unwrap();
+        assert_eq!(a[wl + 1], "file");
+        let i = a.iter().position(|s| *s == "-i").unwrap();
+        assert!(wl < i, "protocol whitelist must precede -i: {a:?}");
+        assert_eq!(a[i + 1], "/tmp/x.mp4");
+        assert!(!a.contains(&"-y"), "a probe writes no output file");
+    }
+
+    #[test]
+    fn probe_capture_is_bounded() {
+        // Security M1: a misbehaving input cannot make us buffer unbounded
+        // stderr. `bounded_push` stops at the cap and never over-reads a chunk.
+        let cap = 100;
+        let mut buf = Vec::new();
+        for _ in 0..10 {
+            bounded_push(&mut buf, &[b'x'; 30], cap);
+        }
+        assert_eq!(buf.len(), cap, "capture must stop at the cap");
+        // A chunk that would straddle the cap is truncated, not dropped whole.
+        let mut b2 = vec![0u8; cap - 5];
+        bounded_push(&mut b2, &[1u8; 40], cap);
+        assert_eq!(b2.len(), cap);
+    }
+
+    // NOTE: the timeout+kill path (`run_probe` deadline) is not fixture-tested.
+    // Making the real sidecar hang deterministically without a network or a
+    // crafted malicious file is not feasible in a keyless unit test, and a
+    // sleep-based fake binary would be a platform-specific fixture. The pieces
+    // that *are* deterministic — the sandboxing argv and the bounded capture —
+    // are unit-tested above; the timeout wiring is exercised end-to-end by the
+    // ignored real-sidecar probe below (which completes well under the ceiling).
 
     #[test]
     #[ignore = "spawns the bundled sidecar; run with --ignored"]
