@@ -278,3 +278,9 @@ mandatory slice; tracked here for prioritization.
 - **S19 shot trim handles** (owner): per-shot in/out before stitching; total recomputed vs ±10%.
 - **S17 minors:** validator's resolvable-route line is redundant with `use_case::supports` (keep or fold);
   `imageModelAvailable` default true; threshold calibration on one real paid 2×15 keyframe set (human-run).
+- **PRICING (real data, 2026-09-16 17:35):** a Seedance 2.5 job estimated $1.95 settled at $6.18 actual
+  (3.2× under-quote). The route is priced per 1k output tokens (`per_token(21.40)` note: "$0.0214 per 1k
+  tokens at 480/720p, ~$0.0234 at 1080p"); the estimator's token count for the requested duration/
+  resolution is far below what fal billed. Re-derive Seedance 2.5's token-per-second model from fal's
+  prose and this settled job (and any others), add a hermetic test against the settled ratio, and show
+  the estimate-vs-actual delta prominently in the picker for per-token routes. Owner-visible money bug.
