@@ -1,3 +1,35 @@
+# HANDOFF — hickeyfield FORGE — PAUSED by owner after S18 (2026-09-16, evening)
+
+## State at pause
+main = S1–S18 released and installed to /Applications (S8 catalogue sync · S9 schema const/int-enums ·
+S10 pricing audit + actual cost · S11 redesign mockup · S12 redesign code (+picker hotfix) · S13 storyboard
+plan · S14 MiniMax H3 Max · S15 storyboard render/chaining · S16 duration ranges + measured continuity ·
+S17 keyframe-anchored mode + keychain hotfix · S18 live-spend gate). main tip after S18 evidence: 872669c.
+Tests 961 Rust (+9 real-sidecar ignored) / 312 UI. Nothing pushed to any remote.
+
+## Money (read first)
+- 2026-09-16 15:39: $0.36 spent by a unit test (9 qwen stills) via the keychain fallback — see STATUS
+  "INCIDENT". Closed structurally: S17 `vault::keychain_blocked()` (no keychain under cfg(test) /
+  `HICKEYFIELD_NO_KEYCHAIN=1`) + S18 spend gate (`HICKEYFIELD_ALLOW_SPEND=1` required per process; the
+  packaged app enables it at startup) + `scripts/lint-spend.py`. TEST proved behind an unroutable proxy:
+  no flag → no socket; flag → network. Residual spenders: the installed app, and a human running
+  first_light with the flag. NOTHING ELSE CAN SPEND.
+- 2026-09-16 17:35: the OWNER ran a Seedance 2.5 job in the app ("Motum — ENGINEER"): est. $1.95 →
+  actual $6.18. Not an incident; a 3.2× under-quote in our per-token estimator → backlog S20.
+- Every agent command: `export HICKEYFIELD_NO_KEYCHAIN=1 hickeyfield_FAL_KEY=x …` (dummy keys SET,
+  never stripped); never set HICKEYFIELD_ALLOW_SPEND; never run first_light.
+
+## Resume order (owner's priorities: continuity is "the money in the bank problem")
+1. Owner-only: launch the installed app, confirm a normal estimate + Generate works (S18 proof).
+2. S20 per-token pricing accuracy (draft in scratchpad lost on restart — re-derive from backlog note).
+3. S19 shot trim handles (per-shot in/out before stitching; ±10% target tolerance).
+4. Human-run: calibrate continuity thresholds (0.80/12/6 floor, 0.90/6/3 ideal) on one paid 2×15 set.
+5. S18 follow-ups (gate in a non-overridable trait default; lint scans shell/CI; budget cap).
+Rules: Opus 4.8 = OMIT the Agent `model` param; max two repair rounds then escalate; FORGE loop with
+gate.py exit 0; never hand-edit a verdict; keep agent count low; JARVIS persona, terse.
+
+---
+# (previous handoffs kept below)
 # HANDOFF — hickeyfield FORGE session → next session (updated 2026-09-16, evening)
 
 ## INCIDENT + RULE (2026-09-16): a test that stripped the dummy key env fell through to the macOS
