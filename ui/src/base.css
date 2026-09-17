@@ -946,6 +946,103 @@
   padding: 0;
 }
 
+/* S17: the end-frame-adherence badge (keyframe mode), beside the cut score.
+   `data-pass="unscored"` shows a muted "end —" and never a $0-style zero. */
+.storyboard-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-100, 0.25rem);
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-100, 0.3rem);
+  font-size: var(--text-200, 0.8rem);
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-200, #1c1c22);
+  color: var(--muted, #9a9aa5);
+}
+
+.storyboard-end[data-pass="true"] {
+  color: var(--ok, #5fd08a);
+}
+
+.storyboard-end[data-pass="false"] {
+  color: var(--alert, #e6795b);
+}
+
+/* S17: the Keyframe-mode toggle, its disabled note, and the draft still-preview
+   cards (Storyboard) + the settled/parked still cards (Library). */
+.storyboard-keyframe-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-150, 0.4rem);
+  font-size: var(--text-200, 0.8rem);
+  color: var(--muted, #9a9aa5);
+  cursor: pointer;
+}
+
+.storyboard-keyframe-toggle[data-disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.storyboard-keyframe-note {
+  color: var(--muted, #9a9aa5);
+  font-size: var(--text-200, 0.8rem);
+}
+
+.storyboard-keyframe-cards,
+.storyboard-keyframe-stills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-200, 0.6rem);
+  margin-top: var(--space-150, 0.4rem);
+}
+
+.storyboard-keyframe-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-100, 0.25rem);
+  padding: var(--space-150, 0.4rem);
+  border-radius: var(--radius-200, 0.5rem);
+  background: var(--surface-200, #1c1c22);
+  font-size: var(--text-200, 0.8rem);
+  max-width: 12rem;
+}
+
+.storyboard-keyframe-index {
+  font-weight: 600;
+  color: var(--fg, #e8e8ee);
+}
+
+.storyboard-keyframe-prompt {
+  color: var(--muted, #9a9aa5);
+}
+
+.storyboard-keyframe-thumb {
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-100, 0.3rem);
+  object-fit: cover;
+}
+
+.storyboard-keyframe-card[data-state="parked"] {
+  outline: 1px solid var(--alert, #e6795b);
+}
+
+.storyboard-keyframe-state[data-state="parked"] {
+  color: var(--alert, #e6795b);
+}
+
+/* S17: the "Regenerate still" action on a keyframe boundary. */
+.storyboard-regenerate-still {
+  font-size: var(--text-200, 0.8rem);
+  color: var(--accent, #7aa2f7);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
 .storyboard-render-controls {
   display: flex;
   flex-wrap: wrap;

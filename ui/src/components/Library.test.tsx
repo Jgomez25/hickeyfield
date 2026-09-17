@@ -303,4 +303,177 @@ describe("Library", () => {
     );
     expect(container.querySelector(".storyboard-join")).toBeNull();
   });
+
+  // ── S17 (AC5): two scores per join, and the keyframe still cards ──────────
+
+  it("the library item shows both the cut and the end-adherence score (S17)", () => {
+    const scored: Storyboard = {
+      ...SET,
+      joins: [
+        {
+          index: 1,
+          kind: "continuity",
+          applied: true,
+          ssim: 0.93,
+          psnr: 34,
+          dy: 2,
+          du: 1,
+          dv: 1,
+          pass: true,
+          // S17 end-frame adherence, scored against the ideal tier.
+          endSsim: 0.91,
+          endPsnr: 33,
+          endDy: 3,
+          endDu: 1,
+          endDv: 1,
+          endPass: true,
+          attempt: 0,
+        },
+      ],
+    };
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[scored]}
+        onRender={vi.fn()}
+      />,
+    );
+    const cut = container.querySelector<HTMLElement>(".storyboard-join")!;
+    const end = container.querySelector<HTMLElement>(".storyboard-end")!;
+    expect(cut).not.toBeNull();
+    expect(cut.textContent).toContain("0.93");
+    expect(end).not.toBeNull();
+    expect(end.textContent).toContain("0.91");
+    expect(end.getAttribute("data-pass")).toBe("true");
+  });
+
+  it("an unscored end shows a dash, never zero (S17)", () => {
+    // A keyframe set carries the end-* fields (even when unscored → null); the
+    // badge must read "end —", never "end 0.00" (unknown is not failing).
+    const unscored: Storyboard = {
+      ...SET,
+      joins: [
+        {
+          index: 1,
+          kind: "continuity",
+          applied: true,
+          ssim: 0.93,
+          psnr: 34,
+          dy: 2,
+          du: 1,
+          dv: 1,
+          pass: true,
+          endSsim: null,
+          endPsnr: null,
+          endDy: null,
+          endDu: null,
+          endDv: null,
+          endPass: null,
+          attempt: 0,
+        },
+      ],
+    };
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[unscored]}
+        onRender={vi.fn()}
+      />,
+    );
+    const end = container.querySelector<HTMLElement>(".storyboard-end")!;
+    expect(end).not.toBeNull();
+    expect(end.textContent).toContain("—");
+    expect(end.textContent).not.toContain("0.00");
+    expect(end.getAttribute("data-pass")).toBe("unscored");
+  });
+
+  it("a settled still shows a thumbnail and offers Regenerate still (S17)", () => {
+    const stillJob = job({
+      id: "still-0",
+      storyboardId: "sb1",
+      shotIndex: undefined,
+      status: "completed",
+      results: [{ url: "https://x/k0.png", kind: "image", localPath: "/lib/k0.png" }],
+    });
+    const kfSet: Storyboard = {
+      ...SET,
+      keyframes: [
+        {
+          index: 0,
+          jobSetId: "still-0",
+          localPath: "/lib/k0.png",
+          estimatedUsd: 0.04,
+          attempt: 0,
+        },
+      ],
+    };
+    const onRegenerateStill = vi.fn();
+    render(
+      <Library
+        jobs={[stillJob, shot(0, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[kfSet]}
+        onRender={vi.fn()}
+        onRegenerateStill={onRegenerateStill}
+      />,
+    );
+    const card = container.querySelector<HTMLElement>(
+      '.storyboard-keyframe-card[data-keyframe="0"]',
+    )!;
+    expect(card).not.toBeNull();
+    expect(card.getAttribute("data-state")).toBe("ready");
+    expect(card.querySelector(".storyboard-keyframe-thumb")).not.toBeNull();
+    const regen = card.querySelector<HTMLButtonElement>(".storyboard-regenerate-still")!;
+    act(() => regen.click());
+    expect(onRegenerateStill).toHaveBeenCalledWith("sb1", 0);
+  });
+
+  it("a failed still shows the parked state and offers Regenerate still (S17)", () => {
+    const failedStill = job({
+      id: "still-1",
+      storyboardId: "sb1",
+      shotIndex: undefined,
+      status: "failed",
+      results: [],
+      estimatedUsd: null,
+    });
+    const kfSet: Storyboard = {
+      ...SET,
+      keyframes: [
+        {
+          index: 1,
+          jobSetId: "still-1",
+          localPath: null,
+          estimatedUsd: 0.04,
+          attempt: 2,
+        },
+      ],
+    };
+    render(
+      <Library
+        jobs={[failedStill]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[kfSet]}
+        onRender={vi.fn()}
+        onRegenerateStill={vi.fn()}
+      />,
+    );
+    const card = container.querySelector<HTMLElement>(
+      '.storyboard-keyframe-card[data-keyframe="1"]',
+    )!;
+    expect(card.getAttribute("data-state")).toBe("parked");
+    expect(card.textContent).toContain("parked");
+    expect(card.querySelector(".storyboard-keyframe-thumb")).toBeNull();
+    expect(card.querySelector(".storyboard-regenerate-still")).not.toBeNull();
+  });
 });

@@ -1423,7 +1423,19 @@ mod tests {
         n_shots: usize,
         stills_ready: bool,
     ) {
-        let shots: Vec<SubmitInput> = (0..n_shots).map(|_| input_for(shot_model)).collect();
+        // The shots pin an UNAVAILABLE route id on purpose: if any barrier in a
+        // test drives `submit_shot_zero` → `submit_one`, `route::resolve` fails
+        // with `UnknownPin` BEFORE a Queued row is written or any provider is
+        // contacted (INCIDENT 2026-09-16 — never let a test reach a real submit).
+        // This is the rule-compliant equivalent of "no configured provider"
+        // without stripping the dummy key env.
+        let shots: Vec<SubmitInput> = (0..n_shots)
+            .map(|_| {
+                let mut s = input_for(shot_model);
+                s.route_id = Some("unavailable:no-such-route".into());
+                s
+            })
+            .collect();
         let records: Vec<crate::store::KeyframeRecord> = (0..=n_shots)
             .map(|k| crate::store::KeyframeRecord {
                 index: k,
@@ -1852,6 +1864,18 @@ mod tests {
         assert!(
             stills_ready_for_shot_zero(&ready_kfs, &store.jobs_in_storyboard("ready").unwrap()),
             "the fully-reconciled set is ready to submit shot 0"
+        );
+        // Zero provider calls: the shots pin an unavailable route (see
+        // `keyframe_board`), so `submit_one` fails at `route::resolve` before it
+        // writes a Queued row or contacts a provider. No shot job of any index
+        // exists — only the three still jobs the test seeded (INCIDENT rule).
+        assert!(
+            !store
+                .jobs_in_storyboard("ready")
+                .unwrap()
+                .iter()
+                .any(|j| j.shot_index.is_some()),
+            "resume made no provider submit — no shot row was created"
         );
         // The "waiting" set's Queued still is never reconciled → stays parked.
         let waiting_kfs = crate::store::parse_keyframes(

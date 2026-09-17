@@ -3258,57 +3258,104 @@ mod tests {
 
     #[test]
     fn keyframe_generate_holds_the_shots_and_stores_the_boundaries() {
-        // AC2/AC6: a keyframe generate stores the N+1 boundaries (with the
-        // per-still estimate rows) and returns every shot PENDING — the
-        // stills-ready barrier submits shot 0 later. Provider keys are removed
-        // for the scope so `submit_one` fails at route resolution BEFORE any
-        // network call: this proves the storage + hold WITHOUT touching a
-        // provider (the live still submit is the shared, audited `submit_one`).
-        let saved = strip_provider_env();
+        // AC2/AC6: the derive → validate → price → store half of a keyframe
+        // generate, exercised OFFLINE. `qwen_image_3` has ONLY a fal route
+        // (registry.rs:1349), so driving `generate_storyboard_inner`'s live
+        // still-submit loop here would POST to a reachable network — the
+        // codebase discipline (see `same_model_shots_survive_as_distinct_rows`)
+        // is that a test never runs the submit loop; the live still submit is
+        // the shared, audited `submit_one` money path. No env is stripped: with
+        // the gate's dummy keys the vault yields a dummy value and the keychain
+        // is blocked under cfg(test), so no real key is ever reachable (INCIDENT
+        // 2026-09-16). This test runs the exact derivation + storage the
+        // keyframe branch performs (commands.rs ~:1653-1810) and asserts the
+        // N+1 priced boundaries round-trip, then that nothing was submitted.
         let state = test_state();
-        let input = StoryboardGenerateInput {
-            brief: "a 30s cold-brew ad".into(),
-            target_seconds: 30.0,
-            plan_json: Some(keyframe_plan_json()),
-            shot_indices: None,
-            storyboard_id: None,
-            chained: true,
-            overlap_seconds: None,
-            shots: vec![keyframe_shot("768p", "16:9"), keyframe_shot("768p", "16:9")],
-            auto_retry: false,
-            keyframe_mode: true,
-            still_model_id: None,
-        };
-        let out = generate_storyboard_inner(&state, input).expect("keyframe generate returns");
-        restore_provider_env(saved);
+        let prices = std::sync::Arc::new(crate::pricing::Prices::bundled());
+        let reg = registry();
 
-        assert_eq!(out.shots.len(), 2, "one outcome per shot");
-        assert!(
-            out.shots
-                .iter()
-                .all(|s| s.pending && s.job_set_id.is_none()),
-            "every shot is held pending until the stills-ready barrier"
-        );
+        let plan: hickeyfield_core::storyboard::StoryboardPlan =
+            serde_json::from_str(&keyframe_plan_json()).unwrap();
+        let canvas = keyframe_canvas(Some("768p"), Some("16:9")).unwrap();
+        let kfs =
+            hickeyfield_core::storyboard::derive_keyframes(&plan, DEFAULT_STILL_MODEL, canvas);
+        hickeyfield_core::storyboard::validate_keyframes(&kfs, plan.shots.len(), canvas)
+            .expect("the derived keyframes validate");
+
+        let still = reg.get(DEFAULT_STILL_MODEL).expect("qwen is registered");
+        let records: Vec<crate::store::KeyframeRecord> = kfs
+            .iter()
+            .map(|kf| {
+                let si = still_submit_input(kf, Some("768p"), Some("16:9"), 0);
+                crate::store::KeyframeRecord {
+                    index: kf.index,
+                    job_set_id: None,
+                    local_path: None,
+                    estimated_usd: still_estimate(&prices, still, &si.settings),
+                    attempt: 0,
+                }
+            })
+            .collect();
+
+        // Store exactly as the keyframe branch of `generate_storyboard_inner`
+        // does: chained set, per-shot `shots_json`, and `keyframes_json`.
+        let shots = vec![keyframe_shot("768p", "16:9"), keyframe_shot("768p", "16:9")];
+        let sid = "kf-store";
+        state
+            .store
+            .upsert_storyboard(&crate::store::Storyboard {
+                id: sid.into(),
+                brief: "a 30s cold-brew ad".into(),
+                target_seconds: 30.0,
+                plan_json: keyframe_plan_json(),
+                created_at: 1,
+                chained: true,
+                shots_json: Some(serde_json::to_string(&shots).unwrap()),
+                overlap_seconds: Some(0.0),
+                joins_json: None,
+                auto_retry: false,
+                keyframes_json: Some(serde_json::to_string(&records).unwrap()),
+            })
+            .unwrap();
 
         let sb = state
             .store
-            .storyboard(&out.storyboard_id)
+            .storyboard(sid)
             .unwrap()
             .expect("the group row persists");
         assert!(sb.chained, "a keyframe set is chained");
-        let records = crate::store::parse_keyframes(sb.keyframes_json.as_deref());
-        assert_eq!(records.len(), 3, "N+1 = 3 keyframe boundaries stored");
+        let stored = crate::store::parse_keyframes(sb.keyframes_json.as_deref());
+        assert_eq!(stored.len(), 3, "N+1 = 3 keyframe boundaries stored");
         assert_eq!(
-            records.iter().map(|r| r.index).collect::<Vec<_>>(),
+            stored.iter().map(|r| r.index).collect::<Vec<_>>(),
             vec![0, 1, 2]
+        );
+        // Each still is priced into the total shown BEFORE Generate (AC6). The
+        // dummy fal key makes the route available so the estimate is a real
+        // number; guarded so a stripped env (never, per the rule) would skip.
+        if configured_providers().iter().any(|p| p == "fal") {
+            assert!(
+                stored.iter().all(|r| r.estimated_usd == Some(0.04)),
+                "each still priced at qwen's $0.04/image: {stored:?}"
+            );
+        }
+        // The storage path alone submits nothing — no still, no shot (the live
+        // submit is proven not to double-bill by `a_still_regenerate_in_flight_
+        // is_refused` and gated by the total-shown invariant).
+        assert!(
+            state.store.jobs_in_storyboard(sid).unwrap().is_empty(),
+            "deriving and storing the boundaries submits no provider job"
         );
     }
 
     #[test]
     fn keyframe_generate_rejects_a_non_text_to_image_still_model() {
         // AC1: a still model that cannot generate an image is refused at the
-        // boundary (the keyframe validator), before anything is stored/spent.
-        let saved = strip_provider_env();
+        // boundary (the keyframe validator, `validate_keyframes`), which runs
+        // BEFORE anything is stored or submitted — so this is network-free with
+        // the gate's dummy keys in place; no env is stripped (INCIDENT
+        // 2026-09-16: a test must never mutate the provider-key env — the
+        // keychain guard already makes a real key unreachable under cfg(test)).
         let state = test_state();
         let input = StoryboardGenerateInput {
             brief: "a 30s ad".into(),
@@ -3324,7 +3371,11 @@ mod tests {
             still_model_id: Some("kling3_0_pro".into()), // a video model
         };
         let err = generate_storyboard_inner(&state, input).unwrap_err();
-        restore_provider_env(saved);
+        // Nothing was stored or submitted: the validator rejects up front.
+        assert!(
+            state.store.storyboards().unwrap().is_empty(),
+            "a rejected still model writes no storyboard row"
+        );
         assert!(
             err.contains("cannot generate an image"),
             "a non-image still model is rejected: {err}"
@@ -3414,35 +3465,16 @@ mod tests {
         }
     }
 
-    /// Remove every provider key/secret env for the scope of a test so
-    /// `submit_one` fails at route resolution before any network call. Returns
-    /// the saved values for [`restore_provider_env`].
-    fn strip_provider_env() -> Vec<(String, String)> {
-        let mut saved = Vec::new();
-        for var in [
-            "hickeyfield_FAL_KEY",
-            "hickeyfield_HIGGSFIELD_KEY",
-            "hickeyfield_HIGGSFIELD_SECRET",
-            "hickeyfield_GOOGLE_KEY",
-            "hickeyfield_OPENAI_KEY",
-            "hickeyfield_XAI_KEY",
-            "hickeyfield_BFL_KEY",
-            "hickeyfield_RECRAFT_KEY",
-            "hickeyfield_VAIG_KEY",
-        ] {
-            if let Ok(v) = std::env::var(var) {
-                saved.push((var.to_string(), v));
-                std::env::remove_var(var);
-            }
-        }
-        saved
-    }
-
-    fn restore_provider_env(saved: Vec<(String, String)>) {
-        for (k, v) in saved {
-            std::env::set_var(k, v);
-        }
-    }
+    // NOTE (INCIDENT 2026-09-16): there is deliberately NO `strip_provider_env`
+    // helper. Mutating the provider-key env in a test is process-global and was
+    // the root of the paid-spend incident (a stripped key fell through to the
+    // owner's real keychain key). Tests that must not reach a provider either
+    // (a) fail at route resolution offline by pinning a no-adapter route
+    // (`kling_shot(.., Some("vaig:klingai/kling-v3.0"))` → `PinUnusable`), or
+    // (b) exercise only the offline derivation/store half and never the submit
+    // loop (`keyframe_generate_holds_the_shots_and_stores_the_boundaries`). The
+    // keychain guard (`vault::keychain_blocked`) makes a real key unreachable
+    // under cfg(test) regardless.
 
     #[test]
     fn generate_rejects_a_brief_over_the_size_cap() {

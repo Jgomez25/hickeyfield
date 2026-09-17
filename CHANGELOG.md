@@ -33,6 +33,18 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   blocks paid work, and a join that cannot be scored is left unscored, never counted as a
   failure.
 
+- **A storyboard can now be generated in keyframe-anchored mode.** The app renders one still
+  per shot boundary (a shared world block + the shots' hold descriptions), prices every still
+  into the total shown before anything is spent, and anchors each shot on *both* ends — the
+  previous clip's true last frame in, the next planned still out — so every join is pinned
+  from both sides and scored against the ideal tier plus an end-frame-adherence score (the
+  clip's actual last frame vs its planned still). Money honesty: the total includes the
+  stills; a failed still parks the set with a clear error and never submits a shot against a
+  missing anchor; stills and shots have separate ≤2 auto-retry bounds; scoring spends nothing
+  (local ffmpeg on saved frames). The toggle enables only when every shot's model can take an
+  end frame and an image model is available; the threshold calibration on real footage stays
+  human-run.
+
 ### Changed
 
 - **The app can now send a required setting a provider does not expose as a control.** Some

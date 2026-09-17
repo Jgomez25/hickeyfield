@@ -155,6 +155,7 @@ describe("storyboard bridge", () => {
       createdAt: 5,
       joins: [],
       autoRetry: false,
+      keyframes: [],
     });
 
     invokeMock.mockRejectedValueOnce(new Error("no command"));

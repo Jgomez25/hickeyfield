@@ -449,4 +449,126 @@ describe("Storyboard", () => {
       expect.objectContaining({ chained: true, autoRetry: true }),
     );
   });
+
+  // ── S17 (AC5): the Keyframe toggle, and the stills-inclusive total ────────
+
+  function keyframeShots(endFlags: boolean[]): Shot[] {
+    return endFlags.map((cap, i) => ({
+      title: `Shot ${i + 1}`,
+      prompt: `beat ${i + 1}`,
+      seconds: 15,
+      camera: null,
+      modelId: "kling_3_0",
+      role: i === 0 ? "start" : i === endFlags.length - 1 ? "end" : "middle",
+      continuity: i === 0 ? null : { lastFrameOf: i - 1 },
+      advisories: [],
+      chainable: true,
+      endFrameCapable: cap,
+    }));
+  }
+
+  async function draftKeyframe(
+    planShots: Shot[],
+    extra: Partial<Parameters<typeof Storyboard>[0]> = {},
+  ) {
+    const props = base({
+      onPlan: vi.fn(async () => ({
+        brief: "b",
+        targetSeconds: 30,
+        useCase: "text-to-video",
+        shots: planShots,
+      })),
+      ...extra,
+    });
+    render(<Storyboard {...props} />);
+    typeInto(
+      container.querySelector<HTMLTextAreaElement>("textarea.storyboard-brief")!,
+      "a keyframe ad",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-draft")!.click();
+    });
+    await flush();
+    return props;
+  }
+
+  it("the keyframe toggle enables only when every shot takes an end frame and an image model exists (S17)", async () => {
+    // Every shot end-frame-capable + an image model available → enabled.
+    await draftKeyframe(keyframeShots([true, true]), {
+      imageModelAvailable: true,
+    });
+    let toggle = container.querySelector<HTMLInputElement>(
+      ".storyboard-keyframe-toggle input",
+    )!;
+    expect(toggle).not.toBeNull();
+    expect(toggle.disabled).toBe(false);
+    expect(container.querySelector(".storyboard-keyframe-note")).toBeNull();
+
+    // One shot cannot take an end frame → disabled, with the end-frame note.
+    await draftKeyframe(keyframeShots([true, false]), {
+      imageModelAvailable: true,
+    });
+    toggle = container.querySelector<HTMLInputElement>(
+      ".storyboard-keyframe-toggle input",
+    )!;
+    expect(toggle.disabled).toBe(true);
+    expect(
+      container.querySelector(".storyboard-keyframe-note")!.textContent,
+    ).toContain("end frame");
+
+    // Every shot end-capable but no image model → disabled, image-model note.
+    await draftKeyframe(keyframeShots([true, true]), {
+      imageModelAvailable: false,
+    });
+    toggle = container.querySelector<HTMLInputElement>(
+      ".storyboard-keyframe-toggle input",
+    )!;
+    expect(toggle.disabled).toBe(true);
+    expect(
+      container.querySelector(".storyboard-keyframe-note")!.textContent,
+    ).toContain("No image model");
+  });
+
+  it("the total includes the stills, and an unpriced still marks it unpriced (S17)", async () => {
+    // Two 15s shots at $0.1/s → $1.50 each = $3.00 in shots. Keyframe on adds
+    // N+1 = 3 stills at $0.04 → the total must exceed the shots-only $3.00.
+    const props = await draftKeyframe(keyframeShots([true, true]), {
+      imageModelAvailable: true,
+      stillEstimate: { usd: 0.04, basis: "" },
+    });
+    const totalOff = container.querySelector<HTMLElement>(".storyboard-total")!;
+    const shotsOnly = totalOff.textContent ?? "";
+    // Turn keyframe mode on.
+    const toggle = container.querySelector<HTMLInputElement>(
+      ".storyboard-keyframe-toggle input",
+    )!;
+    act(() => toggle.click());
+    const totalOn = container.querySelector<HTMLElement>(".storyboard-total")!;
+    expect(totalOn.textContent).not.toEqual(shotsOnly);
+    // $3.00 shots + 3 × $0.04 stills = $3.12.
+    expect(totalOn.textContent).toContain("3.12");
+
+    // Generate carries keyframeMode.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-generate")!.click();
+    });
+    await flush();
+    expect(props.onGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({ keyframeMode: true, chained: true }),
+    );
+  });
+
+  it("an unpriced still (a GPT tier) marks the whole total unpriced, never $0 (S17)", async () => {
+    await draftKeyframe(keyframeShots([true, true]), {
+      imageModelAvailable: true,
+      stillEstimate: null, // a GPT tier → unpriced
+    });
+    const toggle = container.querySelector<HTMLInputElement>(
+      ".storyboard-keyframe-toggle input",
+    )!;
+    act(() => toggle.click());
+    const total = container.querySelector<HTMLElement>(".storyboard-total")!;
+    expect(total.getAttribute("data-unpriced")).toBe("true");
+    expect(total.textContent).not.toContain("$0.00");
+  });
 });

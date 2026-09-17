@@ -7,7 +7,7 @@ import type {
   StoryboardRender,
 } from "../types";
 import { gradientDataUri } from "../lib/placeholder";
-import { posterFor } from "../lib/media";
+import { posterFor, displayUrl } from "../lib/media";
 import { isFailure } from "../lib/status";
 import { formatUsd, stageCostCaption } from "../lib/cost";
 import { EmptyState } from "./EmptyState";
@@ -118,6 +118,71 @@ function titleOf(job: JobSet): string {
 function thumbFor(job: JobSet): string {
   const first = job.results?.[0];
   return first ? posterFor(first) : gradientDataUri(job.id);
+}
+
+/**
+ * S17: the keyframe-anchored set's still boundaries, one card per boundary
+ * (K0..KN). A settled still shows its downloaded PNG thumbnail; a still still in
+ * flight shows a "rendering" note; a **failed** still shows the PARKED state —
+ * the set will not submit a shot against a missing anchor (D2) — and every card
+ * offers **Regenerate still** (D5). The still's live status is read from its own
+ * job row (`jobSetId`), so "parked" vs "rendering" is honest. Returns null for a
+ * non-keyframe set (no boundaries), so a plain S13/S15/S16 set is unchanged.
+ */
+function keyframeStills(
+  storyboard: Storyboard,
+  jobs: JobSet[],
+  onRegenerateStill?: (storyboardId: string, index: number) => void,
+) {
+  const keyframes = storyboard.keyframes ?? [];
+  if (keyframes.length === 0) return null;
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+  return (
+    <div className="storyboard-keyframe-stills" data-keyframe-set={storyboard.id}>
+      {keyframes.map((kf) => {
+        const job = kf.jobSetId ? jobById.get(kf.jobSetId) : undefined;
+        const failed = job != null && isFailure(job.status);
+        const settled = Boolean(kf.localPath);
+        const state = settled ? "ready" : failed ? "parked" : "pending";
+        return (
+          <div
+            className="storyboard-keyframe-card"
+            data-keyframe={kf.index}
+            data-state={state}
+            key={kf.index}
+          >
+            <span className="storyboard-keyframe-index">K{kf.index}</span>
+            {settled ? (
+              <img
+                className="storyboard-keyframe-thumb"
+                src={displayUrl({
+                  url: "",
+                  kind: "image",
+                  localPath: kf.localPath ?? null,
+                })}
+                alt={`Keyframe ${kf.index} still`}
+              />
+            ) : (
+              <span className="storyboard-keyframe-state" data-state={state}>
+                {failed
+                  ? "still failed — the set is parked"
+                  : "still rendering…"}
+              </span>
+            )}
+            {onRegenerateStill ? (
+              <button
+                type="button"
+                className="storyboard-regenerate-still"
+                onClick={() => onRegenerateStill(storyboard.id, kf.index)}
+              >
+                Regenerate still
+              </button>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   listStoryboardRenders,
   renderStoryboard,
   subscribeRenderProgress,
+  regenerateKeyframeStill,
   openResult,
   type KeyState,
 } from "./api";
@@ -551,6 +552,28 @@ export default function App() {
       }),
     [models, settings],
   );
+  // S17: the per-still price for the keyframe-mode total (D6). The default
+  // still model is `qwen_image_3` on its fal route; it is an image model, so it
+  // is not in the tab-filtered `models` list — estimate it by its known route.
+  // `null` (no key / unpriced) marks the total "unpriced", never $0.
+  const [stillEstimate, setStillEstimate] = useState<CostEstimate | null>(null);
+  useEffect(() => {
+    let live = true;
+    void estimateCost({
+      modelId: "qwen_image_3",
+      routeId: "fal:alibaba/qwen-image-3/text-to-image",
+      settings,
+    })
+      .then((e) => {
+        if (live) setStillEstimate(e);
+      })
+      .catch(() => {
+        if (live) setStillEstimate(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [settings]);
   const storyPreview = useCallback(
     (shot: Shot): Promise<PromptPreview> =>
       previewPrompt({
@@ -590,6 +613,23 @@ export default function App() {
         setRenderProgress((prev) => ({ ...prev, [p.storyboardId]: p }));
         if (p.done) void listStoryboardRenders().then(setRenders);
       }),
+    [],
+  );
+
+  // S17: regenerate one keyframe boundary's still. Prices it before it spends
+  // (the total-shown invariant is enforced server-side in `submit_one`), then
+  // refreshes the set headers and jobs so the new still streams into Library.
+  const onRegenerateStill = useCallback(
+    (storyboardId: string, index: number) => {
+      void regenerateKeyframeStill(storyboardId, index)
+        .then(() => {
+          void listJobs().then(setJobs);
+          void listStoryboards().then(setStoryboards);
+        })
+        .catch((e: unknown) => {
+          setSubmitError(e instanceof Error ? e.message : String(e));
+        });
+    },
     [],
   );
 
@@ -825,6 +865,7 @@ export default function App() {
             onPreview={storyPreview}
             onGenerate={generateStoryboard}
             onGenerated={onStoryboardGenerated}
+            stillEstimate={stillEstimate}
           />
         ) : view === "studio" ? (
           <>
@@ -892,6 +933,7 @@ export default function App() {
               renderProgress={renderProgress}
               onRender={onRenderStoryboard}
               onOpenResult={(path) => void openResult(path)}
+              onRegenerateStill={onRegenerateStill}
             />
 
             <MetaRail

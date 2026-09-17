@@ -842,6 +842,64 @@ mod tests {
         assert!(!body.contains_key("prompt_expansion_mode"));
     }
 
+    /// The Qwen Image 3 text-to-image input surface (the S17 default keyframe
+    /// still model), as fal published it 2026-09-16
+    /// (`.forge/slices/S17-keyframe-anchored-mode/schemas/qwen_image-3_text-to-image.json`):
+    /// `image_size` is an `anyOf` of the `{width,height}` object and a
+    /// named-preset enum, defaulting to `square_hd`.
+    const QWEN_IMAGE_3_T2I: &str = r##"{"components":{"schemas":{"QwenImage3TextToImageInput":{"properties":{
+        "prompt":{"type":"string"},
+        "image_size":{"anyOf":[{"$ref":"#/components/schemas/ImageSize"},{"enum":["square_hd","square","portrait_4_3","portrait_16_9","landscape_4_3","landscape_16_9"],"type":"string"}],"default":"square_hd"},
+        "seed":{"type":"integer"}},
+        "required":["prompt"]}}}}"##;
+
+    #[test]
+    fn the_keyframe_still_image_size_object_lands_in_the_qwen_body() {
+        // S17 §10.3 (the design's flagged weak point — "the one thing this
+        // design could not run"): the derived still canvas is written as a
+        // free-form `image_size: {width, height}` object through the override
+        // seam. Qwen Image 3 declares `image_size` (an anyOf of that object plus
+        // named presets), so the schema gate keeps it and the object reaches the
+        // wire body verbatim — no rescale/crop of the anchor. Keyless.
+        let schema = parsed(QWEN_IMAGE_3_T2I);
+        assert!(schema.accepts("image_size"), "qwen declares image_size");
+        let mut overrides = serde_json::Map::new();
+        overrides.insert(
+            "image_size".into(),
+            serde_json::json!({ "width": 1366, "height": 768 }),
+        );
+        overrides.insert("seed".into(), serde_json::json!(7u32));
+        let mut body = serde_json::Map::new();
+        body.insert("prompt".into(), serde_json::json!("a can, label to camera"));
+        apply_overrides(&overrides, Some(&schema), &mut body);
+        assert_eq!(
+            body.get("image_size"),
+            Some(&serde_json::json!({ "width": 1366, "height": 768 })),
+            "the {{width,height}} still canvas lands verbatim in the body"
+        );
+        assert_eq!(body.get("seed"), Some(&serde_json::json!(7u32)));
+    }
+
+    #[test]
+    fn a_still_image_size_is_dropped_when_the_endpoint_does_not_declare_it() {
+        // Defense (the S9 harm): the same canvas override on an endpoint that
+        // does NOT declare `image_size` (e.g. the H3 Max video surface) is swept
+        // away, so a still canvas can never 422 a model that has no such key.
+        let schema = parsed(H3_MAX_T2V);
+        assert!(!schema.accepts("image_size"));
+        let mut overrides = serde_json::Map::new();
+        overrides.insert(
+            "image_size".into(),
+            serde_json::json!({ "width": 1366, "height": 768 }),
+        );
+        let mut body = serde_json::Map::new();
+        apply_overrides(&overrides, Some(&schema), &mut body);
+        assert!(
+            !body.contains_key("image_size"),
+            "an endpoint without image_size drops the override"
+        );
+    }
+
     #[test]
     fn a_constant_is_sent_when_no_schema_is_cached() {
         // Offline: fal requires the key, so omitting it is a guaranteed 422.

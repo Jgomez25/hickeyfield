@@ -74,6 +74,11 @@ export function Storyboard({
     storyboardId?: string;
     chained?: boolean;
     autoRetry?: boolean;
+    /** S17: render a still per shot boundary and anchor every shot on both ends.
+     * Chained by nature; only sent on a first generate-all. */
+    keyframeMode?: boolean;
+    /** S17: the still model (default `qwen_image_3` server-side when omitted). */
+    stillModelId?: string;
   }) => Promise<StoryboardResult>;
   /** Called after a successful generate-all (App switches to the Library). */
   onGenerated: (result: StoryboardResult) => void;
