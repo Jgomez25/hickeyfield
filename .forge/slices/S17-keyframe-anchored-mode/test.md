@@ -170,3 +170,98 @@ Money safety is proven three independent ways (grep, `cfg(test)` keychain block,
 every provider host forced through a dead proxy). No test in this suite can reach a provider.
 
 VERDICT: PASS
+
+---
+
+## RE-TEST (HEAD 5b353c0)
+
+Repair commit `5b353c0` ("S17 repair 1") landed after review B1/M1/M2/M3. I re-ran the whole gate at
+this HEAD (working tree clean) with the mandated env `HICKEYFIELD_NO_KEYCHAIN=1` + dummy `hickeyfield_*_KEY=x`
+on every command, and kept the unroutable-proxy discipline (`HTTPS_PROXY=http://127.0.0.1:9`, only
+`127.0.0.1,localhost` exempt) on the suite runs. `git show 5b353c0`: `parseJoinRecords` snake→camel in
+api.ts; end badge gated on `isKeyframeSet` in Library.tsx; `end_frame_capable` on ANY route (chain.rs +
+storyboard.rs `plan`); `validate_keyframes` adds a `route::resolve` check; `cut_threshold(is_keyframe)`
+gates keyframe cut scores on the IDEAL tier.
+
+### Gate (all pasted from my runs)
+```
+cargo test --workspace (dummy keys + dead proxy, localhost exempt):
+   hickeyfield-core lib   757 passed; 0 failed; 16 ignored
+   live_fal_pricing       0 passed; 1 ignored
+   audit_fal / fal_diff   6 / 2 passed
+   hickeyfield_tauri_lib  185 passed; 0 failed; 3 ignored
+   => 757+6+2+185 = 950 passed, 0 failed  (matches the coordinator's 950/0; zero provider reach)
+cargo test -p hickeyfield-core --lib ffmpeg -- --ignored   -> 7 passed; 0 failed
+cargo test -p hickeyfield-tauri --lib -- --ignored:
+   chain::end_adherence_reads_the_actual_last_frame     ... ok
+   chain::score_join_cleans_up_the_scratch_first_frame  ... ok
+   harness::a_banana_gets_a_cinematic_rewrite...        ... FAILED (OLLAMA_ENHANCE_MODEL unset; env-only, unchanged)
+cargo fmt --all --check                    -> clean (FMT_OK)
+cargo clippy --workspace --all-targets -- -D warnings  -> Finished, no warnings/errors
+./scripts/lint-provenance.py               -> PASS (no media hosts; no corpus match)
+audit_fal (keyless, normal net)            -> RANGE MISMATCH 0 | UNREACHABLE 0 | CHECKED 70 (unchanged)
+ui: vitest --pool=forks --singleFork       -> 23 files, 312 passed, 0 failed
+ui: pnpm build                             -> tsc --noEmit + vite: "76 modules transformed; built in 3.30s", exit 0
+```
+
+### Snake_case joins_json → Library badge (review B1) — verified via the shipped tests
+The repair's new tests drive the EXACT wire shape (not camelCase fixtures), and all pass in the 312 run:
+- `api.test.ts > maps the S17 end-adherence fields snake_case → camelCase (B1)` — feeds
+  `joins_json` containing `"end_ssim":0.91 … "end_pass":true` through `listStoryboards`; asserts
+  `joins[0].endSsim === 0.91`, `endPass === true`, cut half preserved (`ssim === 0.93`).
+- `Library.test.tsx > renders the end badge from a REAL snake_case joins_json through the production
+  mapping (S17 B1)` — same wire string via `parseJoinRecords`, keyframe set → `.storyboard-end`
+  renders, text contains "0.91", `data-pass="true"`.
+- `Library.test.tsx > shows NO end badge for a scored NON-keyframe set (S17 B1 guard)` — a scored
+  S16 set with `"end_ssim":null … "end_pass":null` and NO keyframe boundaries → `.storyboard-join`
+  present, `.storyboard-end` is null (badge suppressed).
+- `Library.test.tsx > an unscored end shows a dash, never zero` — keyframe set, `end_ssim:null` →
+  "end —", `data-pass="unscored"`.
+- Pre-S17 `joins_json` (cut fields only, no `end_*`): covered by `api.test.ts > listStoryboards maps
+  snake_case rows and degrades to [] on failure` (a cut-only row parses; end fields → null). This test
+  stayed green even under mutation U1, confirming a stored pre-S17 set still parses.
+
+### Mutation checks (fresh scratch copy OUTSIDE the repo, `scratchpad/mut2`, deleted after)
+- **U1** `parseJoinRecords` reads only `endSsim` (drops the `end_ssim` snake mapping) -> FAILED both
+  `maps the S17 end-adherence fields snake_case → camelCase` AND `renders the end badge from a REAL
+  snake_case joins_json`. KILLED — the snake→camel remap is non-vacuous.
+- **U2** remove the `if (!isKeyframeSet) return null` gate in `endAdherenceSummary` -> FAILED
+  `shows NO end badge for a scored NON-keyframe set`. KILLED — the keyframe-set gate is non-vacuous.
+- **R1** `cut_threshold` returns `CONTINUITY_FLOOR` regardless -> FAILED
+  `the_cut_score_reads_the_ideal_tier_for_a_keyframe_set_and_the_floor_otherwise` ("keyframe → ideal",
+  chain.rs:1581). KILLED — the ideal/floor tier selection is non-vacuous.
+- **R2** `end_frame_capable` reverted to `routes.first()` -> FAILED
+  `end_frame_capability_reads_any_route_not_just_the_first` ("a later route binds End → capable",
+  chain.rs:1644). KILLED — the any-route capability is non-vacuous.
+- **R3** `validate_keyframes` runnable = `use_case::supports(TextToImage)` only (route::resolve
+  removed) -> **SURVIVED**: `a_still_model_without_a_runnable_route_is_rejected` still passed.
+  Root cause: `use_case::supports` -> `route_serves` already checks `route.provider.has_adapter()`
+  (use_case.rs:206), and `z_image`'s only route is `local:z-image` with no adapter, so
+  `supports(z_image, TextToImage)` is ALREADY `false` — the model is rejected by `supports` before the
+  added `route::resolve` line runs. The behavioral requirement (a still model with no runnable route is
+  refused; a routable-but-unpriced GPT tier is accepted) IS enforced and the test asserts it correctly;
+  but the test does NOT isolate the repair's new `route::resolve` line, and that line appears redundant
+  (any model passing `supports` already has an adapter-backed serving route that `resolve` will find).
+  Non-blocking: no money/correctness regression, the AC holds; recommend a follow-up test with a model
+  that passes `supports` yet fails `resolve` if such a case is ever reachable.
+
+### Money safety at this HEAD
+- `git show 5b353c0` introduces NO `remove_var` / `strip_provider_env` / empty-key `set_var` (grep of
+  the diff's added lines: none). Tree-wide `remove_var` still only in vault.rs guard tests. vault.rs is
+  untouched by the repair — `cfg(test)` keychain block intact.
+- The 950-test workspace run was executed with every external host forced through the dead proxy
+  (localhost exempt) and stayed green -> zero provider reach still holds.
+
+### Findings at re-test
+- R3 survivor (validator route::resolve line redundant / its test doesn't isolate it) — non-blocking,
+  documented above; the requirement is still enforced by `use_case::supports`.
+- Carried forward from the first pass (unchanged by the repair): the M2-class self-skip in
+  `a_no_end_frame_model_falls_back...`; AC2 still-submit loop / `image_size` seam tested below the full
+  live submit (money-rule inherent); `imageModelAvailable` default `true`; `tauri build` not re-run.
+
+The B1 defect the reviewer found (end-adherence badge never rendering on real snake_case data, fixtures
+bypassing the wire mapping) is fixed and now guarded by production-path tests that fail under mutation.
+The four behavioral changes (snake→camel mapping, keyframe-set badge gate, ideal-tier cut gating,
+any-route capability) are non-vacuously tested. Gate is green; zero provider reach re-confirmed.
+
+VERDICT: PASS

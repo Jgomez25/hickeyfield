@@ -180,3 +180,84 @@ The one blocking issue:
   fixtures use camelCase and bypass the real parse path.**
 
 VERDICT: FAIL
+
+---
+
+## RE-REVIEW (HEAD 5b353c0)
+
+Repair round 1. Re-reviewed `git show 5b353c0` (read-only) and re-ran the affected tests with
+`HICKEYFIELD_NO_KEYCHAIN=1` + dummy `hickeyfield_*_KEY=x`. All four targeted findings are fixed,
+each with a non-vacuous test that drives the real (previously-broken) path.
+
+Verified myself:
+- `cargo test -p hickeyfield-core --lib storyboard` → 40 passed / 0 failed (was 39; +M2 test).
+- `cargo test -p hickeyfield-tauri --lib chain::` → 21 passed / 0 failed / 2 ignored
+  (+M1 any-route test, +M3 cut-tier test).
+- `pnpm exec vitest run src/api.test.ts src/components/Library.test.tsx` → 23 passed / 0 failed
+  (+B1 wire-shape tests).
+
+### B1 — FIXED (verified end to end)
+- `ui/src/api.ts:868` adds `parseJoinRecords(json)` (snake→camel, accepts both spellings like
+  `parseKeyframeRecords`); `listStoryboards` at `api.ts:838` now routes joins through it.
+- `ui/src/components/Library.tsx:49` `endAdherenceSummary` now takes `isKeyframeSet` and gates on
+  `(g.storyboard.keyframes?.length ?? 0) > 0` (`Library.tsx:329`) instead of field presence.
+- Wire-shape proven by tests that feed the **exact** snake_case string Rust emits
+  (`…,"end_ssim":0.91,"end_pass":true`) through `parseJoinRecords` into the component
+  (`Library.test.tsx` "renders the end badge from a REAL snake_case joins_json…"; `api.test.ts`
+  "maps the S17 end-adherence fields snake_case → camelCase"), plus a guard that a **scored
+  non-keyframe** set (`end_ssim:null`, no keyframes) shows **no** end badge. These exercise the
+  production `JSON.parse` path the original tests bypassed, so the false-green is closed.
+- Stored S16 sets still parse: `parseJoinRecords` maps the single-word cut fields identically
+  (`ssim`, `pass`, …) and `end_* ?? null`, so a pre-S17 `joins_json` (no end keys) yields the same
+  `JoinRecord` shape it did before; the S16 `joinSummary` badge is unaffected. Confirmed by the
+  passing api/Library suites (which include the existing S16 join fixtures).
+
+**Judgement — `isKeyframeSet` gating vs Rust `skip_serializing_if`:** the chosen `keyframes.length
+> 0` gate is the correct primary signal and is preferable here. End-frame adherence is a
+keyframe-mode concept, so "is this a keyframe set" is the semantic truth; field presence is not,
+precisely because `JoinRecord`'s end-* are `#[serde(default)]` and Rust emits `end_ssim:null` on
+every post-S17 join. Adding `skip_serializing_if = "Option::is_none"` on the Rust side would only
+shrink the JSON and make presence meaningful — the UI would *still* need a positive keyframe
+signal to decide whether to render the end column, which `keyframes.length` already supplies. So
+`skip_serializing_if` is an optional storage nicety, not a correctness requirement; the current
+approach is sound and I do not require it.
+
+### M1 — FIXED
+- `storyboard.rs:604` and `chain.rs:94` `end_frame_capable` now use `model.routes.iter().any(…)`
+  instead of `routes.first()`. Residual-safety check: I confirmed `media::bind`
+  (`media.rs:462-468`) returns `Err(BindError::UnsupportedRole)` when the *resolved* route cannot
+  bind the End role, so even if `end_frame_capable` (any-route) is true but `submit_one` resolves
+  a non-end route, the shot errors **before** any POST — no silent full-price frame drop (the S9
+  harm). Test `end_frame_capability_reads_any_route_not_just_the_first` prepends a `NO_END_FRAME`
+  slug so `routes.first()` is non-end and asserts the model is still capable, then strips to the
+  non-end route only and asserts it is not — genuinely exercises the `any` semantics.
+
+### M2 — FIXED
+- `storyboard.rs:800` `validate_keyframes` now requires `use_case::supports(TextToImage)` **and** a
+  resolvable adapter-backed route (`route::resolve(Cheapest)` over `ProviderId`s with
+  `has_adapter()`, price closure `|_| Some(0.0)` so resolution is key/price-independent). Matches
+  D1/D6: `z_image` (Local, no adapter) is rejected; a routable-but-unpriced GPT tier passes and is
+  merely labelled "unpriced". Test `a_still_model_without_a_runnable_route_is_rejected` covers both.
+
+### M3 — FIXED
+- `chain.rs:340` adds `cut_threshold(is_keyframe)` → `CONTINUITY_IDEAL` for a keyframe set,
+  `CONTINUITY_FLOOR` otherwise; `score_join` gates the cut `pass` through it (`chain.rs:462`),
+  end adherence stays IDEAL. Test `the_cut_score_reads_the_ideal_tier_for_a_keyframe_set_and_the_
+  floor_otherwise` uses a mid-band 0.85 SSIM that passes the floor but fails the ideal — proves
+  `should_auto_retry` now fires on the right tier per set type.
+
+### Still open (non-blocking, unchanged from the first review)
+- M4 — the live still-submit **success** path of `generate_storyboard_inner`'s keyframe branch
+  still has no offline test (documented in implement.md as a fake-provider-seam follow-up; the
+  store/barrier halves are covered). Acceptable as a recorded follow-up.
+- M5 (JS derivation duplication, preview-only), M6 (`stillEstimate === null` conflates
+  unpriced-vs-transient in the pre-generate total), M7 (design-doc canvas example drift) —
+  cosmetic/debt, unchanged.
+- New minor: `Library.tsx` `keyframeStills` passes `displayUrl({ url: "", … })`, which logs a
+  React "empty string passed to src" warning in the settled-still path when `localPath` is absent
+  in a fixture; harmless, but pass `null` rather than `""`. Not blocking.
+
+The B1 blocker is resolved with a regression test on the real wire shape, S16 sets still parse,
+and M1–M3 are fixed with non-vacuous tests; no blocker or critical-path major remains.
+
+VERDICT: PASS

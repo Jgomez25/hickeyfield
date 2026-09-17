@@ -269,3 +269,12 @@ mandatory slice; tracked here for prioritization.
 - **S16 follow-ups:** threshold calibration on ONE real paid 2×15 set (human-run, owner's key; then adjust
   the named constants); world-block text editor + per-shot Regenerate button on the Storyboard card (UI
   polish; the action lives on the Library set item); world rules are opt-in on a non-empty world block.
+
+- **S18 live-spend gate (NEXT, from the incident review):** `HICKEYFIELD_ALLOW_SPEND=1` required by every
+  provider client / submit path (the packaged app sets it at startup); `first_light.rs` reads raw `FAL_KEY`
+  and bypasses the vault — must refuse without the flag and lose the "copy your keychain key" docstring;
+  repo-wide guard test that no credential is read outside vault.rs and no test strips `hickeyfield_*_KEY`;
+  fake-provider-client seam so the live still/shot submit loops can be unit-tested offline (S17 M4).
+- **S19 shot trim handles** (owner): per-shot in/out before stitching; total recomputed vs ±10%.
+- **S17 minors:** validator's resolvable-route line is redundant with `use_case::supports` (keep or fold);
+  `imageModelAvailable` default true; threshold calibration on one real paid 2×15 keyframe set (human-run).

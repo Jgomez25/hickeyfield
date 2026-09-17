@@ -125,8 +125,9 @@
     {
       "id": "S17-keyframe-anchored-mode",
       "title": "keyframe-anchored-mode",
-      "status": "in-progress",
-      "started": "2026-09-16"
+      "status": "released",
+      "started": "2026-09-16",
+      "branch": "forge/s17-keyframe"
     }
   ]
 }

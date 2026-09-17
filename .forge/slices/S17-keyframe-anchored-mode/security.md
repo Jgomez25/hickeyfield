@@ -162,3 +162,75 @@ adds is priced, gated, bounded, and parks on failure. The one MEDIUM is a
 pre-existing, out-of-slice example not reachable under the standing agent rules.
 
 VERDICT: PASS
+
+## RE-CHECK (HEAD 5b353c0)
+
+Re-reviewed repair round 1 (`git show 5b353c0`): join-record snake→camel
+parsing, `end_frame_capable` on any route, a priced/resolvable still-model gate,
+and keyframe joins scored on the ideal tier. No source changed by me. All four
+requested foci verified.
+
+**(1) `parseJoinRecords` in `ui/src/api.ts:875` — no untrusted-text rendering
+path added.** The parser maps `joins_json` fields into a typed `JoinRecord`:
+`ssim`/`psnr`/`dy`/`du`/`dv`/`endSsim`…`endDv` are numbers-or-null, `pass`/
+`endPass` booleans-or-null, `applied` boolean, `attempt` number, `index` number,
+`kind` a `"continuity"|"crossfade"` enum. No field flows to markup as raw HTML.
+The consumer `Library.endAdherenceSummary` (`Library.tsx:49-88`) renders only
+`min.toFixed(2)` (a number) and static string literals through JSX text nodes —
+React auto-escapes these. Grep for `dangerouslySetInnerHTML`/`innerHTML` across
+the UI delta and `Library.tsx`/`api.ts`: none. `joins_json` is server-written,
+and even so nothing here trusts it as text. Clear. The badge-gating fix
+(`Library.tsx:326-330`, key off `keyframes.length > 0` instead of `endSsim !==
+undefined`) is a correctness fix with no security surface.
+
+**(2) `end_frame_capable` now considers any route (`chain.rs:92-103`,
+`storyboard.rs:604`) — the end frame is still refused before any POST on a route
+that cannot take it.** The permissive `routes.iter().any(...)` only decides
+whether to ATTACH the End media; the resolved route is re-validated at
+request-assembly, before the HTTP POST, in `src-tauri/src/app.rs::assemble`:
+`client_for(route.id())` returns a `JobError::Permanent` ("no credentials") when
+the resolved route's provider is unkeyed (`app.rs:276-280`) — so a "route without
+the key" fails before bind, before upload, before POST. Then `media::bind`
+(`app.rs:292`, "Bind before uploading") calls `can_bind` for the RESOLVED route's
+slug/dialect and returns `BindError::UnsupportedRole` →
+`JobError::Permanent` (`media.rs:462-467`) if that route cannot take the End
+role. Both the fal `takes_no_end_frame` guard (`media.rs:404`) and the mode table
+back this. No silent full-price drop (the S9 harm), no wrong-endpoint attach: the
+POST at `clients.rs:194` is never reached. Fallback advisory
+(`prepare_next_shot_keyframe`) still covers the model-level incapable case. Clear.
+
+**(3) `validate_keyframes` requiring a resolvable route (`storyboard.rs:800-824`)
+runs before any store write or submission, and cannot be steered to an unshown
+paid route.** In `generate_storyboard_inner` the keyframe plan (derive +
+`validate_keyframes`) is computed at `commands.rs:1670-1672`, and its `Err`
+propagates out BEFORE `mint_storyboard_id()` (`:1761`), `upsert_storyboard`
+(`:1809`), and the still `submit_one` loop (`:1832`). The new gate resolves
+against `ProviderId::ALL.filter(has_adapter)` with a constant price and
+`RoutePolicy::Cheapest` — a pure REACHABILITY check (is any adapter-backed route
+present), key- and price-independent. It does not choose the billed route: the
+still model is fixed (`DEFAULT_STILL_MODEL` or the UI-chosen `still_model_id`),
+and the actual submit resolves over `configured_providers()` with real prices —
+the same inputs `still_estimate` used for the total shown before Generate
+(`:1291`). A model with an adapter route but no configured key validates, prices
+"unpriced" (never summed as $0), and still cannot silently bill: submit's
+`client_for` refuses it with a Permanent error. No path steers billing to a route
+the UI did not price. The added test `a_still_model_without_a_runnable_route_is_
+rejected` (`storyboard.rs:2126`) is offline (registry + `route::resolve`, no
+network). Clear.
+
+**(4) No test in the delta reads a provider key or strips env.** Grep of the
+added `+` lines across `src-tauri`, `crates`, and the two UI test files for
+`remove_var`/`set_var`/`env::`/`process.env`/`_KEY`/`FAL_KEY`/`keychain`/
+`keyring`/`vault::get`/`submit_one`/`reqwest`/`fetch(`/`.post(`: the only hits
+are comment lines referencing `submit_one` as prose. The new Rust tests are pure
+(`derive_keyframes`, `validate_keyframes`, `end_frame_capable`, `join_passes`,
+`cut_threshold`) — no env mutation, no key read, no submit, no network. The
+vault hotfix is untouched by this commit. Clear.
+
+The delta is net security-positive: `validate_keyframes` now rejects a
+still model with no adapter-backed route up front, and `media::bind` remains the
+pre-POST backstop that makes the more permissive `end_frame_capable` safe. No
+Critical/High introduced; the prior MEDIUM (`first_light` live-spend example) is
+unchanged and remains a recommended follow-up slice, not a blocker.
+
+VERDICT: PASS
