@@ -284,3 +284,12 @@ mandatory slice; tracked here for prioritization.
   resolution is far below what fal billed. Re-derive Seedance 2.5's token-per-second model from fal's
   prose and this settled job (and any others), add a hermetic test against the settled ratio, and show
   the estimate-vs-actual delta prominently in the picker for per-token routes. Owner-visible money bug.
+
+- **S18 follow-ups (non-blocking):** move the spend gate into a non-overridable `ProviderClient::submit`
+  default (delegating to `submit_inner`) or add a lint rule so a NEW provider cannot omit it; scope the
+  entrypoint-enable test to the `run()` body (currently greps the whole file); hosted gate keys off
+  `base_url.is_none()` — revisit if a configurable production base_url is ever added; `lint-spend.py`
+  scans `.rs` only (add shell/CI/.env scanning); uploads are ungated (free today); daily budget cap.
+- **PAUSED by owner after S18 (2026-09-16).** Next when resumed: S19 shot trim handles, S20 per-token
+  pricing accuracy (Seedance 2.5 3.2× under-quote on the owner's real job), continuity threshold
+  calibration (human-run on one paid 2×15 set).

@@ -132,8 +132,9 @@
     {
       "id": "S18-live-spend-gate",
       "title": "live-spend-gate",
-      "status": "in-progress",
-      "started": "2026-09-16"
+      "status": "released",
+      "started": "2026-09-16",
+      "branch": "forge/s18-spend-gate"
     }
   ]
 }
