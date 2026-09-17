@@ -15,12 +15,23 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // FIRST, before any provider client can be built: this is the one process
+    // allowed to spend money. Every other entrypoint (tests, examples, a future
+    // CLI) leaves the gate OFF by default, so a billable request there is
+    // refused with `JobError::SpendBlocked` (see `hickeyfield_core::spend_gate`).
+    // Kept ahead of `AppState::init`, which constructs the client factory.
+    hickeyfield_core::spend_gate::enable();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("hickeyfield_LOG")
                 .unwrap_or_else(|_| "info".into()),
         )
         .init();
+
+    // Visible in the log so a regression that drops the `enable()` call above
+    // (which would make the app silently refuse to generate) is diagnosable.
+    tracing::info!("spending enabled for this process (packaged app)");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -98,4 +109,57 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Hickeyfield");
+}
+
+#[cfg(test)]
+mod spend_gate_wiring_tests {
+    /// This file, so the entrypoint's wiring can be asserted on statically —
+    /// the same technique `app.rs` uses for its adapter-drift guard. We cannot
+    /// execute `run()` in a test (it launches Tauri), so the source-string
+    /// checks below pin that the `enable()` call exists and runs before any
+    /// client is constructed.
+    const SOURCE: &str = include_str!("lib.rs");
+
+    #[test]
+    fn the_entrypoint_calls_spend_gate_enable() {
+        assert!(
+            SOURCE.contains("hickeyfield_core::spend_gate::enable();"),
+            "run() must enable spending for the packaged app, or it silently refuses to generate"
+        );
+    }
+
+    #[test]
+    fn enable_precedes_any_client_construction_in_run() {
+        // The gate must be on before `AppState::init` builds the ClientFactory,
+        // or the first submit races the switch. Assert source order within run.
+        let run_body = SOURCE
+            .split_once("pub fn run() {")
+            .expect("run() present")
+            .1;
+        let enable_at = run_body
+            .find("spend_gate::enable();")
+            .expect("enable() called in run()");
+        let init_at = run_body
+            .find("AppState::init(")
+            .expect("AppState::init called in run()");
+        assert!(
+            enable_at < init_at,
+            "enable() must precede AppState::init (which builds the client factory)"
+        );
+    }
+
+    #[test]
+    fn the_entrypoint_enable_path_actually_allows_spending() {
+        // EXECUTE the very call `run()` makes and prove it flips the gate on.
+        // This runs in the src-tauri test binary, which has no test asserting a
+        // real-client block (those live in the core crate's separate binary),
+        // so setting the process-global OnceLock here poisons nothing. This is
+        // the closest an agent can get to the owner's final proof: launching the
+        // installed app and seeing a normal cost estimate rather than a refusal.
+        hickeyfield_core::spend_gate::enable();
+        assert!(
+            hickeyfield_core::spend_gate::allowed(),
+            "the entrypoint's enable() call must make spending allowed"
+        );
+    }
 }

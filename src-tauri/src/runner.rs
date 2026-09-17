@@ -104,6 +104,13 @@ impl Runner {
         }
     }
 
+    /// The client factory this runner polls with — reused by the submit path
+    /// (`app::submit_to_provider`) so a generation is built by the same
+    /// injectable seam a test can replace with an offline fake (S17 M4).
+    pub fn clients(&self) -> &ClientFactory {
+        &self.clients
+    }
+
     /// Install the settled hook (S15). Called once, after the `Arc<Runner>`
     /// exists, so the hook can hold a `Weak<Runner>` and break the cycle. A
     /// second call is ignored (the `OnceLock` is already set).

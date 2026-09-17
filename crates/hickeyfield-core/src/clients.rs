@@ -16,6 +16,19 @@ use crate::media::Uploader;
 use serde_json::Value;
 use std::time::Duration;
 
+/// The refusal a `submit` returns when this process did not opt in to spending
+/// (`spend_gate::allowed()` is false). Built before any HTTP client exists, so
+/// no socket is opened — the caller sees `SpendBlocked`, never a connection
+/// error. The message names the exact env var so a blocked CLI/example run is
+/// recoverable without reading the source.
+fn spend_blocked(model_id: &str) -> JobError {
+    JobError::SpendBlocked(format!(
+        "spending is disabled in this process, so no request was sent to {model_id}. The \
+         packaged Hickeyfield app enables spending automatically; to allow it from the CLI or an \
+         example, start the process with HICKEYFIELD_ALLOW_SPEND=1."
+    ))
+}
+
 /// Shared HTTP setup. 60s covers a slow submit; polling is separate and short.
 fn http() -> Result<reqwest::blocking::Client, JobError> {
     reqwest::blocking::Client::builder()
@@ -189,6 +202,9 @@ impl FalClient {
 
 impl ProviderClient for FalClient {
     fn submit(&self, model_id: &str, body: &Value) -> Result<Submission, JobError> {
+        if !crate::spend_gate::allowed() {
+            return Err(spend_blocked(model_id));
+        }
         let v = send(
             http()?
                 .post(format!("https://queue.fal.run/{model_id}"))
@@ -313,7 +329,9 @@ impl HiggsfieldClient {
 fn higgsfield_reason(model_id: &str, e: JobError) -> JobError {
     let msg = match &e {
         JobError::Permanent(m) | JobError::Transient(m) => m.clone(),
-        JobError::Unsupported => return e,
+        // The gate precedes the POST, so a submit never returns SpendBlocked
+        // into here; the arm keeps the match exhaustive and passes it through.
+        JobError::Unsupported | JobError::SpendBlocked(_) => return e,
     };
     let known = |detail: &str| msg.contains(detail);
     if known("model_not_found") {
@@ -348,6 +366,9 @@ fn higgsfield_reason(model_id: &str, e: JobError) -> JobError {
 
 impl ProviderClient for HiggsfieldClient {
     fn submit(&self, model_id: &str, body: &Value) -> Result<Submission, JobError> {
+        if !crate::spend_gate::allowed() {
+            return Err(spend_blocked(model_id));
+        }
         let v = send(
             http()?
                 .post(format!("https://api.higgsfield.ai/{model_id}"))
@@ -1000,5 +1021,47 @@ mod tests {
     fn an_unrecognised_higgsfield_error_is_passed_through_untouched() {
         let e = higgsfield_reason("veo3.1", JobError::Permanent("HTTP 418: teapot".into()));
         assert_eq!(e.to_string(), "HTTP 418: teapot");
+    }
+
+    #[test]
+    fn a_fal_submit_is_blocked_before_any_http() {
+        // In a `cargo test` build the spend gate is OFF (nobody called
+        // `enable()`, no `HICKEYFIELD_ALLOW_SPEND`), so `submit` must return
+        // before `http()` builds a client or a socket is opened. The variant is
+        // the proof: a real POST to `queue.fal.run` with this dummy key would
+        // come back `Transient` (connection/DNS/TLS) or `Permanent` (HTTP 401) —
+        // never `SpendBlocked`, which only the pre-HTTP guard produces. So the
+        // gate short-circuited before any connection, without needing a live
+        // endpoint or an env-mutating proxy hack (itself the anti-pattern the
+        // 2026-09-16 incident warns against).
+        assert!(!crate::spend_gate::allowed(), "gate must be off under test");
+        let err = FalClient::new("dummy-key")
+            .submit("fal-ai/qwen-image-3/text-to-image", &serde_json::json!({}))
+            .expect_err("submit must refuse when spending is disabled");
+        assert!(
+            matches!(err, JobError::SpendBlocked(_)),
+            "expected SpendBlocked, got {err:?}"
+        );
+        assert!(
+            !matches!(err, JobError::Transient(_) | JobError::Permanent(_)),
+            "a network attempt would be Transient/Permanent — the gate did not short-circuit"
+        );
+        assert!(err.to_string().contains("HICKEYFIELD_ALLOW_SPEND"));
+    }
+
+    #[test]
+    fn a_higgsfield_submit_is_blocked_before_any_http() {
+        assert!(!crate::spend_gate::allowed(), "gate must be off under test");
+        let err = HiggsfieldClient::new("dummy-key", "dummy-secret")
+            .submit("text2video/soul", &serde_json::json!({}))
+            .expect_err("submit must refuse when spending is disabled");
+        assert!(
+            matches!(err, JobError::SpendBlocked(_)),
+            "expected SpendBlocked, got {err:?}"
+        );
+        assert!(
+            !matches!(err, JobError::Transient(_) | JobError::Permanent(_)),
+            "a network attempt would be Transient/Permanent — the gate did not short-circuit"
+        );
     }
 }

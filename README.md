@@ -130,7 +130,27 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
 ./scripts/lint-provenance.py
+./scripts/lint-spend.py
 ```
+
+### Spending and credentials
+
+Two environment flags govern money and keys, and both default to the safe
+setting:
+
+- **`HICKEYFIELD_NO_KEYCHAIN=1`** — never read the login keychain (which holds
+  your real keys). Every automated run — CI, agents, tests — sets this, so a
+  test can never fall through to a real credential. Test builds block the
+  keychain unconditionally.
+- **`HICKEYFIELD_ALLOW_SPEND=1`** — the *only* way any binary or example makes a
+  billable request. The packaged app sets it for itself at startup, so a normal
+  user is unaffected; everything else — `cargo test`, the examples, a future CLI
+  — leaves it off, and a billable call there is refused before any HTTP with a
+  message naming this flag.
+
+The rule: **no process spends unless it opted in, and tests and examples never
+opt in.** `scripts/lint-spend.py` enforces the mechanics — no raw credential
+read outside the vault, no env-stripping, and no test enabling spending.
 
 **Always build through `tauri build`** (or `scripts/build-macos.sh`), never a
 bare `cargo build`. A plain cargo build does not bundle the frontend, and the

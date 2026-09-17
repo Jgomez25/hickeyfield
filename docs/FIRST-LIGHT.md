@@ -1,13 +1,20 @@
 # First light — 2026-08-05
 
 The first time Hickeyfield ever talked to a real provider. Run with a live fal key via
-`crates/hickeyfield-core/examples/first_light.rs`, which reads the key from `FAL_KEY` so it never
-lands in a file or a command line:
+`crates/hickeyfield-core/examples/first_light.rs`, which reads the key from `FAL_KEY`. Because
+this example spends real money it refuses to run unless the process opts in with
+`HICKEYFIELD_ALLOW_SPEND=1` — the same switch the packaged app sets for itself at startup (see
+`crates/hickeyfield-core/src/spend_gate.rs`). Set `FAL_KEY` yourself — never copy it out of the
+keychain into your shell history — and add the flag to acknowledge the spend:
 
 ```sh
-FAL_KEY=$(security find-generic-password -s ai.hickeyfield.keys -a fal -w) \
+HICKEYFIELD_ALLOW_SPEND=1 FAL_KEY=… \
   cargo run -p hickeyfield-core --example first_light
 ```
+
+Without the flag the example prints the estimated cost and exits without sending anything; and
+even if that refusal were bypassed, `FalClient::submit` is itself gated, so no billable request
+can leave a process that did not opt in.
 
 Everything in the registry until now was transcribed from documents. This is the first
 evidence about which parts of it are true.

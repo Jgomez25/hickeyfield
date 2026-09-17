@@ -27,6 +27,7 @@ pub mod provider;
 pub mod recipe;
 pub mod registry;
 pub mod route;
+pub mod spend_gate;
 pub mod storyboard;
 pub mod use_case;
 

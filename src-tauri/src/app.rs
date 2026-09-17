@@ -270,10 +270,14 @@ pub fn submit_to_provider(
     // control for (a chained shot's `prompt_expansion_mode: "disabled"` + fixed
     // `seed`). Empty for a standalone submit. Applied before the constant pass.
     constant_overrides: &serde_json::Map<String, serde_json::Value>,
+    // S18 D4: the injectable client factory (from the runner). Production passes
+    // `runner.clients()`; a test passes a fake so the submit path can be driven
+    // offline. Replaces the old hard-wired `client_for` call.
+    clients: &crate::runner::ClientFactory,
 ) -> Result<String, hickeyfield_core::engine::JobError> {
     use hickeyfield_core::engine::JobError;
 
-    let client = client_for(&route.id()).ok_or_else(|| {
+    let client = clients(&route.id()).ok_or_else(|| {
         JobError::Permanent(format!(
             "no credentials for {} — add a key in Settings",
             route.provider.display_name()

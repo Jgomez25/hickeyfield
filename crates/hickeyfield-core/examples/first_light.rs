@@ -13,13 +13,20 @@
 //! 3. **A real generation**, cheapest available, and the actual charge against
 //!    the estimate the Generate button would have shown.
 //!
-//! The key is read from `FAL_KEY` so it never has to be written into a file or
-//! passed on a command line. Run it as:
+//! This binary spends real money, so it refuses to run unless the process opted
+//! in with `HICKEYFIELD_ALLOW_SPEND=1` — the same switch the packaged app sets
+//! for itself at startup (see `hickeyfield_core::spend_gate`). Set `FAL_KEY`
+//! yourself (never copy it out of the keychain into your shell history) and set
+//! `HICKEYFIELD_ALLOW_SPEND=1` to acknowledge that this spends real money:
 //!
 //! ```sh
-//! FAL_KEY=$(security find-generic-password -s ai.hickeyfield.keys -a fal -w) \
+//! HICKEYFIELD_ALLOW_SPEND=1 FAL_KEY=… \
 //!   cargo run -p hickeyfield-core --example first_light
 //! ```
+//!
+//! Without the flag it prints the estimated cost and exits without spending —
+//! and even if that refusal were bypassed, `FalClient::submit` is itself gated,
+//! so no billable request can leave this process.
 
 use hickeyfield_core::clients::FalClient;
 use hickeyfield_core::engine::ProviderClient;
@@ -28,6 +35,24 @@ use hickeyfield_core::{registry, Billable};
 use std::time::{Duration, Instant};
 
 fn main() {
+    // Refuse before reading a key or sending anything, and show the number
+    // first: a reader sees what this would cost before opting in. `submit` is
+    // gated too (defence in depth), so bypassing this refusal still cannot
+    // spend.
+    if !hickeyfield_core::spend_gate::allowed() {
+        match cheapest_image_estimate() {
+            Some((name, usd)) => {
+                eprintln!("first_light would run {name} and cost about ${usd:.4} for one image.")
+            }
+            None => eprintln!("first_light could not price a route offline."),
+        }
+        eprintln!(
+            "refusing: this example spends real money. Set HICKEYFIELD_ALLOW_SPEND=1 (and FAL_KEY) \
+             to run a real generation."
+        );
+        std::process::exit(2);
+    }
+
     let key = match std::env::var("FAL_KEY") {
         Ok(k) if !k.trim().is_empty() => k,
         _ => {
@@ -194,6 +219,25 @@ fn main() {
         use std::io::Write;
         let _ = std::io::stdout().flush();
     }
+}
+
+/// The cheapest image route through fal and its one-image estimate, computed
+/// offline from the registry (no key, no network). Used by the refusal so the
+/// reader sees the number before opting in.
+fn cheapest_image_estimate() -> Option<(String, f64)> {
+    let billable = Billable::image(1);
+    registry()
+        .values()
+        .filter(|m| format!("{}", m.modality) == "image")
+        .filter_map(|m| {
+            let r = m
+                .routes
+                .iter()
+                .find(|r| r.provider == hickeyfield_core::ProviderId::Fal)?;
+            let est = m.estimate(r, &billable)?;
+            Some((m.display_name.clone(), est.usd))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 /// A 1x1 opaque PNG. Smallest thing that is unambiguously a real image.

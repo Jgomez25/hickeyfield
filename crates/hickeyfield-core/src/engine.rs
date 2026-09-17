@@ -233,6 +233,11 @@ pub enum JobError {
     /// Will not improve by retrying: bad request, auth failure, moderation.
     Permanent(String),
     Unsupported,
+    /// The process did not opt in to spending; no billable request was made.
+    /// Returned by every provider `submit` when `spend_gate::allowed()` is
+    /// false (the default outside the packaged app). Not retryable — retrying
+    /// without the flag re-blocks.
+    SpendBlocked(String),
 }
 
 impl JobError {
@@ -256,7 +261,9 @@ impl JobError {
 impl std::fmt::Display for JobError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            JobError::Transient(m) | JobError::Permanent(m) => f.write_str(m),
+            JobError::Transient(m) | JobError::Permanent(m) | JobError::SpendBlocked(m) => {
+                f.write_str(m)
+            }
             JobError::Unsupported => f.write_str("not supported by this provider"),
         }
     }

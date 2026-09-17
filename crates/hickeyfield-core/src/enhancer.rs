@@ -1359,6 +1359,16 @@ impl HostedEnhancer {
     }
 
     fn call(&self, user: &str) -> Result<String, String> {
+        // A hosted rewrite spends LLM tokens on the user's paid key, so it is
+        // gated by the same process-local switch as a generation submit. The
+        // local Ollama backend is free and stays ungated, so the offline
+        // enhancer keeps working without the flag. The gate applies only to a
+        // real provider host (`base_url` is None): `with_base_url` is a
+        // test-only seam pointing at a local stub, never set in production, and
+        // a request there spends nothing.
+        if self.base_url.is_none() && !crate::spend_gate::allowed() {
+            return Err(hosted_spend_blocked());
+        }
         let c = client(HOSTED_TIMEOUT)?;
         match self.backend {
             HostedBackend::OpenAi => {
@@ -1620,6 +1630,17 @@ fn chat_err(msg: String) -> JobError {
     JobError::Permanent(msg)
 }
 
+/// The refusal a hosted LLM call returns when this process did not opt in to
+/// spending. Names the exact env var so a blocked CLI/example run is
+/// recoverable, and points at the free local Ollama path.
+fn hosted_spend_blocked() -> String {
+    "spending is disabled in this process, so no request was sent to the hosted model. The \
+     packaged Hickeyfield app enables spending automatically; to allow a hosted rewrite from the \
+     CLI or an example, start the process with HICKEYFIELD_ALLOW_SPEND=1 (the local Ollama \
+     enhancer needs no flag)."
+        .to_string()
+}
+
 impl Chat for ChatBackend {
     fn complete(&self, system: &str, user: &str) -> Result<String, JobError> {
         match self {
@@ -1639,6 +1660,12 @@ impl Chat for ChatBackend {
                 model,
                 base_url,
             } => {
+                // Same money gate as the hosted enhancer: a hosted plan draft
+                // spends LLM tokens on a real provider. Ollama (above) is free
+                // and ungated; a `with_base_url` stub is not a real host.
+                if base_url.is_none() && !crate::spend_gate::allowed() {
+                    return Err(chat_err(hosted_spend_blocked()));
+                }
                 let c = client(HOSTED_TIMEOUT).map_err(chat_err)?;
                 match backend {
                     HostedBackend::OpenAi => {
@@ -2788,6 +2815,39 @@ mod tests {
             }
         });
         (addr, rx)
+    }
+
+    #[test]
+    fn a_hosted_llm_call_is_blocked_without_the_flag() {
+        // A real hosted host (no base_url override) with the gate off — the
+        // default in `cargo test` — must refuse before any HTTP, naming the
+        // env var. Proven at both hosted seams: the enhancer's `call` and the
+        // storyboard planner's `ChatBackend::Hosted`.
+        assert!(!crate::spend_gate::allowed(), "gate must be off under test");
+        let err = HostedEnhancer::openai("sk-test", "gpt-test", SYS)
+            .call("rewrite this")
+            .expect_err("a real hosted call must be blocked");
+        assert!(err.contains("HICKEYFIELD_ALLOW_SPEND"), "got: {err}");
+
+        let chat_err = ChatBackend::hosted(HostedBackend::OpenAi, "sk-test", "gpt-test")
+            .complete("system", "user")
+            .expect_err("a real hosted chat must be blocked");
+        assert!(matches!(chat_err, JobError::Permanent(_)));
+        assert!(chat_err.to_string().contains("HICKEYFIELD_ALLOW_SPEND"));
+    }
+
+    #[test]
+    fn a_stubbed_hosted_call_is_not_gated_so_wire_tests_run_without_the_flag() {
+        // The gate's carve-out: a `with_base_url` override is a test seam, not a
+        // real provider, so it runs even with spending disabled. This is what
+        // keeps the two wire-path tests below green under `cargo test`.
+        let (addr, _rx) = stub_once(
+            r#"{"choices":[{"finish_reason":"stop","message":{"content":"ok","refusal":null}}]}"#,
+        );
+        let out = HostedEnhancer::openai("sk-test", "gpt-test", SYS)
+            .with_base_url(&addr)
+            .call("rewrite this");
+        assert_eq!(out.unwrap(), "ok");
     }
 
     #[test]

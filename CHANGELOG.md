@@ -8,6 +8,18 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **No process can spend money unless it explicitly opted in.** A single process-local spend
+  gate now guards every billable request — the fal and Higgsfield generation submits and the
+  hosted-LLM enhancer and storyboard-planner calls — and refuses with a clear message
+  (`JobError::SpendBlocked`) before any HTTP when the process did not opt in. The packaged app
+  turns spending on for itself at startup, so nothing changes for a normal user; tests, examples
+  and any future CLI leave it off by default. The `first_light` example now refuses to run
+  without `HICKEYFIELD_ALLOW_SPEND=1`, prints what a run would cost first, and no longer teaches
+  copying the key out of the keychain. A new `scripts/lint-spend.py` gate fails the build if any
+  source reads a raw credential outside the vault, strips a credential env var, or enables
+  spending from a test. This closes the last path behind the 2026-09-16 incident, where a unit
+  test reached the keychain and submitted real generations.
+
 - **A model's duration control now offers the provider's real range instead of a generic
   ladder capped at 12 seconds.** MiniMax H3 Max offers 5–15 seconds, Wan 3.0 Prime 2–30, and
   every model whose provider publishes or documents a range its real ceiling (models that

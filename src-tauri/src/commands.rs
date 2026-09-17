@@ -1190,6 +1190,7 @@ pub(crate) fn submit_one(
         &input.media,
         &compiled.prompt,
         overrides,
+        runner.clients(),
     ) {
         Ok(request_id) => {
             job.request_id = request_id;
@@ -2987,6 +2988,103 @@ mod tests {
             ffmpeg_dir: std::env::temp_dir().join("hickeyfield-test-nobin"),
             renders_root: std::env::temp_dir().join("hickeyfield-test-renders"),
         }
+    }
+
+    /// A provider client that records every submit `(endpoint, body)` and
+    /// returns a canned handle **without any HTTP** — the offline seam S17 M4
+    /// asked for. Its `poll` returns a terminal Completed so the background
+    /// watch loop `submit_one` starts exits at once instead of hitting a net.
+    struct RecordingClient {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
+    }
+
+    impl hickeyfield_core::engine::ProviderClient for RecordingClient {
+        fn submit(
+            &self,
+            model_id: &str,
+            body: &serde_json::Value,
+        ) -> Result<hickeyfield_core::engine::Submission, hickeyfield_core::engine::JobError>
+        {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((model_id.to_string(), body.clone()));
+            Ok(hickeyfield_core::engine::Submission {
+                request_id: "rec-req-1".into(),
+                status_url: None,
+            })
+        }
+        fn poll(
+            &self,
+            _poll_ref: &str,
+            _request_id: &str,
+        ) -> Result<hickeyfield_core::engine::PollResult, hickeyfield_core::engine::JobError>
+        {
+            Ok(hickeyfield_core::engine::PollResult {
+                status: hickeyfield_core::JobStatus::Completed,
+                outputs: Vec::new(),
+                fail_reason: None,
+                actual_usd: None,
+            })
+        }
+    }
+
+    #[test]
+    fn submit_one_uses_the_injected_client() {
+        // S18 D4: the submit path now flows through the runner's injectable
+        // ClientFactory, so a fake can drive it offline. A real text-to-image
+        // model (`qwen_image_3`, priced fal t2i) goes through the whole
+        // compile→guard→estimate→route→upsert→submit path and lands in the
+        // recorder — one submit, the expected fal endpoint, no network, no key.
+        use crate::library::Library;
+        use crate::pricing::Prices;
+        use crate::runner::{ClientFactory, Runner};
+        use hickeyfield_core::engine::JobStore;
+        use std::sync::{Arc, Mutex};
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let factory_seen = Arc::clone(&seen);
+        let clients: ClientFactory = Arc::new(move |_route_id: &str| {
+            Some(Arc::new(RecordingClient {
+                seen: Arc::clone(&factory_seen),
+            })
+                as Arc<dyn hickeyfield_core::engine::ProviderClient>)
+        });
+
+        let store = Arc::new(crate::store::SqliteStore::in_memory().unwrap());
+        let library = Arc::new(Library::new(
+            std::env::temp_dir().join(format!("hickeyfield-seam-{}", std::process::id())),
+        ));
+        let prices = Arc::new(Prices::bundled());
+        let runner = Runner::new(
+            Arc::clone(&store) as Arc<dyn JobStore>,
+            clients,
+            Arc::new(|_| {}),
+            Arc::clone(&library),
+            Arc::clone(&prices),
+        );
+
+        let reg = registry();
+        let model = reg.get("qwen_image_3").expect("qwen_image_3 in registry");
+        let id = submit_one(
+            &store,
+            &prices,
+            &runner,
+            model,
+            &shot_input("qwen_image_3"),
+            None,
+            None,
+        )
+        .expect("submit_one should reach the injected client");
+
+        let recorded = seen.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "exactly one submit reached the fake");
+        assert!(
+            recorded[0].0.contains("qwen"),
+            "recorded endpoint should be the fal qwen route, got {}",
+            recorded[0].0
+        );
+        assert!(!id.is_empty(), "submit_one returns the job id");
     }
 
     fn shot_input(model_id: &str) -> SubmitInput {
