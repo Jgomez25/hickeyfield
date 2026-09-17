@@ -601,7 +601,11 @@ pub fn plan(
             shot.chainable = use_case::supports(model, UseCase::ImageToVideo);
             // S17: can this shot's model bind an END frame? The keyframe toggle
             // reads this so its default matches the scheduler's binding gate.
-            shot.end_frame_capable = model.routes.first().is_some_and(|r| {
+            // Judged on ANY route, not just `routes.first()` (review M1): the
+            // submit resolves the cheapest available route, so keying off the
+            // first alone could suppress a usable end anchor or disagree with the
+            // route actually used. The chain's `end_frame_capable` mirrors this.
+            shot.end_frame_capable = model.routes.iter().any(|r| {
                 crate::media::can_bind(
                     &model.spec,
                     crate::media::MediaRole::End,
@@ -793,10 +797,31 @@ pub fn validate_keyframes(
         });
     }
     let reg = registry();
+    // The still model must be runnable for TextToImage AND have a resolvable
+    // (adapter-backed) route — design D1's "priced fal route
+    // (route::resolve(Cheapest).is_ok())". `use_case::supports` only checks the
+    // modality/media shape, not that any route can actually run (review M2), so a
+    // TextToImage model whose every route lacks an adapter would otherwise slip
+    // through. Availability here is "every provider that has an adapter" (a pure,
+    // key-independent check — the real key gate is `submit_one`); a GPT tier
+    // still passes (it has a fal route), it is merely priced "unpriced" (D6).
+    let adapters: Vec<crate::ProviderId> = crate::ProviderId::ALL
+        .into_iter()
+        .filter(|p| p.has_adapter())
+        .collect();
     for kf in keyframes {
-        let runnable = reg
-            .get(&kf.model_id)
-            .is_some_and(|m| use_case::supports(m, UseCase::TextToImage));
+        let model = reg.get(&kf.model_id);
+        let runnable = model.is_some_and(|m| {
+            use_case::supports(m, UseCase::TextToImage)
+                && crate::route::resolve(
+                    &m.routes,
+                    &adapters,
+                    crate::route::RoutePolicy::Cheapest,
+                    None,
+                    |_| Some(0.0),
+                )
+                .is_ok()
+        });
         if !runnable {
             return Err(PlanError::KeyframeModelNotRunnable {
                 index: kf.index,
@@ -2095,6 +2120,30 @@ mod tests {
         assert!(
             matches!(&err, PlanError::KeyframeModelNotRunnable { model_id, .. } if model_id == "kling3_0_pro"),
             "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_still_model_without_a_runnable_route_is_rejected() {
+        // Review M2 / design D1: the still model must have a resolvable (priced)
+        // route, not merely support TextToImage. `z_image`'s only route is
+        // `local:z-image` and Local has no adapter, so it can never run as a
+        // still and is refused up front — even though `use_case::supports` calls
+        // it a text-to-image model.
+        let plan = a_keyframe_plan();
+        let bad = derive_keyframes(&plan, "z_image", CANVAS);
+        let err = validate_keyframes(&bad, plan.shots.len(), CANVAS).unwrap_err();
+        assert!(
+            matches!(&err, PlanError::KeyframeModelNotRunnable { model_id, .. } if model_id == "z_image"),
+            "z_image has no adapter-backed route → rejected: {err:?}"
+        );
+        // A routable but UNPRICED GPT tier is still ACCEPTED (D6: the total is
+        // marked "unpriced", not rejected) — the gate is "a resolvable route",
+        // not "priced to a dollar figure".
+        let gpt = derive_keyframes(&plan, "gpt_image_2_5_flare", CANVAS);
+        assert!(
+            validate_keyframes(&gpt, plan.shots.len(), CANVAS).is_ok(),
+            "a routable GPT tier passes even though it prices 'unpriced'"
         );
     }
 

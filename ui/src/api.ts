@@ -835,7 +835,7 @@ export async function listStoryboards(): Promise<Storyboard[]> {
       let joins: JoinRecord[] = [];
       if (joinsJson) {
         try {
-          joins = JSON.parse(joinsJson) as JoinRecord[];
+          joins = parseJoinRecords(joinsJson);
         } catch {
           joins = [];
         }
@@ -863,6 +863,61 @@ export async function listStoryboards(): Promise<Storyboard[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * Parse a set's `joins_json` (snake-case from Rust) into camelCase `JoinRecord`s.
+ *
+ * The S16 cut fields (`ssim`, `psnr`, `dy`, `du`, `dv`, `pass`, `applied`,
+ * `kind`, `index`, `attempt`) are single-word — identical in both cases — but
+ * the S17 end-frame fields are snake_case on the wire (`end_ssim` … `end_pass`)
+ * and MUST be remapped, or `Library.endAdherenceSummary` (which reads `endSsim`/
+ * `endPass`) never sees them and the end-adherence badge never renders on real
+ * data (review B1). Both spellings are accepted, mirroring `parseKeyframeRecords`.
+ */
+export function parseJoinRecords(json: string): JoinRecord[] {
+  const raw = JSON.parse(json) as {
+    index: number;
+    kind: "continuity" | "crossfade";
+    applied: boolean;
+    ssim: number | null;
+    psnr: number | null;
+    dy: number | null;
+    du: number | null;
+    dv: number | null;
+    pass: boolean | null;
+    attempt?: number;
+    end_ssim?: number | null;
+    endSsim?: number | null;
+    end_psnr?: number | null;
+    endPsnr?: number | null;
+    end_dy?: number | null;
+    endDy?: number | null;
+    end_du?: number | null;
+    endDu?: number | null;
+    end_dv?: number | null;
+    endDv?: number | null;
+    end_pass?: boolean | null;
+    endPass?: boolean | null;
+  }[];
+  return raw.map((j) => ({
+    index: j.index,
+    kind: j.kind,
+    applied: j.applied,
+    ssim: j.ssim ?? null,
+    psnr: j.psnr ?? null,
+    dy: j.dy ?? null,
+    du: j.du ?? null,
+    dv: j.dv ?? null,
+    pass: j.pass ?? null,
+    attempt: j.attempt ?? 0,
+    endSsim: j.end_ssim ?? j.endSsim ?? null,
+    endPsnr: j.end_psnr ?? j.endPsnr ?? null,
+    endDy: j.end_dy ?? j.endDy ?? null,
+    endDu: j.end_du ?? j.endDu ?? null,
+    endDv: j.end_dv ?? j.endDv ?? null,
+    endPass: j.end_pass ?? j.endPass ?? null,
+  }));
 }
 
 /** Parse a set's `keyframes_json` (snake-case from Rust) into camelCase records. */

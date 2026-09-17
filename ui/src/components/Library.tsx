@@ -46,12 +46,19 @@ function joinSummary(joins: JoinRecord[] | undefined) {
  * (an unscored end is `null`, never 0, so it shows "end —" and never flags a
  * paid regenerate). Returns null for a non-keyframe set (no end scores at all).
  */
-function endAdherenceSummary(joins: JoinRecord[] | undefined) {
+function endAdherenceSummary(
+  joins: JoinRecord[] | undefined,
+  isKeyframeSet: boolean,
+) {
+  // End-frame adherence is a keyframe-mode concept: only a keyframe set scores
+  // its clips against a planned still. Rust serialises the end-* fields as
+  // `null` on EVERY post-S17 join (they are `#[serde(default)]`, not skipped),
+  // so `endSsim != undefined` cannot distinguish a keyframe set from a scored
+  // non-keyframe set — gate on the set actually being keyframe-anchored (it has
+  // keyframe boundaries), which is the true signal (review B1).
+  if (!isKeyframeSet) return null;
   const all = joins ?? [];
-  // A keyframe set has end-* fields present (even if unscored → null); a
-  // non-keyframe set omits them entirely (undefined) → no badge.
-  const hasEndField = all.some((j) => j.endSsim !== undefined);
-  if (!hasEndField) return null;
+  if (all.length === 0) return null;
   const scored = all.filter((j) => j.endSsim != null);
   if (scored.length === 0) {
     return (
@@ -319,7 +326,10 @@ export function Library({
                   {g.jobs.length} shot{g.jobs.length === 1 ? "" : "s"}
                 </span>
                 {joinSummary(g.storyboard.joins)}
-                {endAdherenceSummary(g.storyboard.joins)}
+                {endAdherenceSummary(
+                  g.storyboard.joins,
+                  (g.storyboard.keyframes?.length ?? 0) > 0,
+                )}
               </h2>
               {keyframeStills(
                 g.storyboard,

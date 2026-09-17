@@ -91,11 +91,16 @@ fn chained_overrides(seed: u64) -> serde_json::Map<String, serde_json::Value> {
 /// the caller falls back start-only with an advisory.
 fn end_frame_capable(model: &hickeyfield_core::Model) -> bool {
     use hickeyfield_core::media;
-    let Some(route) = model.routes.first() else {
-        return false;
-    };
-    let dialect = media::dialect_for(route.provider, &route.slug);
-    media::can_bind(&model.spec, media::MediaRole::End, dialect, &route.slug)
+    // Judge on ANY route, not just `routes.first()` (review M1): `submit_one`
+    // resolves the cheapest AVAILABLE route, which may not be the first, so the
+    // first alone can disagree with what is actually submitted. If any route
+    // binds the End role the shot can be end-anchored; the per-route binding is
+    // re-checked at submit (`media::bind` errors before any POST if the resolved
+    // route cannot take it — no silent full-price drop, the S9 harm).
+    model.routes.iter().any(|route| {
+        let dialect = media::dialect_for(route.provider, &route.slug);
+        media::can_bind(&model.spec, media::MediaRole::End, dialect, &route.slug)
+    })
 }
 
 /// Turn the stored next-shot payload into the exact `SubmitInput` the chain
@@ -326,15 +331,29 @@ pub fn advance(
 /// Returns the recorded [`crate::store::JoinRecord`] for callers that act on it
 /// (the auto-retry loop), or `None` when there is nothing to score (shot 0, an
 /// all-at-once set, or a missing clip).
+/// The continuity tier the CUT score is gated against (review M3, design D4/Q7):
+/// a keyframe set is the 99% path → the IDEAL tier (0.90/6/3); a plain chained
+/// set keeps the S16 FLOOR (0.80/12/6). End adherence is always IDEAL. Pure, so
+/// the tier choice is pinned by a test without scoring a real clip in the narrow
+/// band between the two tiers.
+pub(crate) fn cut_threshold(
+    is_keyframe: bool,
+) -> hickeyfield_core::storyboard::ContinuityThresholds {
+    use hickeyfield_core::storyboard::{CONTINUITY_FLOOR, CONTINUITY_IDEAL};
+    if is_keyframe {
+        CONTINUITY_IDEAL
+    } else {
+        CONTINUITY_FLOOR
+    }
+}
+
 pub fn score_join(
     store: &Arc<SqliteStore>,
     ffmpeg_dir: &Path,
     renders_root: &Path,
     settled: &hickeyfield_core::engine::JobSet,
 ) -> Option<crate::store::JoinRecord> {
-    use hickeyfield_core::storyboard::{
-        join_passes, join_passes_end, JoinScore, CONTINUITY_FLOOR, CONTINUITY_IDEAL,
-    };
+    use hickeyfield_core::storyboard::{join_passes, join_passes_end, JoinScore, CONTINUITY_IDEAL};
 
     let sid = settled.storyboard_id.clone()?;
     let mut sb = store.storyboard(&sid).ok()??;
@@ -440,7 +459,12 @@ pub fn score_join(
         _ => JoinScore::unscored(),
     };
 
-    let pass = cut.is_scored().then(|| join_passes(&cut, CONTINUITY_FLOOR));
+    // The cut score reads the IDEAL tier (0.90/6/3) for a keyframe set — the 99%
+    // path (design D4/Q7) — and the FLOOR (0.80/12/6) for a plain chained set.
+    // End adherence (keyframe-only) is always the IDEAL tier.
+    let pass = cut
+        .is_scored()
+        .then(|| join_passes(&cut, cut_threshold(is_keyframe)));
     let end_pass = end
         .is_scored()
         .then(|| join_passes_end(&end, CONTINUITY_IDEAL));
@@ -1546,6 +1570,86 @@ mod tests {
             advs.iter()
                 .any(|a| a.contains("end-frame anchoring unavailable")),
             "the end fallback advisory must be recorded: {advs:?}"
+        );
+    }
+
+    #[test]
+    fn the_cut_score_reads_the_ideal_tier_for_a_keyframe_set_and_the_floor_otherwise() {
+        // Review M3 / design D4/Q7: a keyframe set's CUT score is gated on the
+        // IDEAL tier (the 99% path), a plain chained set on the S16 FLOOR. A cut
+        // ABOVE the floor but BELOW the ideal therefore passes only for a
+        // non-keyframe set — so `should_auto_retry` fires on the right tier.
+        use hickeyfield_core::storyboard::{
+            join_passes, JoinScore, CONTINUITY_FLOOR, CONTINUITY_IDEAL,
+        };
+        assert_eq!(cut_threshold(true), CONTINUITY_IDEAL, "keyframe → ideal");
+        assert_eq!(cut_threshold(false), CONTINUITY_FLOOR, "chained → floor");
+        // 0.85 SSIM, small colour drift: above the 0.80 floor, below the 0.90 ideal.
+        let mid = JoinScore {
+            ssim: Some(0.85),
+            psnr: Some(30.0),
+            dy: Some(4.0),
+            du: Some(2.0),
+            dv: Some(2.0),
+        };
+        assert!(
+            join_passes(&mid, cut_threshold(false)),
+            "a mid-band cut passes the FLOOR (non-keyframe set)"
+        );
+        assert!(
+            !join_passes(&mid, cut_threshold(true)),
+            "the same cut FAILS the IDEAL (keyframe set) → an ideal-tier retry"
+        );
+    }
+
+    #[test]
+    fn end_frame_capability_reads_any_route_not_just_the_first() {
+        // Review M1: `submit_one` resolves the cheapest AVAILABLE route, which
+        // may not be `routes.first()`. `end_frame_capable` must judge on ANY
+        // route — a model whose FIRST route cannot take an end frame but a later
+        // one can is still end-capable, and one whose only route cannot is not.
+        use hickeyfield_core::media::{self, MediaRole};
+        use hickeyfield_core::route::Route;
+        use hickeyfield_core::ProviderId;
+
+        let mut model = h3_max_model(); // its own route binds End
+        assert!(
+            end_frame_capable(&model),
+            "baseline: H3 Max binds End on its route"
+        );
+        // A NO_END_FRAME slug cannot bind End.
+        let no_end = "veo3.1";
+        assert!(
+            !media::can_bind(
+                &model.spec,
+                MediaRole::End,
+                media::dialect_for(ProviderId::Fal, no_end),
+                no_end,
+            ),
+            "veo3.1 is in NO_END_FRAME → cannot bind End"
+        );
+        // Prepend it so `routes.first()` is the NON-end route; the H3 Max route
+        // that CAN bind End is now second. The old `routes.first()` logic would
+        // report false; the fixed `any`-route logic reports true.
+        model.routes.insert(0, Route::new(ProviderId::Fal, no_end));
+        assert!(
+            !media::can_bind(
+                &model.spec,
+                MediaRole::End,
+                media::dialect_for(model.routes[0].provider, &model.routes[0].slug),
+                &model.routes[0].slug,
+            ),
+            "the FIRST route now cannot bind End"
+        );
+        assert!(
+            end_frame_capable(&model),
+            "a later route binds End → the model is end-frame capable (M1)"
+        );
+        // With ONLY the non-end route, it is not capable.
+        model.routes.retain(|r| r.slug == no_end);
+        assert!(
+            !end_frame_capable(&model),
+            "no route binds End → not capable"
         );
     }
 

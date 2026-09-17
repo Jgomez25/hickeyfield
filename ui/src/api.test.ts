@@ -181,4 +181,26 @@ describe("storyboard bridge", () => {
     expect(rows[0].joins?.[0].ssim).toBe(0.71);
     expect(rows[0].joins?.[0].pass).toBe(false);
   });
+
+  it("maps the S17 end-adherence fields snake_case → camelCase (B1)", async () => {
+    // Review B1: Rust emits `end_ssim`/`end_pass` (snake); the UI reads
+    // `endSsim`/`endPass` (camel). `listStoryboards` must remap, or the
+    // end-adherence badge never renders. Drive the exact wire shape.
+    invokeMock.mockResolvedValueOnce([
+      {
+        id: "sb-3",
+        brief: "b",
+        target_seconds: 30,
+        plan_json: "{}",
+        created_at: 5,
+        joins_json:
+          '[{"index":1,"kind":"continuity","applied":true,"ssim":0.93,"psnr":34,"dy":2,"du":1,"dv":1,"pass":true,"attempt":0,"end_ssim":0.91,"end_psnr":33,"end_dy":3,"end_du":1,"end_dv":1,"end_pass":true}]',
+      },
+    ]);
+    const rows = await listStoryboards();
+    expect(rows[0].joins?.[0].endSsim).toBe(0.91);
+    expect(rows[0].joins?.[0].endPass).toBe(true);
+    // The cut half is preserved.
+    expect(rows[0].joins?.[0].ssim).toBe(0.93);
+  });
 });

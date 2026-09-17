@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Library } from "./Library";
+import { parseJoinRecords } from "../api";
 import type { JobSet, Storyboard, StoryboardRender } from "../types";
 
 /**
@@ -309,6 +310,11 @@ describe("Library", () => {
   it("the library item shows both the cut and the end-adherence score (S17)", () => {
     const scored: Storyboard = {
       ...SET,
+      // A keyframe set (it has still boundaries) → the end badge is offered.
+      keyframes: [
+        { index: 0, jobSetId: "s0", localPath: "/lib/k0.png", estimatedUsd: 0.04, attempt: 0 },
+        { index: 1, jobSetId: "s1", localPath: "/lib/k1.png", estimatedUsd: 0.04, attempt: 0 },
+      ],
       joins: [
         {
           index: 1,
@@ -351,10 +357,15 @@ describe("Library", () => {
   });
 
   it("an unscored end shows a dash, never zero (S17)", () => {
-    // A keyframe set carries the end-* fields (even when unscored → null); the
-    // badge must read "end —", never "end 0.00" (unknown is not failing).
+    // A keyframe set whose joins are scored on the cut but not yet on the end
+    // (end-* null); the badge must read "end —", never "end 0.00" (unknown is
+    // not failing).
     const unscored: Storyboard = {
       ...SET,
+      keyframes: [
+        { index: 0, jobSetId: "s0", localPath: "/lib/k0.png", estimatedUsd: 0.04, attempt: 0 },
+        { index: 1, jobSetId: "s1", localPath: "/lib/k1.png", estimatedUsd: 0.04, attempt: 0 },
+      ],
       joins: [
         {
           index: 1,
@@ -391,6 +402,65 @@ describe("Library", () => {
     expect(end.textContent).toContain("—");
     expect(end.textContent).not.toContain("0.00");
     expect(end.getAttribute("data-pass")).toBe("unscored");
+  });
+
+  it("renders the end badge from a REAL snake_case joins_json through the production mapping (S17 B1)", () => {
+    // Regression for review B1: Rust serialises `end_ssim`/`end_pass` (snake),
+    // the UI reads `endSsim`/`endPass` (camel). Earlier fixtures were camelCase
+    // and bypassed the wire mapping, so the dead badge passed tests. Drive the
+    // EXACT snake_case string fal/Rust emits through `parseJoinRecords` (the
+    // production `listStoryboards` path) and assert the badge actually renders.
+    const wire =
+      '[{"index":1,"kind":"continuity","applied":true,"ssim":0.93,"psnr":34,"dy":2,"du":1,"dv":1,"pass":true,"attempt":0,"end_ssim":0.91,"end_psnr":33,"end_dy":3,"end_du":1,"end_dv":1,"end_pass":true}]';
+    const joins = parseJoinRecords(wire);
+    // The mapping actually produced the camelCase fields the component reads.
+    expect(joins[0].endSsim).toBe(0.91);
+    expect(joins[0].endPass).toBe(true);
+    const set: Storyboard = {
+      ...SET,
+      keyframes: [
+        { index: 0, jobSetId: "s0", localPath: "/lib/k0.png", estimatedUsd: 0.04, attempt: 0 },
+        { index: 1, jobSetId: "s1", localPath: "/lib/k1.png", estimatedUsd: 0.04, attempt: 0 },
+      ],
+      joins,
+    };
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[set]}
+        onRender={vi.fn()}
+      />,
+    );
+    const end = container.querySelector<HTMLElement>(".storyboard-end")!;
+    expect(end).not.toBeNull();
+    expect(end.textContent).toContain("0.91");
+    expect(end.getAttribute("data-pass")).toBe("true");
+  });
+
+  it("shows NO end badge for a scored NON-keyframe set (S17 B1 guard)", () => {
+    // Rust serialises `end_ssim:null` on every post-S17 join (the fields are
+    // `#[serde(default)]`, not skipped), so a plain S16 chained set carries them
+    // too. The end badge must still be suppressed when the set is not a keyframe
+    // set — gated on the set having keyframe boundaries, not on the null fields.
+    const wire =
+      '[{"index":1,"kind":"continuity","applied":true,"ssim":0.93,"psnr":34,"dy":2,"du":1,"dv":1,"pass":true,"attempt":0,"end_ssim":null,"end_psnr":null,"end_dy":null,"end_du":null,"end_dv":null,"end_pass":null}]';
+    const set: Storyboard = { ...SET, joins: parseJoinRecords(wire) }; // no keyframes
+    render(
+      <Library
+        jobs={[shot(0, true), shot(1, true)]}
+        selectedId={null}
+        onSelect={noop}
+        onOpenLightbox={noop}
+        storyboards={[set]}
+        onRender={vi.fn()}
+      />,
+    );
+    // The cut badge still shows (S16); the end badge is suppressed.
+    expect(container.querySelector(".storyboard-join")).not.toBeNull();
+    expect(container.querySelector(".storyboard-end")).toBeNull();
   });
 
   it("a settled still shows a thumbnail and offers Regenerate still (S17)", () => {
