@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S17-keyframe-anchored-mode",
+  "currentSlice": "S18-live-spend-gate",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -128,6 +128,12 @@
       "status": "released",
       "started": "2026-09-16",
       "branch": "forge/s17-keyframe"
+    },
+    {
+      "id": "S18-live-spend-gate",
+      "title": "live-spend-gate",
+      "status": "in-progress",
+      "started": "2026-09-16"
     }
   ]
 }
