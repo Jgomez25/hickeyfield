@@ -38,3 +38,8 @@ node_modules
 .DS_Store
 Thumbs.db
 .gstack/
+
+# Owner's private DISCOVER/PLAN inputs — reference material with brand/person
+# content (per the R-BRAND boundary in objective.md: no private/brand material
+# in the repo). Live on disk for the session to read; never committed.
+/.forge/inputs/

@@ -191,3 +191,205 @@ Two are **scope-changing** (flagged).
 - **Q6 — On timeout, is reconciling est-vs-actual billing required, or only preserving the
   resumable/reattachable record?** DEFAULT: preserve the resumable record and record actual
   charge when the result later completes; no separate billing-reconciliation subsystem.
+
+---
+
+# Extension R — Creative Machine (DISCOVER, appended 2026-09-19)
+
+This section EXTENDS the contract above; it does not replace it. The original objective scopes
+"the full studio suite (audio, additional studios) … prompt-rewrite LLM wiring … motion /
+camera-control / multi-op editing beyond the single trim surface" **OUT** (§Constraints
+"Explicitly NOT in scope", ~:89). Extension R deliberately re-opens a **bounded** part of that:
+money-trust, a character library, finishing (captions/audio/looks/aspects), a generic ad studio,
+and multi-ad batching — built on the already shipped S8–S18 foundations by reusing existing seams.
+Everything not listed here stays OUT. All §A no-regression gates still apply to every slice, plus
+the R-RULES below.
+
+Verification tag on each criterion: **[test]** hermetic Rust/vitest (fake-provider seam, no
+network), **[lint]** repo guard script, **[audit]** keyless (`env -u` fal audit / `prices::audit`),
+**[owner-run]** human paid check (one per new billing shape; agents never spend).
+
+## R0 — Mission + scope change
+- **R0.1** Extension R serves three generic jobs on the existing engine: (a) a single piece of
+  content, (b) a finished ad, (c) a multi-ad/variant batch — "with money you can trust". This is
+  the outcome the R-criteria below make mechanically checkable. [coverage = sum of R1–R5]
+- **R0.2** Newly IN scope (extends §:89): learning cost model v2, character library, finishing
+  wiring, generic ad studio, multi-ad batch. Newly named-OUT and NOT contracted here: ffmpeg
+  sidecar redistribution (stays the documented release blocker); recreating any proprietary studio
+  or model; every M6 "LATER" item (R6). R0.2 frames R1–R6; no test asserts it directly.
+- **R0.3 WORKHORSE (owner, 2026-09-19).** The everyday video model is `minimax_h3_max_turbo`
+  (fal `minimax/h3-max-turbo/{text,image}-to-video`, ~$0.02/s at 768P, native audio + lipsync).
+  Seedance 2.5 and other premium routes are NOT in everyday use. Therefore: the storyboard/ad planner
+  defaults to the workhorse; mock data, fixtures, mockup boards and doc examples lead with it; money
+  accuracy (R1) is proven on its billing shape FIRST (per-second tiers billed on OUTPUT seconds,
+  6 s asked → 6.592 s billed, with a dated promotional-rate flag); no criterion may require a new
+  premium-route purchase — per-token accuracy is validated against jobs already paid. [test] planner
+  default + mock/fixture lead model; [owner-run] one workhorse clip per new billing shape.
+
+## R1 — MONEY TRUST (folds cost-model-v2-spec; supersedes backlog S20 note)
+- **R1.1** `PerToken` carries an explicit per-route tokens-per-second(resolution) table (not one
+  derived constant); the recorded per-token video case (est **$1.95** vs billed **$6.18**, 3.2×)
+  estimates within 20% of $6.18 from the owner's job parameters. [test] + [owner-run] live re-confirm.
+- **R1.2** `PerImageTiered { tiers: [ImageTier{max_megapixels, quality, usd}] }` + `Billable.quality`
+  exist; the GPT-image-class size×quality route is no longer `Unknown`, and its range's `expected`
+  is within 10% of each seeded row ($0.027 / $0.054 / $0.17). [test]
+- **R1.3** BILLED truth is distinct from re-applied formula: `ActualSource::{Billed, BalanceDelta}`
+  added; `Probe`/`OutputCount` are relabelled "re-priced" in the UI and never shown as "actual
+  billed". Usage-API attribution rule: exactly one job in the bucket window → `Billed`; two or more
+  → endpoint×window aggregate and neither job claims the line. [test] on fixture JSON.
+- **R1.4** Calibration store: table `price_observation(route_id, billable_json, est_usd, billed_usd,
+  source, observed_at, feed_version)` via a new append-only `store.rs` migration (next after the
+  current 11); estimator applies per-route `ratio = median(billed/est, N≤20)`. [test]
+- **R1.5** Estimates are RANGES `{low, expected, high, confidence}`; with 0/2/5 observations the
+  range widens/narrows per spec priors (PerSecond/PerImage ±10%, Tiered ±25%, PerToken ×0.8–3.5,
+  Unknown = no number, never $0). [test]
+- **R1.6** Drift alarm: when `|billed/est − 1| > AUDIT_TOLERANCE−1` the delta shows on the job card,
+  in the picker for that route, and adds an `audit()` row. [test] + [audit]
+- **R1.7** Dated free-web-sandbox hint from a static `sandbox_free.json` {route_id, free_per_day,
+  as_of, source}: renders "Free in the provider web sandbox (N/day, as of DATE) — this app bills the
+  API: $X", never alters `usd`, degrades silently when stale (>30 d). [test]
+- **R1.8** Per-day and per-project USD budget caps enforced in the S18 `ProviderClient::submit` /
+  `spend_gate.rs` path: refuses when `spent_today + estimate.high > cap` BEFORE any socket (same
+  unroutable-proxy proof style as S18). [test]
+- **R1.9** A ledger view reports per-project and per-character totals (kept vs discarded); per-
+  character spend equals the sum of that character's jobs' actuals. [test]
+
+## R2 — CHARACTERS (folds character-library-data-model)
+- **R2.1** Character schema + invariants via a new `store.rs` migration: `character`,
+  `character_asset`, `character_voice` (LoRA table deferred to R6). Identity is IMAGE-ANCHORED —
+  one anchor asset, never a prompt/seed; `identity_spec` is reusable data on the character. [test]
+- **R2.2** `new_still` picks an EDIT-capable route only (route accepts `image_urls` per
+  `fal_schema.rs`/`capability.rs` AND preserves subject) and attaches the anchor + a KEEP block from
+  `identity_spec`; a text-to-image-only route is refused with the "no seed → re-roll gives a new
+  face" reason. [test]
+- **R2.3** Lineage/anchor generations enforced: a `reference`/`clip` must chain via `parent_asset_id`
+  to an anchor of the same generation (I2); promoting a new anchor bumps `anchor_generation` and
+  retires the prior generation for NEW work but never deletes (I1, I4). [test]
+- **R2.4** `real_consented` without `consent_ref` fails validation (I3); synthetic personas are
+  stored `synthetic_disclosed`. [test]
+- **R2.5** Voice card + speech rules stored as reusable data and applied by `new_clip`: with a line,
+  the composed prompt places direction first, "say it once then hold" BEFORE the quote, the quoted
+  line LAST; duration = clamp(model range, words×0.45 + 1 s); voice is not locked between runs so the
+  card records a reference clip + a human `identity_check`/voice-match verdict. [test] + [owner-run]
+  for the by-ear voice/lip-sync judgement.
+- **R2.6** `reference_set_gaps` reports empty angle/expression/lighting/wardrobe cells against the
+  target grid (≥12 assets, ≥3 angles, ≥3 expressions, ≥2 lighting, ≥2 wardrobe) for a seeded
+  metadata-only fixture. [test]
+- **R2.7** A storyboard shot can bind `character_id`; a bound shot routes through
+  `new_clip`/`new_still` (anchor carried), replacing the free-text world-block subject, not a raw
+  prompt. [test]
+- **R2.8** Every character operation returns a `JobRequest` that goes through the EXISTING
+  estimate → spend gate → submit path (no new spend path). [test]
+
+## R3 — FINISHING (wire what already exists in `compositor.rs`)
+- **R3.1** `compositor::Caption` is wired into `render.rs` and exposed in the UI; a render with
+  captions burns them and a vitest mounts the caption control. [test]
+- **R3.2** `compositor::AudioTrack` audio bed + ducking is wired into `render.rs` + UI. [test]
+- **R3.3** Speech-to-text for word-timed captions: a documented decision (local sidecar vs priced
+  provider route) with the licence checked either way; whichever is chosen produces word-timed
+  caption cues. DEFAULT is Q-R1. [test] for cue output; licence recorded in DOCUMENT.
+- **R3.4** Post looks ship as NAMED filter presets (e.g. silhouette/luma-crush, grade, grain,
+  handheld, vignette) applied in post via the sidecar. [test]
+- **R3.5** Logo / end-card overlay compositing available in `render.rs` + UI (asset supplied at
+  runtime, never bundled). [test]
+- **R3.6** Per-shot trim handles land as the existing S19 slice (in/out before stitch, total
+  recomputed vs ±10%, continuity frame taken from the trimmed out-point). [test]
+- **R3.7** Aspect variants 9:16, 4:5, 1:1, 16:9 via `compositor::render_variants`. [test]
+
+## R4 — AD STUDIO (generic engine only)
+- **R4.1** Ad TEMPLATES are DATA (not code): beats → shot classes → route class (talking / b-roll
+  people:none / insert / end card), loaded and validated as a schema; a neutral sample template
+  parses and expands. [test]
+- **R4.2** brief → script → storyboard flows through the EXISTING planner (`storyboard.rs` +
+  enhancer/`prompts/`); a brief produces an editable shot list bound to route classes. [test]
+- **R4.3** Per-model prompt STYLE lives in the prompt corpus: styles verbose-cinematic / literal /
+  knob / short selectable per route; newer still models get NO negative prompt and NO CFG (steer via
+  positive texture cues). [test]
+- **R4.4** A realism-cue toggle injects positive texture cues; a post-generation QC checklist overlay
+  renders the pass/fail items. [test] (Rust for the injector, vitest for the overlay.)
+- **R4.5** Per-shot suggestions: "free elsewhere" (from R1.7) and cheaper-route alternatives, each
+  showing per-route cost. [test]
+
+## R5 — MULTI-AD
+- **R5.1** Variant matrix over hook × line × character × aspect × length × caption style expands to a
+  concrete, de-duplicated variant set. [test]
+- **R5.2** REUSE-FIRST planner: given a matrix delta, only changed shots are (re)generated; each
+  variant reports TOTAL and MARGINAL cost. [test]
+- **R5.3** Batch queue runs variants under the R1.8 budget cap (refuses/pauses at the cap). [test]
+- **R5.4** Export bundle writes a manifest + deterministic naming for the batch. [test]
+- **R5.5** Optional results import (CSV) tags winners on the matrix. [test]
+
+## R6 — LATER (recorded, NOT contracted now)
+- **R6.1** Character LoRA training via catalogue trainer routes (`character_lora` table + always-
+  range-estimated, budget-capped). Not built in Extension R; recorded for a future contract.
+- **R6.2** Headless CLI / MCP surface over owned code. Not built here.
+- These carry no acceptance criteria in this contract by design.
+
+## R-BRAND — brand-pack hard boundary
+- **R-BRAND.1** Brand/client material loads at RUNTIME from a private folder OUTSIDE the repo
+  (default `~/Documents/hickeyfield-brand-packs/<brand>/`, path configurable; see Q-R4). [test]
+- **R-BRAND.2** A documented pack format exists: manifest + templates + characters + assets + claims
+  rules; a schema test validates the format. [test]
+- **R-BRAND.3** Only a NEUTRAL sample pack ships in-repo. [test]
+- **R-BRAND.4** A lint/test FAILS if brand-pack content or named private material (any brand, client,
+  person, character name, script line, hook, or claim from the owner's private notes) appears in the
+  repo, tests, or fixtures. [lint] in the `lint-provenance.py` / `lint-spend.py` family.
+
+## R-FIELD — field-lesson → criterion map (every master-prompt lesson is an AC)
+| Field lesson (restated generically) | Criterion |
+|---|---|
+| Realism is a recipe (real environment + people, candid/phone-native, texture cues; a lone locked talking head fails) | R4.4 (+ QC checklist) |
+| Newer still models take no negative prompt and no CFG; steer with positive texture language | R4.3 |
+| Identity wording is reusable data stored on the character | R2.1 / R2.2 (`identity_spec`) |
+| Bill on OUTPUT seconds, not requested (e.g. 6 s asked → 6.592 s delivered) | R1 (actual uses probed output duration) |
+| Speech: direction first, "say once then hold" before the quote, quoted line last, ≤ ~6 s lines; voice not locked between runs → reference clip + human match | R2.5 |
+| Same model can be free in the provider web sandbox and ~7× dearer on the API; warn before the click | R1.7 |
+| Multi-model compare silently includes paid routes → always show per-route cost | R4.5 (+ R1.6 delta) |
+| Looks/silhouettes are cheaper and more reliable in post than in the prompt | R3.4 |
+
+## R-UX — mockup-first redesign, pass 2
+- **R-UX.1** The owner-approved S11 direction (dark studio, vermilion accent, Bebas Neue / Space
+  Grotesk / Inter / IBM Plex Mono, original assets, provenance lint) is the baseline; a mockup-first
+  pass 2 covers the Ad Studio / Storyboard flow, Library sets, Characters, Variant matrix, and money
+  surfaces. Mockups precede code, STAGED: undesigned screens first, polish second. [owner-run]
+  approval of boards + [test] that provenance lint stays green.
+- **R-UX.2** Test-locked selectors are preserved; every screen is previewable in the browser mock
+  mode. [test] (vitest asserts locked selectors present; mock mode renders).
+
+## R-RULES — non-negotiable (contract restatement)
+- **R-RULES.1** Spend hygiene on EVERY agent command: `HICKEYFIELD_NO_KEYCHAIN=1` + dummy
+  `hickeyfield_*_KEY=x` SET (never stripped); NEVER set `HICKEYFIELD_ALLOW_SPEND`; never run
+  first_light; tests hermetic via fixtures + the S18 fake-provider seam. [lint] + [test]
+- **R-RULES.2** No purchase of any kind without first stating what it is, the cost, and the
+  alternatives, and getting the owner's explicit go; paid confirmations are owner-run only, one per
+  new billing shape. [owner-run]
+- **R-RULES.3** FORGE loop (DESIGN→IMPLEMENT→TEST→REVIEW→SECURITY→DOCUMENT→RELEASE), `gate.py`
+  exit 0, distinct agents, never hand-edit a verdict, max two repair rounds then escalate; reuse
+  before building; commit at RELEASE only; never bare `cargo build`. [gate]
+- **R-RULES.4** Licence: repo is AGPL; copy nothing in from proprietary repos and nothing out; new
+  deps go through `deny.toml`; the ffmpeg macOS sidecar stays a documented, non-redistributable
+  release blocker (out of scope here). [audit] `cargo deny` + provenance lint.
+- **R-RULES.5** Persona safety: real people require a `consent_ref` (R2.4); synthetic personas are
+  disclosed-synthetic. [test]
+
+## R — Open questions (each has a DEFAULT; scope-changing ones flagged)
+- **Q-R1 — Speech-to-text: local sidecar or priced provider route?** DEFAULT: local sidecar for
+  word-timed captions (no per-use spend, no new provider dependency), licence recorded in DOCUMENT;
+  a priced route is a later option. Non-scope-changing.
+- **Q-R2 — SCOPE-CHANGING. Billed-truth source, given fal exposes no per-request cost** (usage API
+  has no request_id; per memory `fal-cost-apis`). DEFAULT: run on `Probe`/`OutputCount` +
+  calibration priors and SAY SO; treat the ADMIN usage key as OPTIONAL, and `BalanceDelta` as a
+  lower-trust fallback only when exactly one job is in flight. Making `Billed` truth a hard
+  requirement adds an admin-key ingestion subsystem (scope-changing).
+- **Q-R3 — SCOPE-CHANGING. Is the full R3 finishing set + R4/R5 studios in THIS contract, or only
+  R1 (money) + R2 (characters) first?** DEFAULT: contract all of R1–R5 as the bounded scope
+  extension, but PLAN sequences money + characters first per owner priority; R6 stays out.
+  Confirming R4/R5 as later-only would shrink the contract.
+- **Q-R4 — Brand-pack root path.** DEFAULT: `~/Documents/hickeyfield-brand-packs/<brand>/`,
+  configurable in settings. Non-scope-changing.
+- **Q-R5 — Budget-cap semantics.** DEFAULT: per-day AND per-project USD caps, evaluated against
+  `spent_today + estimate.high` (billed where known, else expected), refusing before any socket in
+  the S18 gate path. Non-scope-changing.
+- **Q-R6 — Continuity priority ordering.** DEFAULT: the owner's standing "continuity is the money
+  problem" priority is preserved — S19 trim handles and threshold calibration are NOT displaced by
+  Extension R; the owner orders the queue at PLAN. Non-scope-changing.

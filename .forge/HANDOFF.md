@@ -1,3 +1,51 @@
+# HANDOFF — hickeyfield FORGE — Extension R PLANNED, paused for owner to pick a slice (2026-09-19)
+
+## What this session did (DISCOVER + PLAN only; NO source, NO build, NO spend)
+- The owner pasted a master prompt (`.forge/inputs/MASTER-PROMPT-creative-machine.md`) turning hickeyfield
+  into a creative machine for single pieces, finished ads, and multi-ad batches, with trustworthy money.
+- DISCOVER: appended **"Extension R — Creative Machine"** to `.forge/objective.md` (heading ~:197): R0–R6,
+  R-BRAND, R-FIELD lesson→criterion map, R-UX, R-RULES, Q-R2/Q-R3; 52 numbered [test]/[lint]/[audit]/
+  [owner-run] criteria. Includes **R0.3 WORKHORSE**.
+- PLAN: merged into `.forge/backlog.md` as **"Extension R queue (PLAN, 2026-09-19)"** — 32 slices S19–S50
+  (+ R6 LATER), one-line delivers · size · deps · owned R-criteria · seams; criterion→slice map, no
+  uncovered criterion, every field lesson owned once. S19/S20 reservations kept.
+
+## HARD owner facts learned this session (encode everywhere)
+- **WORKHORSE = `minimax_h3_max_turbo`** (fal `minimax/h3-max-turbo/{t2v,i2v}`, ~$0.02/s at 768P, native
+  audio+lipsync, bills on OUTPUT seconds: 6 s → 6.592 s ≈ $0.13). **Seedance 2.5 is NOT used (too dear).**
+  Every default/mock/fixture/mockup/paid-check leads with the workhorse (R0.3; backlog banner; S20 re-aimed).
+  Memory: [[workhorse-model-h3-max-turbo]].
+- **No Claude API billing.** Owner wanted a Perplexity-style Claude chat but WITHOUT Anthropic API cost;
+  when told the honest options he **dropped it**. Do NOT queue any Claude-API feature. Memory:
+  [[no-claude-api-billing]] (kept as a guardrail even though the feature is dropped).
+- Seedance $6.18-vs-$1.95 case is the OWNER's already-paid job (app DB job_sets `1789605336-seedance_2_5-0`);
+  per-token accuracy (S20) validates against it — **no new Seedance purchase**.
+
+## Repo / git state
+- `main` = 7955b3b (S1–S18 released, installed). This session's plan docs are committed on top (docs-only):
+  `objective.md`, `backlog.md`, `.gitignore`. **`.forge/inputs/` is gitignored** — 4 owner files carry
+  private names (Motum/Mateo/Kumar/Mia/Zelu) which the R-BRAND rule bars from the repo; they live on disk,
+  read them there, never `git add` them. Nothing pushed.
+- Lints pass (`lint-provenance`, `lint-spend`). `objective.md`/`backlog.md` are private-name-clean.
+
+## Owner decisions still OPEN (do not start a slice until answered)
+1. **First slice** — recommended S20 (workhorse billing accuracy) OR pull S27 mockup forward to see the
+   redesign first (S27 has no code dep).
+2. **Q-R2 billed-truth source** (blocks S22) — default: output-count probe + calibration priors, optional
+   admin usage key; hard billed-truth adds an admin-key ingestion subsystem.
+3. **Q-R3 contract breadth** — default: contract R1–R5 (money+characters first), R6 LATER; shrink option
+   defers S35+ (finishing/ad-studio/multi-ad).
+
+## Resume rules (unchanged)
+FORGE loop, gate.py exit 0, distinct agents, never hand-edit a verdict, max two repair rounds then escalate.
+Opus 4.8 agents = OMIT the Agent `model` param. Every agent command exports `HICKEYFIELD_NO_KEYCHAIN=1` +
+dummy `hickeyfield_*_KEY=x`; never `HICKEYFIELD_ALLOW_SPEND`; never run first_light; hermetic tests via
+fixtures + the S18 fake-provider seam. No purchase without stating what/cost/alternatives and an explicit go.
+When briefing a planning/design agent, STATE THE WORKHORSE — two agents missed it this session because the
+brief didn't. First redesign-pass-2 board (S27) and the storyboard/ad flow are the owner's stated pain point.
+
+---
+# (previous handoffs kept below)
 # HANDOFF — hickeyfield FORGE — PAUSED by owner after S18 (2026-09-16, evening)
 
 ## State at pause

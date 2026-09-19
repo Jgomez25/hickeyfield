@@ -293,3 +293,269 @@ mandatory slice; tracked here for prioritization.
 - **PAUSED by owner after S18 (2026-09-16).** Next when resumed: S19 shot trim handles, S20 per-token
   pricing accuracy (Seedance 2.5 3.2× under-quote on the owner's real job), continuity threshold
   calibration (human-run on one paid 2×15 set).
+
+---
+
+## Extension R queue (PLAN, 2026-09-19)
+
+**WORKHORSE (owner, 2026-09-19): `minimax_h3_max_turbo` (fal `minimax/h3-max-turbo/{text,image}-to-video`,
+~$0.02/s at 768P, native audio + lipsync) is the everyday model.** Seedance 2.5 is NOT in use (too
+expensive for the owner right now). Every default, sample, fixture, mock, mockup board, planner default,
+money-accuracy target and owner-run paid check in this queue is H3 Max Turbo first; Seedance and other
+premium routes are secondary and must never be the default or the first thing a slice optimises.
+
+Merges objective §"Extension R — Creative Machine" (R0–R6, R-BRAND, R-FIELD, R-UX, R-RULES,
+Q-R*) and the three companion inputs (`cost-model-v2-spec`, `character-library-data-model`,
+`HARNESS-realism-extension`) into thin vertical slices. Numbering continues the live count
+(18 released → next `new-slice.sh` id is **S19**). Owner reservations honored: **S19 = shot
+trim handles**, **S20 = per-token pricing accuracy**; everything else numbered from **S21**.
+All §A no-regression gates and the R-RULES (dummy keys + `HICKEYFIELD_NO_KEYCHAIN=1` SET,
+never `HICKEYFIELD_ALLOW_SPEND`, never run `first_light`, hermetic via fixtures + the S18
+fake-provider seam, commit at RELEASE only, max two repair rounds then escalate) apply to
+EVERY slice below and are not repeated per row.
+
+**Order = analyst proposal (owner decides at PLAN — MASTER-PROMPT: "order is a proposal").**
+Money trust first ("money you can trust") → mockup (so later UI builds against an approved
+design) → brand-pack boundary (R2/R4/R5 depend on it) → characters → finishing → ad studio →
+multi-ad. Continuity priority preserved (Q-R6): **S19 trim handles and the human-run
+continuity-threshold calibration are NOT displaced** and may be pulled forward at the owner's
+word; they are listed in the finishing block by topic but carry their reserved ids.
+
+### SCOPE-CHANGING decision points carried to the owner (defaults assumed; none block PLAN)
+- **Q-R2 — billed-truth source.** DEFAULT (assumed by this plan): run on `Probe`/`OutputCount`
+  + calibration priors and SAY SO; the ADMIN usage key is OPTIONAL; `BalanceDelta` is a
+  lower-trust fallback only when exactly one job is in flight. Making `Billed` a hard
+  requirement adds an admin-key ingestion subsystem — decided at S22 DESIGN.
+- **Q-R3 — contract breadth.** DEFAULT: contract all of R1–R5 as the bounded extension, but
+  sequence money (R1) + characters (R2) FIRST. Confirming R4/R5 (ad studio, multi-ad) as
+  later-only would shrink the contract to S19–S34 and defer S35+ — an explicit owner call.
+- **Q-R1 (non-scope-changing) — STT for word-timed captions:** DEFAULT local sidecar (no
+  per-use spend), licence recorded in DOCUMENT — settled at S35 DESIGN.
+- **Q-R4 (non-scope-changing) — brand-pack root:** DEFAULT `~/Documents/hickeyfield-brand-packs/<brand>/`,
+  configurable — settled at S26.
+- **Q-R5 (non-scope-changing) — budget-cap semantics:** DEFAULT per-day AND per-project USD
+  caps vs `spent_today + estimate.high`, refuse before any socket — settled at S25.
+
+### Ordered table
+
+| # | Slice id | Slug | Delivers (one sentence) | Size | Owns (R-ids) |
+|---|----------|------|-------------------------|------|--------------|
+| S20 | workhorse-billing-accuracy | `workhorse-billing-accuracy` | **H3 Max Turbo first:** estimates bill on OUTPUT seconds (6 s asked → 6.592 s billed = $0.13 at 768P), the per-second tiers carry a dated "promotional rate" flag with a re-check, and the est-vs-billed delta shows on the card; THEN the per-token table (the recorded $1.95 → $6.18 Seedance case) is re-derived hermetically from that settled job — no new Seedance spend. | S | R1.1 |
+| S21 | image-tier-pricing | `image-tier-pricing` | Size×quality image routes (gpt-image-2.5, nano-banana, seedream) quote a real tiered price instead of `Unknown`/flat, within 10% of each seeded row. | S | R1.2 |
+| S22 | billed-truth | `billed-truth` | The app distinguishes true BILLED cost from its own re-priced formula, attributing a usage line to a job only when exactly one job settled in the bucket window. | M | R1.3 |
+| S23 | calibration-and-drift | `calibration-and-drift` | A per-route calibration store learns billed/est ratios and raises a drift alarm (job card + picker + audit row) when a settled job exceeds tolerance. | M | R1.4, R1.6 |
+| S24 | estimate-ranges-hint | `estimate-ranges-hint` | Every estimate becomes a `{low,expected,high,confidence}` range in core and picker, with a dated "free in the provider web sandbox" hint that never alters the billed number. | M | R1.5, R1.7 |
+| S25 | budget-cap | `budget-cap` | Per-day and per-project USD caps refuse in the S18 gate path before any socket when `spent_today + estimate.high > cap`, with the gate moved into a non-overridable trait default. | M | R1.8 |
+| S26 | brand-pack-boundary | `brand-pack-boundary` | Brand/client packs load at runtime from a private folder outside the repo against a documented pack schema; only a neutral sample ships, and a repo lint fails on any private/brand material. | M | R-BRAND.1–4 |
+| S27 | creative-machine-mockup | `creative-machine-mockup` | One owner-approved design direction (extending S11) mocks Ad Studio/Storyboard, Library sets, Characters, the variant matrix, and all money surfaces via the `/design` skill — no source change. | M | R-UX.1 |
+| S28 | storyboard-css-groundwork | `storyboard-css-groundwork` | The ~450 flat storyboard lines are extracted to a component sheet with the orphan rule deleted and mock data added, so every screen previews under `pnpm dev` with all test-locked selectors intact. | S | R-UX.2 |
+| S29 | character-core | `character-core` | The owner can promote a generated still into a saved, image-anchored Character with lineage, anchor-generation, and consent invariants enforced (no generation yet). | M | R2.1, R2.3, R2.4 |
+| S30 | character-still | `character-still` | "New still" of a saved character generates only through a subject-preserving edit route carrying the anchor + identity KEEP block (text-to-image refused), through the existing estimate→gate→submit path. | M | R2.2, R2.8 |
+| S31 | character-clip | `character-clip` | "New clip" animates a character via i2v with the voice card's speech rules (direction first, "say once then hold" before the quoted line last) and line-sized duration, through the existing gate path. | M | R2.5 |
+| S32 | character-ui | `character-ui` | The Library gains a Characters tab (anchor card, reference grid with empty-cell gaps, voice card) built against the approved mockup. | M | R2.6 |
+| S33 | storyboard-character-binding | `storyboard-character-binding` | A storyboard shot can bind a character and then routes through `new_clip`/`new_still` carrying the anchor instead of a free-text world-block subject. | S | R2.7 |
+| S34 | ledger-view | `ledger-view` | A ledger reports per-project and per-character spend totals (kept vs discarded), with per-character spend equal to the sum of that character's jobs' actuals. | S | R1.9 |
+| S19 | shot-trim-handles | `shot-trim-handles` | Per-shot in/out trim before stitch, with total recomputed against ±10% and the continuity frame taken from the trimmed out-point. | S | R3.6 |
+| S35 | captions-and-stt | `captions-and-stt` | Renders can burn word-timed captions: `compositor::Caption` is wired into `render.rs` + UI, fed by an STT decision (Q-R1 default local sidecar, licence recorded). | M | R3.1, R3.3 |
+| S36 | audio-bed-ducking | `audio-bed-ducking` | An audio bed with ducking is wired from `compositor::AudioTrack` into `render.rs` and exposed in the UI. | S | R3.2 |
+| S37 | post-looks-presets | `post-looks-presets` | Named post-look filter presets (silhouette/luma-crush, grade, grain, handheld, vignette) apply in post via the sidecar — cheaper and more reliable than in-prompt. | S | R3.4 |
+| S38 | logo-endcard-overlay | `logo-endcard-overlay` | Logo / end-card overlay compositing is available in `render.rs` + UI, with the asset supplied at runtime and never bundled. | S | R3.5 |
+| S39 | aspect-variants | `aspect-variants` | A finished render can emit 9:16, 4:5, 1:1, and 16:9 aspect variants via `compositor::render_variants`. | S | R3.7 |
+| S40 | ad-templates-data | `ad-templates-data` | Ad templates are validated DATA (beats → shot classes → route class), and a neutral sample template parses and expands. | S | R4.1 |
+| S41 | brief-to-storyboard | `brief-to-storyboard` | A brief flows brief → script → editable shot list bound to route classes through the existing planner/enhancer. | M | R4.2 |
+| S42 | prompt-style-per-model | `prompt-style-per-model` | Per-route prompt STYLE (verbose-cinematic / literal / knob / short) is selectable, and newer still models get no negative prompt and no CFG. | S | R4.3 |
+| S43 | realism-cue-and-qc | `realism-cue-and-qc` | A realism-cue toggle injects positive texture cues and a post-generation QC checklist overlay renders pass/fail items (the "realism is a recipe" lesson). | S | R4.4 |
+| S44 | per-shot-cost-suggestions | `per-shot-cost-suggestions` | Each shot shows "free elsewhere" and cheaper-route alternatives, each with its per-route cost, so a compare never hides a paid route. | S | R4.5 |
+| S45 | variant-matrix | `variant-matrix` | A variant matrix over hook × line × character × aspect × length × caption style expands to a concrete, de-duplicated variant set. | M | R5.1 |
+| S46 | reuse-first-planner | `reuse-first-planner` | Given a matrix delta, only changed shots regenerate, and each variant reports TOTAL and MARGINAL cost. | M | R5.2 |
+| S47 | batch-queue-under-cap | `batch-queue-under-cap` | A batch queue runs the variant set under the R1.8 budget cap, refusing/pausing at the cap. | M | R5.3 |
+| S48 | export-bundle | `export-bundle` | The batch exports a bundle with a manifest and deterministic naming. | S | R5.4 |
+| S49 | results-import-csv | `results-import-csv` | Optional CSV results import tags winners on the matrix. | S | R5.5 |
+| S50 | ux-polish-pass | `ux-polish-pass` | Staged polish of Studio/picker/Library plus the recorded S12 minors, against the approved direction. | M | R-UX.1 (polish stage) |
+| — | LATER (not queued) | — | M6: R6.1 character-lora (trainer routes, always-range-estimated + budget-capped) and R6.2 headless CLI/MCP surface — recorded, no acceptance criteria, not started in Extension R. | — | R6.1, R6.2 (deferred) |
+
+### Per-slice detail (depends-on · seams reused · owner-run/paid steps)
+
+- **S20 per-token-accuracy** — deps: none (extends S10 settled-actual path). Seams: `cost.rs`
+  (`PerToken`, `Billable`), `prices.rs` fal prose, S10 settled-output re-price. Owns R1.1 and the
+  R-FIELD lesson *"bill on OUTPUT seconds, not requested"* (est uses probed output tokens/seconds).
+  Order inside the slice: H3 Max Turbo output-seconds billing FIRST (the owner's workhorse), per-token
+  second. Owner-run: **R1.1 live re-confirm** — one paid **H3 Max Turbo** clip (~$0.13) to confirm the
+  output-seconds estimate; the per-token table is validated against the ALREADY-PAID Seedance job in the
+  app DB (est. $1.95 → actual $6.18) — **no new Seedance purchase** (agents never spend).
+- **S21 image-tier-pricing** — deps: S20. Seams: `cost.rs` (add `PerImageTiered` + `Billable.quality`),
+  `prices.rs` (`ImageSizeTier`), `registry.rs` `priced_routes`. Owns R1.2. Hermetic (seeded rows
+  0.027/0.054/0.17). Owner-run: one paid gen per new shape at S22/human-run (R1.2 rows already
+  measured 2026-09-18 in the cost-v2 spec).
+- **S22 billed-truth** — deps: S21. Seams: `cost.rs` `ActualSource` (add `Billed`,`BalanceDelta`),
+  `runner.rs` actual write, `store.rs`. Owns R1.3. **Decision point Q-R2 resolved here** (admin
+  usage key OPTIONAL). Owner-run: **R1.9/AC9-style one paid gen per new billing shape** to confirm
+  billed truth (optional; only if the admin usage key is enabled).
+- **S23 calibration-and-drift** — deps: S22. Seams: new append-only `store.rs` migration (next
+  after the current 11) for `price_observation`, `prices::audit` row, picker + job-card surfaces.
+  Owns R1.4, R1.6. Hermetic (fixture at billed/est = 3.2 raises the alarm).
+- **S24 estimate-ranges-hint** — deps: S23. Seams: `cost.rs` `Estimate` → range, picker UI, static
+  `sandbox_free.json`. Owns R1.5, R1.7 and the R-FIELD lesson *"same model free in the web sandbox,
+  ~7× dearer on the API — warn before the click"*. Hermetic.
+- **S25 budget-cap** — deps: S24. Seams: `spend_gate.rs` / `ProviderClient::submit` (the S18 gate),
+  **carries the S18 follow-up "gate in a non-overridable trait default (delegating to submit_inner)"**.
+  Owns R1.8. **Decision point Q-R5** (per-day AND per-project). Hermetic (unroutable-proxy proof,
+  same style as S18). No owner-run spend.
+- **S26 brand-pack-boundary** — deps: none (placed EARLY because R2/R4/R5 load packs). Seams: new
+  runtime loader, `lint-provenance.py`/`lint-spend.py` family. Owns R-BRAND.1–4. **Decision Q-R4**
+  (root path). Hermetic + [lint]. No brand/private material ever enters the repo.
+- **S27 creative-machine-mockup** — deps: S25 (money surfaces designed against real semantics);
+  builds on the approved S11 direction. Seams: `/design` skill, S11 `tokens.css`/vermilion system,
+  provenance lint. Owns R-UX.1 (boards). **Owner-run approval gate on the boards; NO source change.**
+- **S28 storyboard-css-groundwork** — deps: S27 (approved direction). Seams: extract
+  `ui/src/base.css:662-1114` → `ui/src/components/storyboard.css`, delete orphan
+  `.storyboard-regenerate-join`, add storyboard sets/joins/keyframes/renders/render-progress mock
+  data to `ui/src/mock.ts`. Owns R-UX.2. Keeps ALL test-locked selectors; every screen previews
+  under `pnpm dev`.
+- **S29 character-core** — deps: S26 (pack boundary), S25 (gate path exists). Seams: new `store.rs`
+  migration (`character`,`character_asset`,`character_voice`), store.rs patterns. Owns R2.1
+  (image-anchored `identity_spec` → the R-FIELD *"identity wording is reusable data"* lesson),
+  R2.3 (lineage/anchor generations, I1/I2/I4), R2.4 (consent I3; R-RULES.5). Hermetic (metadata-only
+  neutral synthetic-persona fixture; NO face media and no private names in repo). *Note: the one borderline-horizontal slice — kept
+  as its own step because the consent/lineage invariants are safety-critical and must land + be
+  tested before any character submit loop; its visible deliverable is a promoted anchor in the list.*
+- **S30 character-still** — deps: S29, **S18 fake-provider seam (must be present before this new
+  submit loop)**, S25 (gate). Seams: `capability.rs`/`fal_schema.rs` (`image_urls` edit routes),
+  estimate→spend_gate→submit. Owns R2.2 + R2.8 (character ops use the EXISTING spend path).
+  Owner-run: none (hermetic via fake-provider seam).
+- **S31 character-clip** — deps: S30, S18 fake-provider seam. Seams: i2v route, voice card rules,
+  duration clamp. Owns R2.5 + the R-FIELD speech lesson. **Owner-run: by-ear voice / lip-sync
+  `identity_check` verdict** (R2.5 human match — judgement, not spend).
+- **S32 character-ui** — deps: S27 (design), S31. Seams: Library Characters tab, reference grid.
+  Owns R2.6 (empty angle/expression/lighting/wardrobe cells rendered). Hermetic vitest.
+- **S33 storyboard-character-binding** — deps: S31, S13 storyboard (released). Seams: `storyboard.rs`
+  shot binding, `chain.rs`/`new_clip`. Owns R2.7. Hermetic.
+- **S34 ledger-view** — deps: S29 (character_id on jobs), S22 (billed/actual). Seams: `store.rs`
+  job actuals, ledger UI. Owns R1.9. Hermetic. *(Placed after characters because per-character
+  totals require the character schema — the only R1 slice sequenced after R2.)*
+- **S19 shot-trim-handles** — deps: S15/S16/S17 chaining (released). Seams: `compositor.rs` trim,
+  `render.rs` stitch, continuity-frame extract. Owns R3.6. **Owner-prioritized (continuity =
+  money-in-the-bank); may be pulled forward.** Hermetic + `--ignored` ffmpeg test.
+- **S35 captions-and-stt** — deps: S28 (UI groundwork). Seams: `compositor::Caption` → `render.rs`
+  + UI; STT sidecar (Q-R1). Owns R3.1, R3.3. Licence recorded in DOCUMENT. Hermetic (cue output).
+- **S36 audio-bed-ducking** — deps: S35 (render.rs finishing surface). Seams: `compositor::AudioTrack`.
+  Owns R3.2. Hermetic.
+- **S37 post-looks-presets** — deps: S36. Seams: sidecar filter presets. Owns R3.4 + the R-FIELD
+  *"looks/silhouettes are cheaper and more reliable in post"* lesson. Hermetic + `--ignored`.
+- **S38 logo-endcard-overlay** — deps: S37. Seams: `render.rs` overlay compositing. Owns R3.5.
+  Asset supplied at runtime, never bundled. Hermetic.
+- **S39 aspect-variants** — deps: S37. Seams: `compositor::render_variants`. Owns R3.7. Hermetic.
+- **S40 ad-templates-data** — deps: S26 (pack format). Seams: template schema loader/validator,
+  neutral sample template. Owns R4.1. Hermetic.
+- **S41 brief-to-storyboard** — deps: S40, S13. Seams: `storyboard.rs` planner + enhancer/`prompts/`.
+  Owns R4.2. Hermetic.
+- **S42 prompt-style-per-model** — deps: S41. Seams: prompt corpus. Owns R4.3 + the R-FIELD
+  *"newer still models take no negative prompt and no CFG"* lesson. Hermetic.
+- **S43 realism-cue-and-qc** — deps: S41. Seams: cue injector (Rust) + QC overlay (vitest). Owns
+  R4.4 + the R-FIELD *"realism is a recipe"* lesson. Hermetic.
+- **S44 per-shot-cost-suggestions** — deps: S24 (free-tier hint + ranges), S21/S20 (per-route cost),
+  S41. Seams: picker/compare per-route cost. Owns R4.5 + the R-FIELD *"multi-model compare always
+  shows per-route cost"* lesson (with the R1.6 drift delta). Hermetic.
+- **S45 variant-matrix** — deps: S33 (character axis), S39 (aspect axis), S41. Owns R5.1. Hermetic.
+- **S46 reuse-first-planner** — deps: S45, S23 (marginal cost from calibrated estimates). Owns R5.2.
+  Hermetic.
+- **S47 batch-queue-under-cap** — deps: S46, S25 (cap), **S18 fake-provider seam (new submit loop)**.
+  Owns R5.3. Hermetic (refuses/pauses at the cap; unroutable-proxy proof). No owner-run spend.
+- **S48 export-bundle** — deps: S47. Owns R5.4. Hermetic (manifest + deterministic naming).
+- **S49 results-import-csv** — deps: S45. Owns R5.5. Hermetic.
+- **S50 ux-polish-pass** — deps: S27 + the shipped UI slices (S28/S32/S44). Seams: Studio/picker/Library
+  sheets + recorded S12 minors. Owns R-UX.1 polish stage. [owner-run] board approval of the polish
+  pass; provenance lint stays green.
+- **LATER (R6, not queued):** R6.1 character-lora (`character_lora` table, trainer routes, always
+  range-estimated + budget-capped) and R6.2 headless CLI/MCP surface — recorded per R0.2/R6, no
+  acceptance criteria in this contract, not started.
+
+### Extension-R criterion → slice coverage map
+
+| Extension-R criterion | Slice(s) |
+|-----------------------|----------|
+| R0.1 (three generic jobs "with money you can trust") | Sum of R1–R5 = S19–S50 (framing; no direct test) |
+| R0.2 (scope in/out framing) | Framing only; no test (bounds S19–S50; R6 = LATER) |
+| R1.1 per-token table (Seedance ≤20%) | S20 |
+| R1.2 PerImageTiered + Billable.quality | S21 |
+| R1.3 ActualSource::{Billed,BalanceDelta} + attribution | S22 |
+| R1.4 calibration store + applied ratio | S23 |
+| R1.5 estimate RANGES | S24 |
+| R1.6 drift alarm (card + picker + audit) | S23 |
+| R1.7 dated free-web-sandbox hint | S24 |
+| R1.8 per-day/per-project budget cap in gate | S25 |
+| R1.9 per-project / per-character ledger | S34 |
+| R2.1 character schema + image-anchored identity_spec | S29 |
+| R2.2 new_still (edit-route-only, KEEP block) | S30 |
+| R2.3 lineage / anchor generations (I1,I2,I4) | S29 |
+| R2.4 consent (I3) + synthetic-disclosed | S29 |
+| R2.5 voice card + speech rules (new_clip) | S31 |
+| R2.6 reference_set_gaps grid | S32 |
+| R2.7 storyboard shot ↔ character binding | S33 |
+| R2.8 character ops through existing estimate→gate→submit | S30, S31 |
+| R3.1 captions wired into render.rs + UI | S35 |
+| R3.2 audio bed + ducking | S36 |
+| R3.3 STT word-timed caption cues | S35 |
+| R3.4 named post-look presets | S37 |
+| R3.5 logo/end-card overlay | S38 |
+| R3.6 per-shot trim handles | S19 |
+| R3.7 aspect variants | S39 |
+| R4.1 ad templates as data | S40 |
+| R4.2 brief → script → storyboard | S41 |
+| R4.3 per-model prompt style (no neg/CFG on newer still) | S42 |
+| R4.4 realism-cue toggle + QC checklist | S43 |
+| R4.5 per-shot free/cheaper-route + per-route cost | S44 |
+| R5.1 variant matrix expansion | S45 |
+| R5.2 reuse-first planner (total + marginal cost) | S46 |
+| R5.3 batch queue under budget cap | S47 |
+| R5.4 export bundle (manifest + naming) | S48 |
+| R5.5 results import (CSV) tags winners | S49 |
+| R6.1 character LoRA / R6.2 CLI-MCP | LATER (not queued; no ACs by design) |
+| R-BRAND.1–4 (runtime pack, schema, neutral sample, lint) | S26 |
+| R-UX.1 mockup boards (+ polish stage) | S27 (+ S50 polish) |
+| R-UX.2 test-locked selectors + browser mock mode | S28 |
+| R-RULES.1–5 (spend hygiene, purchase gate, FORGE loop, licence, persona) | Cross-cutting — enforced on EVERY slice |
+
+### R-FIELD lesson → owning slice (each lesson owned by exactly ONE slice)
+
+| Field lesson | Criterion | Owning slice |
+|--------------|-----------|--------------|
+| Realism is a recipe (real env + people, candid, texture cues) | R4.4 | S43 |
+| Newer still models take no negative prompt / no CFG | R4.3 | S42 |
+| Identity wording is reusable data on the character | R2.1 | S29 |
+| Bill on OUTPUT seconds, not requested | R1 (probed output) | S20 |
+| Speech: direction first, "say once then hold", quoted line last; voice not locked → reference clip + human match | R2.5 | S31 |
+| Same model free in web sandbox, ~7× dearer on the API — warn first | R1.7 | S24 |
+| Multi-model compare must always show per-route cost | R4.5 (+ R1.6) | S44 |
+| Looks/silhouettes cheaper + more reliable in post than in prompt | R3.4 | S37 |
+
+### Uncovered Extension-R criterion
+
+NONE. Every testable Extension-R criterion (R1.1–R5.5, R-BRAND.1–4, R-UX.1/.2) maps to exactly
+one owning slice; R0.1/R0.2 are framing (coverage = sum of R1–R5), R-RULES.1–5 are cross-cutting,
+and R6.1/R6.2 are recorded LATER with no acceptance criteria by design.
+
+### Finding: Extension R is ~5 milestones ≈ several forge runs (exceeds the 3–8 preference)
+
+Extension R queues **32 slices (S19–S50)**, far above FORGE's 3–8 preference. That is honest:
+the contract spans five milestones (M1 money, M2 characters, M3 finishing, M4 ad studio, M5
+multi-ad) plus the brand-pack boundary and a two-stage UX redesign — effectively five forge
+runs' worth. Per the MASTER-PROMPT ("order is a proposal; I decide") the full ordered queue is
+presented for the owner to pick from ONE slice at a time; this is a planning artifact, not a
+mega-backlog to run in one pass. Recommended cadence: run **M1 (S20–S25) first for money you
+can trust**, then the mockup + brand pack (S26–S28), then characters (S29–S34); confirm Q-R3
+before committing S35+ (finishing/ad-studio/multi-ad), which Q-R3's shrink option would defer.
+
+### Slices I had to split (an L must be split)
+
+- **Money "billed-truth + calibration + drift" (cost-v2 spec's single S22) → S22 + S23.**
+  ActualSource/attribution (R1.3) is a distinct, independently-testable outcome from the
+  `price_observation` store + drift alarm (R1.4/R1.6); together they were L.
+- **Character generation → S30 character-still + S31 character-clip.** `new_still` (edit-route)
+  and `new_clip` (i2v + speech) are two separate submit loops and two separate demoable outcomes;
+  combined they were L and would hide the fake-provider-seam dependency behind one row.
+- **Multi-ad "variant matrix + reuse-first planner" → S45 + S46.** Matrix expansion (R5.1) and
+  the reuse-first marginal-cost planner (R5.2) are separable outcomes; combined they were L.
+- **UX redesign → S27 mockup (owner-approval gate, no code) + S28 css groundwork (code) + S50
+  polish (staged later).** Per the owner's explicit R-UX-1/R-UX-2/R-UX-3 staging; a single UI
+  slice would mix an approval gate, a refactor, and polish into one non-atomic step.
