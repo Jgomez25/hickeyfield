@@ -227,6 +227,14 @@ network), **[lint]** repo guard script, **[audit]** keyless (`env -u` fal audit 
   default + mock/fixture lead model; [owner-run] one workhorse clip per new billing shape.
 
 ## R1 — MONEY TRUST (folds cost-model-v2-spec; supersedes backlog S20 note)
+> **OWNER AMENDMENT 2026-09-19 (S20 start): "we're not using seedance... ever. too expensive."**
+> R1.1 is RE-SCOPED: the per-token table and the $1.95→$6.18 case are DROPPED (per-token = Seedance
+> family only; the recorded job is also absent from the app DB). R1.1 now reads: *per-second video
+> routes settle on OUTPUT seconds — workhorse 6 s → 6.592 s = $0.13184 at 768P; `grok_video_v15` 5 s →
+> 5.04 s = $0.7056 at 720p — the H3 tiers carry a dated promotional-rate flag with a stale re-check, and
+> the est-vs-settled delta shows on the job card.* [test] + optional [owner-run] one workhorse clip.
+> R0.3's "per-token accuracy is validated against jobs already paid" clause is void. The original
+> R1.1 text is kept below for the record only.
 - **R1.1** `PerToken` carries an explicit per-route tokens-per-second(resolution) table (not one
   derived constant); the recorded per-token video case (est **$1.95** vs billed **$6.18**, 3.2×)
   estimates within 20% of $6.18 from the owner's job parameters. [test] + [owner-run] live re-confirm.

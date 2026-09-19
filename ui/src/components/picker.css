@@ -322,6 +322,18 @@
   text-decoration: line-through;
 }
 
+/* A dated promotional-rate badge on a route chip: the quote rests on a launch
+ * rate the provider will revert, so it is worth a small flag with the date.
+ * Additive — the `.chip-route` selector itself is untouched. */
+.model-list .chip-route .route-promo {
+  margin-inline-start: var(--space-100);
+  padding-inline: var(--space-100);
+  border-radius: var(--radius-100);
+  background: var(--bg-secondary);
+  font-size: var(--text-xxs);
+  opacity: 0.75;
+}
+
 .model-list .model-item[data-unrunnable] .model-item-name {
   opacity: 0.55;
 }

@@ -307,6 +307,8 @@ interface RawRoute {
   available?: boolean;
   unavailable_reason?: string | null;
   unavailableReason?: string | null;
+  promo_as_of?: string | null;
+  promoAsOf?: string | null;
 }
 
 /**
@@ -458,6 +460,7 @@ function toRoute(raw: RawRoute | string): Route {
       available: raw.available ?? true,
       unavailableReason:
         raw.unavailable_reason ?? raw.unavailableReason ?? undefined,
+      promoAsOf: raw.promo_as_of ?? raw.promoAsOf ?? undefined,
     };
   }
   const [provider, ...rest] = raw.split(":");

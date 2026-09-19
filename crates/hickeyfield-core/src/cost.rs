@@ -128,6 +128,15 @@ fn default_fps() -> u32 {
     24
 }
 
+/// Appended to every per-second video `basis` so the Generate-button note states
+/// the billing assumption R-FIELD makes a property of *every* per-second route:
+/// the provider charges the seconds it delivered, not the seconds requested, and
+/// a delivered clip can run longer. Number-free on purpose — no invented overrun
+/// constant lives here; the one measured, dated observation (6 s → 6.592 s) is
+/// H3-specific and lives only in the two H3 route notes.
+const OUTPUT_SECONDS_NOTE: &str =
+    " — billed on delivered output seconds; a clip can run longer than requested";
+
 /// A priced estimate, with the reasoning kept alongside the number so the UI
 /// can explain itself instead of asserting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -187,7 +196,10 @@ impl CostModel {
                     .map(|(_, usd)| *usd)?;
                 Some(Estimate {
                     usd: rate * seconds * batch,
-                    basis: format!("{}s x ${rate:.4}/s at {height}p", n(seconds)),
+                    basis: format!(
+                        "{}s x ${rate:.4}/s at {height}p{OUTPUT_SECONDS_NOTE}",
+                        n(seconds)
+                    ),
                     minimum_applied: None,
                 })
             }
@@ -213,6 +225,7 @@ impl CostModel {
                 if batch > 1.0 {
                     basis.push_str(&format!(", batch x{}", n(batch)));
                 }
+                basis.push_str(OUTPUT_SECONDS_NOTE);
                 Some(Estimate {
                     usd: total,
                     basis,
@@ -384,6 +397,50 @@ mod tests {
         let e = m.estimate(&Billable::video(8.0, 1280, 720)).unwrap();
         assert!((e.usd - 0.672).abs() < 1e-9, "{}", e.usd);
         assert!(e.basis.contains("8s"));
+    }
+
+    #[test]
+    fn per_second_basis_states_output_seconds() {
+        // A2: both per-second video shapes must state that billing is on the
+        // delivered output seconds and that a clip can run longer than asked.
+        // The clause is display-only: the `usd` is unchanged from its pre-clause
+        // value, and no invented overrun number appears in the generic basis.
+        let ps = CostModel::PerSecond {
+            usd: 0.084,
+            audio_multiplier: 1.5,
+        };
+        let e = ps.estimate(&Billable::video(8.0, 1280, 720)).unwrap();
+        assert!(
+            e.basis.contains("billed on delivered output seconds"),
+            "basis was {}",
+            e.basis
+        );
+        assert!(
+            e.basis.contains("can run longer than requested"),
+            "basis was {}",
+            e.basis
+        );
+        assert!((e.usd - 0.672).abs() < 1e-9, "usd unchanged: {}", e.usd);
+        // The generic clause carries no overrun constant — the only sanctioned
+        // number is the H3-specific 6.592 observation, which is NOT here.
+        assert!(!e.basis.contains("6.592"), "no dated H3 number here");
+
+        let tiered = CostModel::PerSecondTiered {
+            tiers: vec![(480, 0.0125), (768, 0.02), (1080, 0.04)],
+        };
+        let et = tiered.estimate(&Billable::video(6.0, 1366, 768)).unwrap();
+        assert!(
+            et.basis.contains("billed on delivered output seconds"),
+            "basis was {}",
+            et.basis
+        );
+        assert!(
+            et.basis.contains("can run longer than requested"),
+            "basis was {}",
+            et.basis
+        );
+        assert!((et.usd - 0.12).abs() < 1e-9, "usd unchanged: {}", et.usd);
+        assert!(!et.basis.contains("6.592"), "no dated H3 number here");
     }
 
     #[test]

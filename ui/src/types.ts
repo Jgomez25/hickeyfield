@@ -18,6 +18,12 @@ export interface Route {
   available?: boolean;
   /** Why not, when it cannot. */
   unavailableReason?: string;
+  /**
+   * ISO `YYYY-MM-DD` this route's price was read, when it rests on a
+   * promotional/launch rate the provider will revert. Absent for a permanent
+   * rate.
+   */
+  promoAsOf?: string;
 }
 
 /**

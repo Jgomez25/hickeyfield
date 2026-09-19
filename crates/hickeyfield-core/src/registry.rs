@@ -1162,20 +1162,22 @@ fn priced_routes(id: &str) -> Vec<(Route, CostModel)> {
         // pricing API. `768p` reaches the middle tier via the height map in
         // `commands::resolution_height`.
         "minimax_h3_max" => vec![(
-            Route::noted(
+            Route::promotional(
                 ProviderId::Fal,
                 "minimax/h3-max",
-                "$0.025/s 480p, $0.04/s 768p, $0.08/s 1080p — promotional launch rate (fal index 2026-09-16)",
+                "$0.025/s 480p, $0.04/s 768p, $0.08/s 1080p — promotional launch rate (fal index 2026-09-16); billed on delivered output seconds (measured 2026-09-18: 6 s requested → 6.592 s delivered)",
+                "2026-09-16",
             ),
             CostModel::PerSecondTiered {
                 tiers: vec![(480, 0.025), (768, 0.04), (1080, 0.08)],
             },
         )],
         "minimax_h3_max_turbo" => vec![(
-            Route::noted(
+            Route::promotional(
                 ProviderId::Fal,
                 "minimax/h3-max-turbo",
-                "$0.0125/s 480p, $0.02/s 768p, $0.04/s 1080p — promotional launch rate (fal index 2026-09-16)",
+                "$0.0125/s 480p, $0.02/s 768p, $0.04/s 1080p — promotional launch rate (fal index 2026-09-16); billed on delivered output seconds (measured 2026-09-18: 6 s requested → 6.592 s delivered)",
+                "2026-09-16",
             ),
             CostModel::PerSecondTiered {
                 tiers: vec![(480, 0.0125), (768, 0.02), (1080, 0.04)],
@@ -2513,6 +2515,70 @@ mod tests {
         let p = m.estimate(&plain, &b).unwrap();
         assert!((p.usd - 0.175).abs() < 1e-9, "plain was {}", p.usd);
         assert!(p.minimum_applied.is_none());
+    }
+
+    #[test]
+    fn both_h3_routes_state_output_seconds_in_the_basis() {
+        // A2: the workhorse and its Max sibling quote a basis that states billing
+        // is on delivered output seconds and a clip can run longer than asked —
+        // and carries no invented overrun constant.
+        use crate::cost::Billable;
+        let reg = registry();
+        let b = Billable::video(6.0, 1366, 768);
+        for (model_id, route_id) in [
+            ("minimax_h3_max_turbo", "fal:minimax/h3-max-turbo"),
+            ("minimax_h3_max", "fal:minimax/h3-max"),
+        ] {
+            let m = reg.get(model_id).unwrap();
+            let r = m.route(route_id).unwrap();
+            let basis = m.estimate(r, &b).unwrap().basis;
+            assert!(
+                basis.contains("billed on delivered output seconds"),
+                "{model_id} basis was {basis}"
+            );
+            assert!(
+                basis.contains("can run longer than requested"),
+                "{model_id} basis was {basis}"
+            );
+            // The generic basis carries no dated overrun number — that lives in
+            // the route note, not the estimate basis.
+            assert!(!basis.contains("6.592"), "{model_id} basis was {basis}");
+        }
+    }
+
+    #[test]
+    fn the_h3_tiers_carry_a_dated_promo_marker() {
+        // A3: both H3 tiers carry a structured promo marker as-of 2026-09-16;
+        // every other route in the registry carries none. The dated 6.592s
+        // observation is in the route note (the only place it is sanctioned).
+        use crate::route::PromoRate;
+        let reg = registry();
+        for (model_id, route_id) in [
+            ("minimax_h3_max_turbo", "fal:minimax/h3-max-turbo"),
+            ("minimax_h3_max", "fal:minimax/h3-max"),
+        ] {
+            let r = reg.get(model_id).unwrap().route(route_id).unwrap();
+            assert_eq!(
+                r.promo,
+                Some(PromoRate {
+                    as_of: "2026-09-16".into()
+                }),
+                "{model_id} promo marker missing or wrong"
+            );
+            assert!(
+                r.note.as_deref().unwrap().contains("6.592 s delivered"),
+                "{model_id} note must carry the dated observation"
+            );
+        }
+        // No other route claims a promo marker.
+        for m in reg.values() {
+            for r in &m.routes {
+                if r.id() == "fal:minimax/h3-max-turbo" || r.id() == "fal:minimax/h3-max" {
+                    continue;
+                }
+                assert_eq!(r.promo, None, "{} unexpectedly promotional", r.id());
+            }
+        }
     }
 
     #[test]

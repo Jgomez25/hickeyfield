@@ -290,6 +290,15 @@ mandatory slice; tracked here for prioritization.
   entrypoint-enable test to the `run()` body (currently greps the whole file); hosted gate keys off
   `base_url.is_none()` — revisit if a configurable production base_url is ever added; `lint-spend.py`
   scans `.rs` only (add shell/CI/.env scanning); uploads are ungated (free today); daily budget cap.
+
+### S20 follow-ups (2026-09-19)
+- Remove pre-existing Seedance entries (e.g. `seedance_2_0`) from `ui/src/mock.ts` and sweep defaults/samples for Seedance (owner "never" rule).
+- Mock uses a flat 0.02/s for the tiered workhorse route (demo-only, not the real 480/768/1080 tiers).
+- `parse_iso_date` accepts day 1–31 without per-month validation (panic-free; registry literals only).
+- `promo_recheck` is not surfaced in the app UI (example printer only); live price re-verification belongs with S22.
+- HANDOFF pointer to a settled Seedance job did not resolve in the app DB (moot after the "Seedance never" decision).
+- Optional owner-run: one paid workhorse clip (~$0.13, 768p, 6 s) to live-confirm the output-seconds settle (agents never spend).
+
 - **PAUSED by owner after S18 (2026-09-16).** Next when resumed: S19 shot trim handles, S20 per-token
   pricing accuracy (Seedance 2.5 3.2× under-quote on the owner's real job), continuity threshold
   calibration (human-run on one paid 2×15 set).
@@ -297,6 +306,11 @@ mandatory slice; tracked here for prioritization.
 ---
 
 ## Extension R queue (PLAN, 2026-09-19)
+
+**OWNER AMENDMENT 2026-09-19 (S20 start): Seedance is NEVER used.** S20 drops its per-token half
+(table + $1.95→$6.18 case); it is now workhorse output-seconds settle + promo flag + card delta, with
+`grok_video_v15` (5 s → 5.04 s = $0.7056) as the second measured fixture. Objective R1.1 amended to match.
+The S20 row/detail below is superseded where it mentions per-token; see `slices/S20-*/slice.md`.
 
 **WORKHORSE (owner, 2026-09-19): `minimax_h3_max_turbo` (fal `minimax/h3-max-turbo/{text,image}-to-video`,
 ~$0.02/s at 768P, native audio + lipsync) is the everyday model.** Seedance 2.5 is NOT in use (too
@@ -387,6 +401,16 @@ word; they are listed in the finishing block by topic but carry their reserved i
   `prices.rs` (`ImageSizeTier`), `registry.rs` `priced_routes`. Owns R1.2. Hermetic (seeded rows
   0.027/0.054/0.17). Owner-run: one paid gen per new shape at S22/human-run (R1.2 rows already
   measured 2026-09-18 in the cost-v2 spec).
+  **OWNER NOTE 2026-09-19 — right-size the still to the target video (add as an S21 AC).** i2v output
+  resolution is the MODEL's, not the input's, so a still larger than the target frame is wasted spend.
+  Vertical 9:16 targets: 720p mockup = 720×1280 → the 608×1088 quality-high still ($0.027 measured) fits;
+  1080p final = 1080×1920 (2.07 MP) ≈ the 1152×2048 hero (2.36 MP), so the size saving on finals is only
+  ~12% — the real lever there is quality max → high. Draft rule: ONE 2K/max anchor per character ($0.17,
+  once; it is also the identity anchor for edit routes), cheap stills downstream. AC: when a still feeds
+  a video shot, the picker shows the target frame size and hints the cheapest tier that covers it, with
+  the per-tier price; hint only, never changes the chosen size or `usd`. UNMEASURED (owner is testing
+  himself — agents do not spend, do not seed guesses): price of ~1080×1920 at quality high; whether the
+  9.8 realism score (measured at 2K + max) holds at quality high. Seed those rows only from owner data.
 - **S22 billed-truth** — deps: S21. Seams: `cost.rs` `ActualSource` (add `Billed`,`BalanceDelta`),
   `runner.rs` actual write, `store.rs`. Owns R1.3. **Decision point Q-R2 resolved here** (admin
   usage key OPTIONAL). Owner-run: **R1.9/AC9-style one paid gen per new billing shape** to confirm

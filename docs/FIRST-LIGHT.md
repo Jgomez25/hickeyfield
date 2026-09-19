@@ -134,6 +134,25 @@ fal's catalogue. Either they route elsewhere or they should be excluded — the 
 4. `docs/PARITY.md` §3.3 can drop "no live generation has ever completed" for upload and
    binding, but **not** for the end-to-end path.
 
+## How a per-second video estimate settles (output seconds, promotional rate)
+
+A per-second video model bills on the seconds it *delivers*, not the seconds you *request*, and
+a delivered clip can run slightly longer than asked. The estimate note now says this on every
+per-second quote. When a job completes, its settled cost is re-priced from the file's measured
+duration at the same route rate the estimate used, and the job card shows the delta.
+
+Worked example — the workhorse (MiniMax H3 Max Turbo, $0.02/s at 768p): a 6-second clip whose
+file measures 6.592 seconds settles at 0.02 × 6.592 = **$0.13184**, not the $0.12 a flat
+6 seconds implies. (Grok Imagine 1.5 at 720p, 5 s → 5.04 s, settles $0.7056.) This settled
+figure is re-priced from the delivered duration, not read from a provider invoice — reconciling
+against a true billed charge is a separate, later change.
+
+The H3 Max and H3 Max Turbo tiers run on a **promotional launch rate** (read from the provider
+index on 2026-09-16). Each carries that date as a marker, shown as a small "promotional rate"
+badge in the model picker. The price audit's re-check flags any promotional rate whose marker is
+more than 30 days old, so it can be re-verified before it silently rots. The re-check only knows
+the marker's *age*; it cannot tell whether the provider has actually changed the price.
+
 ## Verifying prices against the live fal API (human-run, spends no money)
 
 The hermetic audit can only compare the handful of fal routes whose price prose reduces to

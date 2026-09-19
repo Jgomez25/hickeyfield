@@ -13,6 +13,18 @@
 use crate::provider::ProviderId;
 use serde::{Deserialize, Serialize};
 
+/// A launch/promotional rate that must be re-verified before it silently rots.
+///
+/// Distinct from a permanent rate: the provider will revert it, so the estimate
+/// carries the date it was transcribed and [`crate::prices::promo_recheck`] flags
+/// it once the marker is older than a stated threshold. Structured (not free
+/// text) so the UI can badge it and the audit can date it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromoRate {
+    /// ISO `YYYY-MM-DD` the rate was read from the provider index.
+    pub as_of: String,
+}
+
 /// One way to reach a model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Route {
@@ -36,6 +48,13 @@ pub struct Route {
     /// mechanism is wired but dormant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_billed_seconds: Option<f64>,
+    /// A promotional/launch rate this route's price rests on, with the date it
+    /// was transcribed. `None` — the case for a permanent rate — means the
+    /// figure is not expected to revert. Mirrors the `min_billed_seconds`
+    /// serde-default precedent: a new field on stored blobs deserialises to
+    /// `None`, so no migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promo: Option<PromoRate>,
 }
 
 impl Route {
@@ -45,6 +64,7 @@ impl Route {
             slug: slug.to_string(),
             note: None,
             min_billed_seconds: None,
+            promo: None,
         }
     }
 
@@ -54,6 +74,7 @@ impl Route {
             slug: slug.to_string(),
             note: Some(note.to_string()),
             min_billed_seconds: None,
+            promo: None,
         }
     }
 
@@ -66,6 +87,22 @@ impl Route {
             slug: slug.to_string(),
             note: Some(note.to_string()),
             min_billed_seconds: Some(min_secs),
+            promo: None,
+        }
+    }
+
+    /// A route whose price is a dated promotional/launch rate the provider will
+    /// revert. `as_of` is the ISO `YYYY-MM-DD` the rate was read from the
+    /// provider index; [`crate::prices::promo_recheck`] flags it once stale.
+    pub fn promotional(provider: ProviderId, slug: &str, note: &str, as_of: &str) -> Self {
+        Route {
+            provider,
+            slug: slug.to_string(),
+            note: Some(note.to_string()),
+            min_billed_seconds: None,
+            promo: Some(PromoRate {
+                as_of: as_of.to_string(),
+            }),
         }
     }
 

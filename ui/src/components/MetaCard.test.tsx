@@ -124,6 +124,35 @@ describe("MetaCard cost states", () => {
     expect(cell?.getAttribute("data-tone")).toBe("over");
   });
 
+  it("workhorse settled job renders the est-vs-settled delta", () => {
+    // A4 (S20): a workhorse clip quoted at $0.12 (6s asked) that settled at
+    // $0.13184 (6.592s delivered) shows a +$0.012 overrun on the card. The
+    // test-locked .meta-card-fields / .meta-card-delta selectors are exercised.
+    render(
+      <MetaCard
+        job={job({ estimatedUsd: 0.12, actualUsd: 0.13184 })}
+        model={null}
+        selected={false}
+        onSelect={noop}
+        onRerun={noop}
+        onDelete={noop}
+      />,
+    );
+    expect(fields()).toContain("Delta");
+    const cell = deltaCell();
+    expect(cell).not.toBeNull();
+    expect(cell?.textContent).toBe("+$0.012");
+    expect(cell?.getAttribute("data-tone")).toBe("over");
+    // The locked field labels are all present and in order.
+    expect(fields()).toEqual([
+      "Route",
+      "Estimated cost",
+      "Actual cost",
+      "Delta",
+      "Enhancer",
+    ]);
+  });
+
   it("both present and under: shows a saving", () => {
     render(
       <MetaCard

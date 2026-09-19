@@ -926,6 +926,105 @@ mod tests {
         assert_eq!(a10, Some(prices.estimate(m, r, &settled).unwrap().usd));
     }
 
+    fn workhorse_768p_job() -> JobSet {
+        // The workhorse: fal minimax/h3-max-turbo, PerSecondTiered, 768p → the
+        // (768, 0.02) tier. Requested at 6s; the probe overrides the quantity.
+        let mut j = job("wh");
+        j.model_id = "minimax_h3_max_turbo".into();
+        j.route_id = "fal:minimax/h3-max-turbo".into();
+        j.status = JobStatus::Completed;
+        j.settings = serde_json::json!({"duration": 6.0, "resolution": "768P"});
+        j.results = vec![Output {
+            url: "https://a/x.mp4".into(),
+            kind: OutputKind::Video,
+            local_path: Some("/lib/x.mp4".into()),
+        }];
+        j
+    }
+
+    #[test]
+    fn workhorse_768p_settles_on_output_seconds() {
+        // A1: a 6s-requested workhorse clip whose probe is 6.592s settles at the
+        // delivered seconds — 0.02 × 6.592 = $0.13184, NOT 0.02 × 6 = $0.12. The
+        // source stays Probe (re-priced), never a "billed" label.
+        let prices = crate::pricing::Prices::bundled();
+        let j = workhorse_768p_job();
+        let dims = MediaDims {
+            seconds: Some(6.592),
+            width: Some(1366),
+            height: Some(768),
+        };
+        let (actual, src) = compute_actual(&j, &prices, dims);
+        let usd = actual.expect("workhorse prices from the registry literal");
+        assert!(
+            (usd - 0.13184).abs() < 0.001,
+            "expected $0.13184 on delivered 6.592s, got {usd}"
+        );
+        assert!(
+            (usd - 0.12).abs() > 0.001,
+            "must not price the requested 6s ($0.12): got {usd}"
+        );
+        assert_eq!(src, Some(ActualSource::Probe));
+    }
+
+    #[test]
+    fn workhorse_i2v_prices_the_same_output_seconds() {
+        // A1 "same for i2v": one route serves both text- and image-to-video, and
+        // the PerSecondTiered literal is identical. Attaching a start-frame ref
+        // (the i2v signal) must not change the settled price.
+        use hickeyfield_core::media::{MediaRef, MediaRole};
+        let prices = crate::pricing::Prices::bundled();
+        let mut j = workhorse_768p_job();
+        j.media = vec![MediaRef::url(
+            MediaRole::Start,
+            "https://cdn.example/frame.png",
+        )];
+        let dims = MediaDims {
+            seconds: Some(6.592),
+            width: Some(1366),
+            height: Some(768),
+        };
+        let (actual, src) = compute_actual(&j, &prices, dims);
+        let usd = actual.expect("i2v workhorse prices from the same literal");
+        assert!(
+            (usd - 0.13184).abs() < 0.001,
+            "i2v must price identically to t2v: got {usd}"
+        );
+        assert_eq!(src, Some(ActualSource::Probe));
+    }
+
+    #[test]
+    fn grok_720p_settles_on_output_seconds() {
+        // B1: the output-seconds rule is general, not H3-only. Grok Imagine 1.5
+        // i2v at 720p, requested 5s, probed 5.04s → 0.14 × 5.04 = $0.7056. The
+        // 0.04s drift is below the 0.5s advisory threshold, so no advisory fires.
+        let prices = crate::pricing::Prices::bundled();
+        let mut j = job("grok");
+        j.model_id = "grok_video_v15".into();
+        j.route_id = "fal:xai/grok-imagine-video/v1.5".into();
+        j.status = JobStatus::Completed;
+        j.settings = serde_json::json!({"duration": 5.0, "resolution": "720p"});
+        j.results = vec![Output {
+            url: "https://a/g.mp4".into(),
+            kind: OutputKind::Video,
+            local_path: Some("/lib/g.mp4".into()),
+        }];
+        let dims = MediaDims {
+            seconds: Some(5.04),
+            width: Some(1280),
+            height: Some(720),
+        };
+        let (actual, src) = compute_actual(&j, &prices, dims);
+        let usd = actual.expect("grok prices from the registry literal");
+        assert!(
+            (usd - 0.7056).abs() < 0.005,
+            "expected $0.7056 on delivered 5.04s, got {usd}"
+        );
+        assert_eq!(src, Some(ActualSource::Probe));
+        // A 0.04s drift is under the 0.5s advisory epsilon: no advisory.
+        assert_eq!(quantity_advisory(&j, dims), None);
+    }
+
     #[test]
     fn a_batched_image_job_is_not_double_counted() {
         // review (c): `Billable::from` sets both `images` and `batch` = batch,

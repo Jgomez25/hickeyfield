@@ -159,6 +159,10 @@ pub struct RouteDto {
     pub available: bool,
     /// Why not, in words the picker can render. `None` when available.
     pub unavailable_reason: Option<String>,
+    /// ISO `YYYY-MM-DD` this route's price was read, when the price is a
+    /// promotional/launch rate the provider will revert. `None` for a permanent
+    /// rate. The picker badges it so a user knows the quote rests on a promo.
+    pub promo_as_of: Option<String>,
 }
 
 /// A one-line description for the model picker.
@@ -473,6 +477,7 @@ fn models_matching(use_case: Option<hickeyfield_core::UseCase>) -> Vec<ModelDto>
                         note: r.note.clone(),
                         available,
                         unavailable_reason,
+                        promo_as_of: r.promo.as_ref().map(|p| p.as_of.clone()),
                     }
                 })
                 .collect(),
@@ -2295,6 +2300,36 @@ mod tests {
             "launch models must be contiguous at the top"
         );
         assert!(first_non_launch >= 12, "expected at least 12 launch models");
+    }
+
+    #[test]
+    fn route_dto_carries_the_promo_as_of() {
+        // A3: the workhorse route surfaces its dated promo marker to the picker,
+        // and a permanent-rate route carries none.
+        let models = list_models();
+        let workhorse = models
+            .iter()
+            .find(|m| m.id == "minimax_h3_max_turbo")
+            .expect("workhorse in the catalogue");
+        let route = workhorse
+            .routes
+            .iter()
+            .find(|r| r.id == "fal:minimax/h3-max-turbo")
+            .expect("workhorse fal route");
+        assert_eq!(route.promo_as_of.as_deref(), Some("2026-09-16"));
+
+        // A non-promotional route reports None — pick any route on any model
+        // that is not one of the two H3 promo tiers.
+        let non_promo = models
+            .iter()
+            .flat_map(|m| &m.routes)
+            .find(|r| r.id != "fal:minimax/h3-max-turbo" && r.id != "fal:minimax/h3-max")
+            .expect("a non-promo route");
+        assert_eq!(
+            non_promo.promo_as_of, None,
+            "{} was promotional",
+            non_promo.id
+        );
     }
 
     #[test]

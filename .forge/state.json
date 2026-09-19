@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S18-live-spend-gate",
+  "currentSlice": "S20-workhorse-billing-accuracy",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -135,6 +135,18 @@
       "status": "released",
       "started": "2026-09-16",
       "branch": "forge/s18-spend-gate"
+    },
+    {
+      "id": "S19-shot-trim-handles",
+      "title": "shot-trim-handles",
+      "status": "pending (reserved id; owner continuity priority)"
+    },
+    {
+      "id": "S20-workhorse-billing-accuracy",
+      "title": "workhorse-billing-accuracy",
+      "status": "released",
+      "started": "2026-09-19",
+      "branch": "forge/s20-workhorse-billing-accuracy"
     }
   ]
 }

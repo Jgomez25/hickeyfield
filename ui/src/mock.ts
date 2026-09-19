@@ -39,20 +39,44 @@ const caps = (over: Partial<ModelCapabilities> = {}): ModelCapabilities => ({
   ...over,
 });
 
-const route = (provider: string, slug: string) => ({
+const route = (provider: string, slug: string, promoAsOf?: string) => ({
   id: `${provider}:${slug}`,
   provider,
   slug,
+  // Demo-only: a dated promotional rate so browser mode renders the picker's
+  // `.route-promo` badge. The real markers live in the registry (the H3 tiers).
+  ...(promoAsOf ? { promoAsOf } : {}),
 });
 
 export const MOCK_MODELS: Model[] = [
+  {
+    // R0.3: the workhorse leads the roster. Modelled on the registry entry
+    // (`minimax/h3-max-turbo`, tiers $0.0125/s 480p, $0.02/s 768p, $0.04/s
+    // 1080p). The promotional-rate badge is real here, so the demo `promoAsOf`
+    // rides its fal route rather than a model that has no promo.
+    id: "minimax_h3_max_turbo",
+    displayName: "H3 Max Turbo",
+    modality: "video",
+    isLaunch: true,
+    subtitle: "Native audio and lipsync, billed on delivered output seconds",
+    routes: [route("fal", "minimax/h3-max-turbo", "2026-09-16")],
+    capabilities: caps({
+      durations: [4, 6, 8],
+      resolutions: ["480p", "720p", "1080p"],
+      aspects: ["16:9", "9:16", "1:1"],
+      audio: true,
+    }),
+  },
   {
     id: "kling_3_0",
     displayName: "Kling 3.0",
     modality: "video",
     isLaunch: true,
     subtitle: "Cinematic motion with strong subject coherence",
-    routes: [route("fal", "kling-video/v3/standard"), route("vaig", "kling-3")],
+    routes: [
+      route("fal", "kling-video/v3/standard"),
+      route("vaig", "kling-3"),
+    ],
     capabilities: caps({
       durations: [5, 10],
       resolutions: ["720p", "1080p"],
@@ -401,6 +425,7 @@ export const presetPreview = (presetId: string, w = 360, h = 640): string =>
  * only ever gets exercised in production.
  */
 const RATE_PER_SECOND: Record<string, number | null> = {
+  minimax_h3_max_turbo: 0.02,
   kling_3_0: 0.28,
   seedance_2_0: 0.19,
   wan_2_7: null,

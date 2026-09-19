@@ -8,6 +8,27 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A per-second video quote now says it bills on the clip you get, not the clip you asked
+  for, and re-priced settled cost proves it.** For the everyday workhorse (MiniMax H3 Max
+  Turbo, $0.02/s at 768p) and every other per-second video model, the estimate note now states
+  that billing is on delivered output seconds and that a clip can run longer than requested. When
+  a job finishes, its settled cost is re-priced from the file's measured duration at the same
+  route rate, and the job card shows the estimate-versus-settled delta: a 6-second workhorse clip
+  measured at 6.592 seconds settles at $0.13184 (not the $0.12 a flat 6 seconds would suggest),
+  and a 5-second Grok Imagine 1.5 clip measured at 5.04 seconds settles at $0.7056. (This settled
+  number is re-priced from the delivered duration, not read from a provider invoice — matching a
+  true billed charge is a later change.)
+
+- **The workhorse's launch price now carries the date it was read and warns when it goes
+  stale.** MiniMax H3 Max and H3 Max Turbo run on a promotional launch rate (read from the
+  provider index on 2026-09-16); each now carries that date as a structured marker, surfaced as a
+  small "promotional rate" badge in the model picker, and a monthly staleness re-check flags any
+  promotional rate whose marker is more than 30 days old so it can be re-verified against the
+  provider. The re-check is reachable from the keyless price audit
+  (`cargo run -p hickeyfield-core --example price_check`) and, like every price tool here, spends
+  nothing. (The marker flags marker age only; it does not detect an actual provider price change.)
+  Test counts rise to 971 Rust (from 961) and 313 UI (from 312).
+
 - **No process can spend money unless it explicitly opted in.** A single process-local spend
   gate now guards every billable request — the fal and Higgsfield generation submits and the
   hosted-LLM enhancer and storyboard-planner calls — and refuses with a clear message

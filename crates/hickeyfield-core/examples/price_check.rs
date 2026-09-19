@@ -11,7 +11,8 @@
 //! as conditional prose the parser refuses, printed for a human and the live
 //! seam (see `tests/live_fal_pricing.rs`).
 
-use hickeyfield_core::prices::{audit, AuditRow, AUDIT_TOLERANCE};
+use hickeyfield_core::prices::{audit, promo_recheck, AuditRow, AUDIT_TOLERANCE, PROMO_STALE_DAYS};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn section(title: &str, rows: &[String]) {
     println!("\n=== {title} ({}) ===", rows.len());
@@ -21,6 +22,51 @@ fn section(title: &str, rows: &[String]) {
     if rows.is_empty() {
         println!("  none");
     }
+}
+
+/// Today's civil date from the wall clock — the example's ONE non-hermetic
+/// input, so a human running the audit sees which promos are stale *now*. The
+/// library `promo_recheck` keeps its injected `today` and never reads the clock;
+/// only this printer does. Howard Hinnant's `civil_from_days` inverse, inlined
+/// so the crate stays date-crate-free (R-RULES.4).
+fn today_civil() -> (i32, u32, u32) {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let z = secs / 86_400 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m as u32, d as u32)
+}
+
+/// Print any promotional rate older than `PROMO_STALE_DAYS` as of today, so the
+/// re-check is visible to whoever runs the audit — the human-reachable caller
+/// the `promo_recheck` API otherwise lacks. Keyless and offline: it reads only
+/// the registry, exactly like `audit()`.
+fn promo_recheck_section() {
+    let (y, m, d) = today_civil();
+    let stale = promo_recheck((y, m, d));
+    let rows: Vec<String> = stale
+        .iter()
+        .map(|r| {
+            format!(
+                "{:<52} promo as-of {} — {} days old",
+                r.route_id, r.as_of, r.age_days
+            )
+        })
+        .collect();
+    section(
+        &format!("PROMO RE-CHECK (older than {PROMO_STALE_DAYS} days as of {y:04}-{m:02}-{d:02})"),
+        &rows,
+    );
 }
 
 fn main() {
@@ -92,6 +138,7 @@ fn main() {
         "NO SNAPSHOT (endpoint absent from vendored index)",
         &no_snapshot,
     );
+    promo_recheck_section();
 
     let with_prose = ok.len() + prose.len() + unmodellable.len() + mismatch.len();
     println!(

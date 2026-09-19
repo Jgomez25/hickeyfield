@@ -46,6 +46,6 @@ pub use prices::{Feed, FeedError, Origin, PriceFeed, Priced, Quote};
 pub use provider::ProviderId;
 pub use recipe::{from_provider, Inputs, Recipe, RecipeError, RECIPE_VERSION};
 pub use registry::{launch_models, registry, Model};
-pub use route::{Route, RouteError, RoutePolicy};
+pub use route::{PromoRate, Route, RouteError, RoutePolicy};
 pub use storyboard::{Continuity, PlanError, Shot, ShotRole, StoryboardPlan};
 pub use use_case::UseCase;

@@ -151,6 +151,15 @@ export function ModelPicker({
                           >
                             <RouteIcon size={12} />
                             {route.provider}
+                            {route.promoAsOf ? (
+                              // A price resting on a launch promo the provider
+                              // will revert: say so, dated, so the quote is not
+                              // trusted forever. Additive — the locked selectors
+                              // (.chip-route, .model-item*) are untouched.
+                              <span className="route-promo">
+                                promo · {route.promoAsOf}
+                              </span>
+                            ) : null}
                           </button>
                         );
                       })}

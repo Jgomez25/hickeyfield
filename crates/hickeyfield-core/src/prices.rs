@@ -1648,6 +1648,83 @@ pub fn audit() -> Vec<AuditRow> {
     rows
 }
 
+// ---------------------------------------------------------------------------
+// Promotional-rate staleness re-check (A3)
+// ---------------------------------------------------------------------------
+
+/// A promotional rate this old should be re-verified against the provider index
+/// before we keep quoting it. 30 days matches the project's existing staleness
+/// convention (the sandbox hint degrades past 30 d) and the daily/monthly feed
+/// cadence: a launch promo the provider will revert is re-checked monthly.
+pub const PROMO_STALE_DAYS: i64 = 30;
+
+/// One route whose transcribed promotional rate is older than [`PROMO_STALE_DAYS`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PromoRecheck {
+    pub route_id: String,
+    pub as_of: String,
+    pub age_days: i64,
+}
+
+/// Days since the Unix epoch for a civil `(year, month, day)` date, by Howard
+/// Hinnant's `days_from_civil` algorithm. Inlined rather than pulling a date
+/// crate (R-RULES.4 no-new-dep): the workspace carries none. Valid for the
+/// proleptic Gregorian calendar; negative before 1970.
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y } as i64;
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let m = m as i64;
+    let d = d as i64;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
+/// Emit a re-check row for every promotional-rate route whose marker is older
+/// than [`PROMO_STALE_DAYS`] as of `today` (a civil `(year, month, day)`).
+///
+/// Hermetic: the clock is a parameter, so a test injects a fixed date and never
+/// reads the wall clock. Reads only the registry. Routes with no promo marker,
+/// or a marker whose `as_of` will not parse as `YYYY-MM-DD`, never appear.
+pub fn promo_recheck(today: (i32, u32, u32)) -> Vec<PromoRecheck> {
+    let (ty, tm, td) = today;
+    let today_days = days_from_civil(ty, tm, td);
+    let mut out = Vec::new();
+    for m in crate::registry::registry().values() {
+        for route in &m.routes {
+            let Some(promo) = &route.promo else { continue };
+            let Some((y, mo, d)) = parse_iso_date(&promo.as_of) else {
+                continue;
+            };
+            let age_days = today_days - days_from_civil(y, mo, d);
+            if age_days > PROMO_STALE_DAYS {
+                out.push(PromoRecheck {
+                    route_id: route.id(),
+                    as_of: promo.as_of.clone(),
+                    age_days,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.route_id.cmp(&b.route_id));
+    out
+}
+
+/// Parse a strict `YYYY-MM-DD` date. Returns `None` on any shape the registry
+/// should never author, so a typo drops the route from the re-check rather than
+/// panicking the audit.
+fn parse_iso_date(s: &str) -> Option<(i32, u32, u32)> {
+    let mut parts = s.split('-');
+    let y = parts.next()?.parse::<i32>().ok()?;
+    let mo = parts.next()?.parse::<u32>().ok()?;
+    let d = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some((y, mo, d))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2580,6 +2657,69 @@ mod tests {
             .filter(|r| vaig::parse_pricing(r.pricing.as_ref()).is_some())
             .count();
         assert!(priced > 20, "only {priced} models carried usable pricing");
+    }
+
+    // -- promotional-rate staleness re-check (A3) -----------------------
+
+    #[test]
+    fn promo_recheck_flags_a_stale_marker_with_an_injected_clock() {
+        // The two H3 tiers carry a promo marker as-of 2026-09-16. The clock is
+        // injected, so this reads no wall clock and never touches the network.
+        // Well past the threshold (34 d): flagged.
+        let stale = promo_recheck((2026, 10, 20));
+        assert!(
+            stale
+                .iter()
+                .any(|r| r.route_id == "fal:minimax/h3-max-turbo"),
+            "the workhorse promo should be flagged stale: {stale:#?}"
+        );
+        assert!(
+            stale.iter().any(|r| r.route_id == "fal:minimax/h3-max"),
+            "the H3 Max promo should be flagged stale: {stale:#?}"
+        );
+        for r in &stale {
+            assert!(r.age_days > PROMO_STALE_DAYS, "{r:?}");
+        }
+
+        // Well inside the threshold (4 d): none.
+        let fresh = promo_recheck((2026, 9, 20));
+        assert!(
+            fresh.is_empty(),
+            "a 4-day-old promo is not stale: {fresh:#?}"
+        );
+    }
+
+    #[test]
+    fn promo_recheck_boundary_is_exactly_thirty_days() {
+        // The `> PROMO_STALE_DAYS` boundary, where a hand-rolled civil-day
+        // off-by-one would hide. as-of 2026-09-16: exactly 30 days later
+        // (2026-10-16) is NOT stale; 31 days later (2026-10-17) IS. This pins
+        // `days_from_civil` across a month boundary.
+        let at_30 = promo_recheck((2026, 10, 16));
+        assert!(
+            at_30.is_empty(),
+            "exactly 30 days is not > 30, must not flag: {at_30:#?}"
+        );
+        let at_31 = promo_recheck((2026, 10, 17));
+        assert_eq!(at_31.len(), 2, "31 days flags both H3 tiers: {at_31:#?}");
+        assert!(at_31.iter().all(|r| r.age_days == 31), "{at_31:#?}");
+    }
+
+    #[test]
+    fn only_promotional_routes_appear_in_the_recheck() {
+        // A route with no promo marker never shows up, whatever the clock.
+        let rows = promo_recheck((2030, 1, 1));
+        for r in &rows {
+            assert!(
+                r.route_id.starts_with("fal:minimax/h3-max"),
+                "only the H3 promo routes carry a marker today, got {}",
+                r.route_id
+            );
+        }
+        // days_from_civil is correct against a fixed reference: 1970-01-01 = 0,
+        // 2026-09-16 is 20712 days after the epoch.
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2026, 9, 16), 20712);
     }
 
     // -- the hermetic price audit (AC1) ---------------------------------
