@@ -292,6 +292,7 @@ mandatory slice; tracked here for prioritization.
   scans `.rs` only (add shell/CI/.env scanning); uploads are ungated (free today); daily budget cap.
 
 ### S20 follow-ups (2026-09-19)
+- **OWNER 2026-09-19: Grok paid API is NEVER used** (MiniMax H3 Max Turbo is the only paid video route). Sweep Grok out of defaults/lead mocks alongside Seedance; keep the S20 `grok_video_v15` settle test as a regression fixture only; no Grok owner-run paid check, ever.
 - Remove pre-existing Seedance entries (e.g. `seedance_2_0`) from `ui/src/mock.ts` and sweep defaults/samples for Seedance (owner "never" rule).
 - Mock uses a flat 0.02/s for the tiered workhorse route (demo-only, not the real 480/768/1080 tiers).
 - `parse_iso_date` accepts day 1–31 without per-month validation (panic-free; registry literals only).

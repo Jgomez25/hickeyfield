@@ -1,3 +1,46 @@
+# HANDOFF — hickeyfield FORGE — S20 RELEASED + installed; next slice is the owner's pick (2026-09-19)
+
+## State
+- `main` = S1–S18 + S20 released, installed to /Applications (S20 commit 0ece493 + this docs commit). Nothing
+  pushed. Tests 971 Rust (+20 pre-existing gated ignores) / 313 UI. Money: nothing spent this session.
+- S20 workhorse-billing-accuracy: per-second quotes state OUTPUT-seconds billing; settle on delivered
+  duration proven (workhorse 6 s → 6.592 s = $0.13184); dated promo marker (2026-09-16) + picker badge +
+  30-day re-check (`cargo run -p hickeyfield-core --example price_check`); mock leads with the workhorse.
+- S19 (trim handles) is a reserved `pending` entry in state.json so ids stay aligned.
+
+## HARD owner decisions made this session (do not re-open)
+- **Seedance is NEVER used.** S20's per-token half was dropped; objective R1.1 + backlog amended. Do no
+  per-token / Seedance work. (The old pointer to a settled Seedance job never resolved in the app DB — moot.)
+- **Grok paid API is NEVER used.** Paid video = `minimax_h3_max_turbo`, full stop. The S20 `grok_video_v15`
+  settle test stays as a regression fixture only; never a default, never an owner-run paid check.
+- Q-R2 default (re-priced Probe/OutputCount + calibration priors, admin usage key optional) and Q-R3 default
+  (contract R1–R5, money + characters first) CONFIRMED by the owner.
+- Owner's cost workflow lives in his private notes outside the repo (restate, never copy, never name
+  brands in repo files): free-sandbox finals, turbo drafts, workhorse i2v for paid video, confirm every paid run.
+- S21 carries an owner note: right-size the still to the target video (one 2K/max anchor per character,
+  cheap stills downstream). The ~1080×1920-at-quality-high price and score are UNMEASURED — the owner is
+  testing himself; seed rows only from his data.
+
+## Next (owner picks)
+1. S20 follow-up: sweep Seedance (e.g. `seedance_2_0`) and Grok-as-default out of `ui/src/mock.ts`, defaults
+   and samples. Small, matches both "never" rules.
+2. S21 image-tier-pricing (hero-still route; waits on the owner's measured rows for the new tiers).
+3. S27 mockup / S19 trim handles at the owner's word.
+
+## Build notes learned
+- Run the tauri CLI from the REPO ROOT: `./ui/node_modules/.bin/tauri build --bundles app` (from `ui/` it
+  fails "Couldn't recognize the current folder"). Never pipe a build through `tail` without `pipefail`.
+- A fresh worktree needs `pnpm install --frozen-lockfile` in `ui/` and the gitignored
+  `src-tauri/binaries/ffmpeg-aarch64-apple-darwin` copied in. Node 24 required (system node is 20.11).
+- Installed app name is `/Applications/Hickeyfield.app`; quit it before swapping.
+
+## Resume rules (unchanged)
+FORGE loop, gate.py exit 0, distinct agents, never hand-edit a verdict, max two repair rounds then escalate.
+Opus agents = OMIT the Agent `model` param. Every agent command exports `HICKEYFIELD_NO_KEYCHAIN=1` + dummy
+`hickeyfield_*_KEY=x`; never `HICKEYFIELD_ALLOW_SPEND`; never run first_light. STATE THE WORKHORSE in every brief.
+
+---
+# (previous handoffs kept below)
 # HANDOFF — hickeyfield FORGE — Extension R PLANNED, paused for owner to pick a slice (2026-09-19)
 
 ## What this session did (DISCOVER + PLAN only; NO source, NO build, NO spend)
