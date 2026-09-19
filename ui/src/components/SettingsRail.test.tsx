@@ -33,11 +33,11 @@ const CAPS: ModelCapabilities = {
   unsupportedRoles: [],
 };
 
-const ROUTE: Route = { id: "fal:seedance", provider: "fal", slug: "seedance", available: true };
+const ROUTE: Route = { id: "fal:minimax", provider: "fal", slug: "minimax/h3-max-turbo", available: true };
 
 const MODEL: Model = {
-  id: "seedance_2_5",
-  displayName: "Seedance 2.5",
+  id: "minimax_h3_max_turbo",
+  displayName: "H3 Max Turbo",
   modality: "video",
   isLaunch: true,
   routes: [ROUTE],
@@ -104,6 +104,8 @@ function props() {
     openaiAvailable: false,
     enhancer: null,
     onEnhancerChange: noop,
+    showNeverUsed: false,
+    onToggleNeverUsed: noop,
     estimate: { usd: 0.43, basis: "10s at 1080p" },
     pending: false,
     needsSetup: false,
@@ -136,7 +138,7 @@ describe("SettingsRail composer (S12)", () => {
     const tile = container.querySelector(".model-item.model-item-composer");
     expect(tile).not.toBeNull();
     expect(tile!.querySelector(".model-item-name")?.textContent).toContain(
-      "Seedance 2.5",
+      "H3 Max Turbo",
     );
     // Provider chip keeps the .chip-route class; capability line is derived.
     expect(tile!.querySelector(".chip-route")?.textContent).toContain("fal");
@@ -160,5 +162,25 @@ describe("SettingsRail composer (S12)", () => {
     expect(note!.textContent).toContain(
       "Not affiliated with, endorsed by, or sponsored by Higgsfield",
     );
+  });
+
+  it("A5: the never-used toggle renders with its cost warning and re-lists on change", () => {
+    const onToggleNeverUsed = vi.fn();
+    render(<SettingsRail {...props()} onToggleNeverUsed={onToggleNeverUsed} />);
+    const toggle = container.querySelector<HTMLLabelElement>(".never-used-toggle");
+    expect(toggle).not.toBeNull();
+    expect(toggle!.textContent).toContain("Show never-used routes (Seedance, Grok)");
+    expect(
+      toggle!.querySelector(".never-used-warn")?.textContent,
+    ).toContain("bill the provider");
+    const box = toggle!.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(box).not.toBeNull();
+    expect(box!.checked).toBe(false);
+    // A real click toggles `checked` false→true and fires React's onChange.
+    act(() => box!.click());
+    expect(onToggleNeverUsed).toHaveBeenCalledWith(true);
+    // The test-locked selectors survive the additive control.
+    expect(container.querySelector(".generate-button")).not.toBeNull();
+    expect(container.querySelector(".model-item")).not.toBeNull();
   });
 });

@@ -11,6 +11,7 @@ import type {
   StoryboardResult,
   SubmitInput,
 } from "../types";
+import { WORKHORSE_MODEL_ID } from "../types";
 import { formatUsd, totalCostCaption } from "../lib/cost";
 import { ModelPicker } from "./ModelPicker";
 import { PromptPreview } from "./PromptPreview";
@@ -30,6 +31,7 @@ import { PromptPreview } from "./PromptPreview";
 export function Storyboard({
   tab,
   models,
+  modelNames = {},
   cameraPresets,
   settings,
   enhancer,
@@ -45,6 +47,9 @@ export function Storyboard({
   tab: string;
   /** Models runnable for the tab — the allowed set handed to the planner. */
   models: Model[];
+  /** Unfiltered id → display name, so a shot on a hidden (never-used) model
+   * still renders its name instead of the raw id. */
+  modelNames?: Record<string, string>;
   /** Camera-move presets for the per-shot camera picker. */
   cameraPresets: PresetFamily[];
   /** The rail's current settings, used as the base for each shot's estimate. */
@@ -131,8 +136,9 @@ export function Storyboard({
   }, []);
 
   const modelName = useCallback(
-    (id: string) => models.find((m) => m.id === id)?.displayName ?? id,
-    [models],
+    (id: string) =>
+      modelNames[id] ?? models.find((m) => m.id === id)?.displayName ?? id,
+    [models, modelNames],
   );
 
   // Re-estimate on every change to the shot list. A monotonic token guards
@@ -207,7 +213,12 @@ export function Storyboard({
         prompt: "",
         seconds: last?.seconds ?? 5,
         camera: null,
-        modelId: last?.modelId ?? models[0]?.id ?? "",
+        modelId:
+          last?.modelId ??
+          (models.some((m) => m.id === WORKHORSE_MODEL_ID)
+            ? WORKHORSE_MODEL_ID
+            : models[0]?.id) ??
+          "",
         role: "middle",
         continuity: null,
         advisories: [],

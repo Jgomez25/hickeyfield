@@ -396,6 +396,13 @@ pub struct ModelDto {
     pub takes_prompt: bool,
 }
 
+/// An unfiltered id→display-name pair for history rendering (see `model_names`).
+#[derive(Serialize)]
+pub struct ModelNameDto {
+    pub id: String,
+    pub display_name: String,
+}
+
 /// The use cases the workspace tabs offer.
 #[derive(Serialize)]
 pub struct UseCaseDto {
@@ -434,8 +441,11 @@ pub fn list_use_cases() -> Vec<UseCaseDto> {
 }
 
 #[tauri::command]
-pub fn list_models() -> Vec<ModelDto> {
-    models_matching(None)
+pub fn list_models(state: State<'_, AppState>) -> Vec<ModelDto> {
+    let show = state
+        .store
+        .get_bool_pref(crate::store::SHOW_NEVER_USED, false);
+    models_matching(show, None)
 }
 
 /// Models that can do one job.
@@ -444,14 +454,55 @@ pub fn list_models() -> Vec<ModelDto> {
 /// something the submit path would then refuse — which is what happened when
 /// every tab showed every model.
 #[tauri::command]
-pub fn models_for_use_case(use_case: String) -> Vec<ModelDto> {
-    models_matching(hickeyfield_core::UseCase::from_slug(&use_case))
+pub fn models_for_use_case(state: State<'_, AppState>, use_case: String) -> Vec<ModelDto> {
+    let show = state
+        .store
+        .get_bool_pref(crate::store::SHOW_NEVER_USED, false);
+    models_matching(show, hickeyfield_core::UseCase::from_slug(&use_case))
 }
 
-fn models_matching(use_case: Option<hickeyfield_core::UseCase>) -> Vec<ModelDto> {
+/// Every registry model's id and display name, UNFILTERED (hidden or not).
+///
+/// History must render a job on a never-used model by name even while that model
+/// is hidden from the pickers — hidden ≠ deleted. Kept separate from
+/// `list_models` on purpose: the picker feeds omit never-used ids server-side,
+/// so the UI cannot fall back to them; this is the id→name map it resolves from.
+#[tauri::command]
+pub fn model_names() -> Vec<ModelNameDto> {
+    registry()
+        .into_values()
+        .map(|m| ModelNameDto {
+            id: m.id.clone(),
+            display_name: m.display_name.clone(),
+        })
+        .collect()
+}
+
+/// Read the persisted "show never-used routes" toggle (default OFF).
+#[tauri::command]
+pub fn get_show_never_used(state: State<'_, AppState>) -> bool {
+    state
+        .store
+        .get_bool_pref(crate::store::SHOW_NEVER_USED, false)
+}
+
+/// Persist the "show never-used routes" toggle.
+#[tauri::command]
+pub fn set_show_never_used(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    state
+        .store
+        .set_bool_pref(crate::store::SHOW_NEVER_USED, on)
+        .map_err(|e| e.to_string())
+}
+
+fn models_matching(
+    show_never_used: bool,
+    use_case: Option<hickeyfield_core::UseCase>,
+) -> Vec<ModelDto> {
     let configured = configured_providers();
     let mut models: Vec<ModelDto> = registry()
         .into_values()
+        .filter(|m| show_never_used || !registry::is_never_used(&m.id))
         .filter(|m| match use_case {
             Some(uc) => hickeyfield_core::use_case::supports(m, uc),
             None => true,
@@ -1102,6 +1153,23 @@ pub(crate) fn submit_one(
     storyboard_id: Option<&str>,
     shot_index: Option<u32>,
 ) -> Result<String, String> {
+    // Server-authoritative refusal: a never-used route (Seedance/Grok) cannot be
+    // submitted while the owner's "Show never-used routes" toggle is OFF. This
+    // guard is the money boundary — it runs BEFORE any route resolution, provider
+    // client or socket, and covers every entry (standalone, storyboard shot,
+    // keyframe regen, chain auto-retry) because they all funnel through here. The
+    // UI hiding the button is never relied on.
+    if registry::is_never_used(&model.id)
+        && !store.get_bool_pref(crate::store::SHOW_NEVER_USED, false)
+    {
+        return Err(format!(
+            "{} is a never-used route and is hidden. The owner marked Seedance and \
+             Grok as never used because this app bills the provider for them. Turn \
+             on \"Show never-used routes\" in Settings to run it.",
+            model.display_name
+        ));
+    }
+
     let available: Vec<ProviderId> = configured_providers()
         .iter()
         .filter_map(|s| ProviderId::from_slug(s))
@@ -2288,7 +2356,10 @@ mod tests {
 
     #[test]
     fn the_catalogue_is_exposed_and_launch_models_come_first() {
-        let models = list_models();
+        // Full catalogue (owner opted in): exactly what `list_models()` returned
+        // before S20b hid the never-used routes, so these metadata assertions keep
+        // covering every model.
+        let models = models_matching(true, None);
         assert!(models.len() >= 55, "got {}", models.len());
 
         let first_non_launch = models
@@ -2306,7 +2377,10 @@ mod tests {
     fn route_dto_carries_the_promo_as_of() {
         // A3: the workhorse route surfaces its dated promo marker to the picker,
         // and a permanent-rate route carries none.
-        let models = list_models();
+        // Full catalogue (owner opted in): exactly what `list_models()` returned
+        // before S20b hid the never-used routes, so these metadata assertions keep
+        // covering every model.
+        let models = models_matching(true, None);
         let workhorse = models
             .iter()
             .find(|m| m.id == "minimax_h3_max_turbo")
@@ -2334,7 +2408,7 @@ mod tests {
 
     #[test]
     fn every_model_offers_at_least_one_route() {
-        for m in list_models() {
+        for m in models_matching(true, None) {
             assert!(!m.routes.is_empty(), "{} has no route", m.id);
         }
     }
@@ -2353,7 +2427,10 @@ mod tests {
 
     #[test]
     fn a_known_model_and_route_quotes_a_positive_price() {
-        let models = list_models();
+        // Full catalogue (owner opted in): exactly what `list_models()` returned
+        // before S20b hid the never-used routes, so these metadata assertions keep
+        // covering every model.
+        let models = models_matching(true, None);
         let m = models
             .iter()
             .find(|m| m.is_launch && m.modality == "video")
@@ -2517,7 +2594,10 @@ mod tests {
     fn routes_report_availability_so_the_ui_can_explain_itself() {
         // A route the user cannot reach is shown and marked, not hidden — the
         // point is to tell them which key would unlock it.
-        let models = list_models();
+        // Full catalogue (owner opted in): exactly what `list_models()` returned
+        // before S20b hid the never-used routes, so these metadata assertions keep
+        // covering every model.
+        let models = models_matching(true, None);
         let any_route = models.iter().flat_map(|m| &m.routes).next().unwrap();
         assert!(!any_route.provider.is_empty());
         assert!(any_route.id.contains(':'));
@@ -3120,6 +3200,122 @@ mod tests {
             recorded[0].0
         );
         assert!(!id.is_empty(), "submit_one returns the job id");
+    }
+
+    #[test]
+    fn list_models_hides_the_never_used_routes_by_default() {
+        // A3: the pure seam hides every never-used id when the pref is OFF and
+        // restores the full catalogue when it is ON. The expected count is DERIVED
+        // (full − the enumerated never-used ids), never a magic number.
+        let full = models_matching(true, None); // owner opted in
+        let shown = models_matching(false, None); // the pref-OFF default
+        let never = full
+            .iter()
+            .filter(|m| registry::is_never_used(&m.id))
+            .count();
+        assert_eq!(never, 11, "the enumerated never-used set");
+        assert_eq!(shown.len(), full.len() - never);
+        assert!(
+            shown.iter().all(|m| !registry::is_never_used(&m.id)),
+            "no never-used id survives the default"
+        );
+        // The full set still carries every never-used id (hidden ≠ deleted).
+        assert!(full.iter().any(|m| m.id == "seedance_2_0"));
+        assert!(full.iter().any(|m| m.id == "grok_video_v15"));
+    }
+
+    #[test]
+    fn history_resolves_a_hidden_models_display_name() {
+        // A4: `model_names()` is UNFILTERED, so a job on a hidden model still
+        // renders its name in history even with the pref OFF.
+        let names = model_names();
+        let seedance = names
+            .iter()
+            .find(|n| n.id == "seedance_2_0")
+            .expect("seedance_2_0 present in the unfiltered name map");
+        assert_eq!(seedance.display_name, "Seedance 2.0");
+        assert!(
+            names.iter().any(|n| n.id == "grok_video_v15"),
+            "grok id present in the unfiltered name map"
+        );
+    }
+
+    #[test]
+    fn submit_one_refuses_a_hidden_model_while_the_toggle_is_off() {
+        // A4: the server refuses a never-used model at the spend boundary while
+        // the toggle is OFF — before any route resolves or client is reached; the
+        // refusal names the toggle. Flipping the pref ON passes the guard and the
+        // submit reaches the injected fake (offline, no key, no network).
+        use crate::library::Library;
+        use crate::pricing::Prices;
+        use crate::runner::{ClientFactory, Runner};
+        use hickeyfield_core::engine::JobStore;
+        use std::sync::{Arc, Mutex};
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let factory_seen = Arc::clone(&seen);
+        let clients: ClientFactory = Arc::new(move |_route_id: &str| {
+            Some(Arc::new(RecordingClient {
+                seen: Arc::clone(&factory_seen),
+            })
+                as Arc<dyn hickeyfield_core::engine::ProviderClient>)
+        });
+
+        let store = Arc::new(crate::store::SqliteStore::in_memory().unwrap());
+        let library = Arc::new(Library::new(
+            std::env::temp_dir().join(format!("hickeyfield-refuse-{}", std::process::id())),
+        ));
+        let prices = Arc::new(Prices::bundled());
+        let runner = Runner::new(
+            Arc::clone(&store) as Arc<dyn JobStore>,
+            clients,
+            Arc::new(|_| {}),
+            Arc::clone(&library),
+            Arc::clone(&prices),
+        );
+
+        let reg = registry();
+        let model = reg.get("seedance_2_0").expect("seedance_2_0 in registry");
+
+        // Pref OFF (default): refused before any client is reached.
+        let err = submit_one(
+            &store,
+            &prices,
+            &runner,
+            model,
+            &shot_input("seedance_2_0"),
+            None,
+            None,
+        )
+        .expect_err("a hidden model must be refused while the toggle is OFF");
+        assert!(err.contains("never-used"), "refusal names the rule: {err}");
+        assert!(err.contains("Settings"), "refusal names the toggle: {err}");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            0,
+            "no client reached on the refusal path — no spend"
+        );
+
+        // Pref ON: the guard passes and the submit reaches the injected fake.
+        store
+            .set_bool_pref(crate::store::SHOW_NEVER_USED, true)
+            .unwrap();
+        let id = submit_one(
+            &store,
+            &prices,
+            &runner,
+            model,
+            &shot_input("seedance_2_0"),
+            None,
+            None,
+        )
+        .expect("with the toggle ON the guard passes");
+        assert!(!id.is_empty());
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "with the toggle ON the submit reaches the fake"
+        );
     }
 
     fn shot_input(model_id: &str) -> SubmitInput {

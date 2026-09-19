@@ -8,6 +8,18 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Expensive routes the owner never uses are hidden from every picker, and the app refuses
+  to run one by mistake.** Every Seedance and every Grok route — the ones that bill the
+  provider for video the owner has decided not to buy — is hidden from all model pickers by
+  default. A new Settings control, **"Show never-used routes (Seedance, Grok)"** (off by
+  default), re-lists them when you want them. The refusal is enforced in the core, not just
+  the UI: with the setting off, a hidden route is turned away before any provider is contacted,
+  with a message that names the toggle — so a stored job, a re-run, a storyboard shot or a
+  chained retry cannot slip one through. Jobs already made on a hidden route still show their
+  real name and cost in history; nothing is deleted. This sits on top of, and is separate from,
+  the spend gate below. (Persisted in a new `app_pref` settings table via store migration 12.
+  Test counts rise to 979 Rust from 971 and 321 UI from 313.)
+
 - **A per-second video quote now says it bills on the clip you get, not the clip you asked
   for, and re-priced settled cost proves it.** For the everyday workhorse (MiniMax H3 Max
   Turbo, $0.02/s at 768p) and every other per-second video model, the estimate note now states
@@ -79,6 +91,13 @@ project aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   human-run.
 
 ### Changed
+
+- **The app now starts, and stays, on the everyday workhorse.** Studio opens on MiniMax H3
+  Max Turbo ($0.02/s at 768p), keeps it when you switch use-case tabs wherever it fits, and a
+  new storyboard shot defaults to it — instead of whatever model happened to sort first. The
+  launch set that seeds these defaults swaps the old Seedance family out for the workhorse, and
+  the demo data, samples and provider blurbs no longer lead with — or advertise — Seedance or
+  Grok.
 
 - **The app can now send a required setting a provider does not expose as a control.** Some
   fal endpoints demand a body field even though they publish a default for it; the request

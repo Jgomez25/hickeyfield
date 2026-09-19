@@ -41,7 +41,7 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     keyUrl: "https://fal.ai/dashboard/keys",
     envNames: ["FAL_KEY", "FAL_API_KEY"],
     blurb:
-      "The backbone. Most of the roster routes through fal — Kling, Seedance, Wan, FLUX, Seedream and more.",
+      "The backbone. Most of the roster routes through fal — Kling, Wan, FLUX, Seedream and more.",
   },
   {
     slug: "vaig",
@@ -81,7 +81,7 @@ export const PROVIDER_CATALOG: ProviderInfo[] = [
     needsSecret: false,
     keyUrl: "https://console.x.ai",
     envNames: ["XAI_API_KEY", "GROK_API_KEY"],
-    blurb: "Grok image generation.",
+    blurb: "xAI's image API — direct.",
   },
   {
     slug: "bfl",

@@ -145,6 +145,83 @@ describe("Storyboard", () => {
     expect(container.querySelector(".storyboard-total")!.textContent).toBe("$4.00");
   });
 
+  it("A1: the planner is offered the workhorse first, never a never-used route", async () => {
+    const WORKHORSE: Model = {
+      id: "minimax_h3_max_turbo",
+      displayName: "H3 Max Turbo",
+      modality: "video",
+      isLaunch: true,
+      routes: [
+        { id: "fal:minimax", provider: "fal", slug: "minimax", available: true },
+      ],
+    };
+    // App hands Storyboard the already-filtered, workhorse-led list. The draft
+    // must pass that order through as `modelPrefs`, so the planner (and every
+    // new-shot default derived from `models`) leads with the workhorse and can
+    // never reach a hidden Seedance/Grok route.
+    const onPlan = vi.fn(async () => planOf([8, 8, 8]));
+    const props = base({ models: [WORKHORSE, MODEL], onPlan });
+    render(<Storyboard {...props} />);
+    typeInto(
+      container.querySelector<HTMLTextAreaElement>("textarea.storyboard-brief")!,
+      "a brief",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-draft")!.click();
+    });
+    await flush();
+
+    expect(onPlan).toHaveBeenCalledTimes(1);
+    const arg = (onPlan.mock.calls[0] as unknown[])[0] as {
+      modelPrefs: string[];
+    };
+    expect(arg.modelPrefs[0]).toBe(WORKHORSE.id);
+    expect(arg.modelPrefs).not.toContain("seedance_2_0");
+  });
+
+  it("A1: a new shot inherits the workhorse when it leads the empty-board default", async () => {
+    // The new-shot default expression is `last?.modelId ?? (workhorse in list ?
+    // workhorse : models[0])`. With a prior shot present the UI adds by
+    // inheritance; the workhorse-first branch is exercised when the board has no
+    // prior shot. Here we prove inheritance keeps the workhorse once chosen.
+    const WORKHORSE: Model = {
+      id: "minimax_h3_max_turbo",
+      displayName: "H3 Max Turbo",
+      modality: "video",
+      isLaunch: true,
+      routes: [
+        { id: "fal:minimax", provider: "fal", slug: "minimax", available: true },
+      ],
+    };
+    const workhorsePlan = (): StoryboardPlan => {
+      const p = planOf([8]);
+      p.shots[0].modelId = WORKHORSE.id;
+      return p;
+    };
+    const props = base({
+      models: [WORKHORSE, MODEL],
+      onPlan: vi.fn(async () => workhorsePlan()),
+    });
+    render(<Storyboard {...props} />);
+    typeInto(
+      container.querySelector<HTMLTextAreaElement>("textarea.storyboard-brief")!,
+      "a brief",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-draft")!.click();
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button.storyboard-add")!.click();
+    });
+    await flush();
+    const model = container.querySelector(
+      ".storyboard-shot[data-shot-index='1'] .storyboard-model",
+    );
+    expect(model).not.toBeNull();
+    expect(model!.textContent).toContain("H3 Max Turbo");
+  });
+
   it("an unpriced shot marks the total", async () => {
     const props = base({
       onPlan: vi.fn(async () => planOf([10, 10, 10])),

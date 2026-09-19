@@ -292,13 +292,22 @@ mandatory slice; tracked here for prioritization.
   scans `.rs` only (add shell/CI/.env scanning); uploads are ungated (free today); daily budget cap.
 
 ### S20 follow-ups (2026-09-19)
-- **OWNER 2026-09-19: Grok paid API is NEVER used** (MiniMax H3 Max Turbo is the only paid video route). Sweep Grok out of defaults/lead mocks alongside Seedance; keep the S20 `grok_video_v15` settle test as a regression fixture only; no Grok owner-run paid check, ever.
-- Remove pre-existing Seedance entries (e.g. `seedance_2_0`) from `ui/src/mock.ts` and sweep defaults/samples for Seedance (owner "never" rule).
+- **DONE in S20b — OWNER 2026-09-19: Grok paid API is NEVER used** (MiniMax H3 Max Turbo is the only paid video route). Sweep Grok out of defaults/lead mocks alongside Seedance; keep the S20 `grok_video_v15` settle test as a regression fixture only; no Grok owner-run paid check, ever. *(Done: every Grok route hidden from pickers by default via `registry::is_never_used` + the `submit_one` refusal; `grok_video_v15` settle test kept green.)*
+- **DONE in S20b —** Remove pre-existing Seedance entries (e.g. `seedance_2_0`) from `ui/src/mock.ts` and sweep defaults/samples for Seedance (owner "never" rule). *(Done: `mock.ts`/`browser.ts`/`onboarding.rs`/`providers.ts` swept — `/seedance|grok/i` = 0 in the mock; every Seedance route hidden by default, not deleted.)*
 - Mock uses a flat 0.02/s for the tiered workhorse route (demo-only, not the real 480/768/1080 tiers).
 - `parse_iso_date` accepts day 1–31 without per-month validation (panic-free; registry literals only).
 - `promo_recheck` is not surfaced in the app UI (example printer only); live price re-verification belongs with S22.
 - HANDOFF pointer to a settled Seedance job did not resolve in the app DB (moot after the "Seedance never" decision).
 - Optional owner-run: one paid workhorse clip (~$0.13, 768p, 6 s) to live-confirm the output-seconds settle (agents never spend).
+
+### S20b follow-ups (2026-09-19)
+- `ui/src/components/Storyboard.tsx` ~:216–219 — the workhorse-first new-shot branch is unreachable via the DOM today (the "+ Add shot" control renders only when `shots.length > 0`, so `last?.modelId` always short-circuits it); defensive default, no direct test.
+- `get_bool_pref` treats any non-`"1"` value as false (the safe/fail-closed direction) rather than honouring the passed `default` for a corrupt row; consider honouring `default` for general reuse.
+- Resume-drain of an already-submitted queued job does not re-check the toggle — no new spend (a re-run goes back through `submit_one`, which does check).
+- The A2 launch-set test does not independently catch a broken `is_never_used` predicate (its `!is_never_used(id)` clause is trivially satisfied when the predicate returns false); the A3 exhaustive + default-hidden tests do catch it.
+- The v11→v12 upgrade test's temp-dir cleanup is not RAII-guarded, so a panicking assertion leaks the PID-scoped dir until the next same-PID run overwrites it (idempotent-safe).
+- Process note: verifiers must NEVER use `git checkout`/`restore` in a tree holding uncommitted slice work (a tester did once during a mutation revert; recovered byte-identical from `pre.diff` — restore by `cp` from a scratch copy instead).
+- Slice-id note: this slice is `S20b`, so backlog S21 (image-tier-pricing) keeps its id; the NEXT `new-slice.sh` scaffold comes out as S22 and must be renamed to S21.
 
 - **PAUSED by owner after S18 (2026-09-16).** Next when resumed: S19 shot trim handles, S20 per-token
   pricing accuracy (Seedance 2.5 3.2× under-quote on the owner's real job), continuity threshold

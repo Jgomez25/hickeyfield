@@ -8,6 +8,14 @@
 
 export type Modality = "image" | "video" | "audio" | "3d";
 
+/**
+ * The everyday paid video route (objective R0.3): fal `minimax/h3-max-turbo`,
+ * native audio + lipsync, billed on output seconds. The one id every default,
+ * fallback and new-shot picks. Kept as a single constant so no scattered
+ * literal can drift from the Rust `registry::WORKHORSE_MODEL_ID`.
+ */
+export const WORKHORSE_MODEL_ID = "minimax_h3_max_turbo";
+
 export interface Route {
   id: string;
   provider: string;

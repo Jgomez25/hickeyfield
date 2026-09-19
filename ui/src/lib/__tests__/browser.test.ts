@@ -44,8 +44,8 @@ const model = (over: Partial<BrowseModel>): BrowseModel => ({
 /** A text-only model, a clip editor and an image editor — the three shapes. */
 const catalog: BrowseModel[] = [
   model({
-    id: "seedance",
-    title: "Seedance 2.0 Text to Video",
+    id: "clip",
+    title: "Wan Clip Text to Video",
     category: "text-to-video",
     description: "Cinematic output with native audio and multi-shot editing.",
     price: { usd: 0.3034, unit: "per second of 720p video", note: null },
@@ -230,13 +230,13 @@ describe("matchesQuery", () => {
   it("searches the title and the description", () => {
     expect(matchesQuery(catalog[1], "background")).toBe(true);
     expect(matchesQuery(catalog[1], "green screen")).toBe(true);
-    expect(matchesQuery(catalog[1], "seedance")).toBe(false);
+    expect(matchesQuery(catalog[1], "clip")).toBe(false);
   });
 
   it("requires every token, in any order", () => {
-    expect(matchesQuery(catalog[0], "seedance cinematic")).toBe(true);
-    expect(matchesQuery(catalog[0], "cinematic seedance")).toBe(true);
-    expect(matchesQuery(catalog[0], "seedance background")).toBe(false);
+    expect(matchesQuery(catalog[0], "clip cinematic")).toBe(true);
+    expect(matchesQuery(catalog[0], "cinematic clip")).toBe(true);
+    expect(matchesQuery(catalog[0], "clip background")).toBe(false);
   });
 
   it("ignores case and surrounding whitespace", () => {
@@ -449,7 +449,7 @@ describe("filterBrowseModels", () => {
 
   it("preserves catalogue order", () => {
     expect(filterBrowseModels(catalog, { query: "e" }).map((m) => m.id)).toEqual([
-      "seedance",
+      "clip",
       "bg-removal",
       "nano-banana-edit",
     ]);
@@ -514,7 +514,7 @@ describe("groupByCategory", () => {
       "text-to-video",
       "image-to-image",
     ]);
-    expect(groups[1].models.map((m) => m.id)).toEqual(["seedance", "second"]);
+    expect(groups[1].models.map((m) => m.id)).toEqual(["clip", "second"]);
     expect(groups[0].label).toBe("Video to Video");
   });
 
@@ -530,7 +530,7 @@ describe("inCategoryOrder", () => {
     // user has already scrolled past when they press Load more.
     expect(inCategoryOrder(catalog).map((m) => m.id)).toEqual([
       "bg-removal",
-      "seedance",
+      "clip",
       "nano-banana-edit",
     ]);
   });
@@ -579,12 +579,12 @@ describe("MOCK_BROWSE_MODELS", () => {
   });
 
   it("carries the text-only model that reproduces the attachment bug", () => {
-    const seedance = MOCK_BROWSE_MODELS.find(
-      (m) => m.id === "bytedance/seedance-2.0/text-to-video",
+    const textOnly = MOCK_BROWSE_MODELS.find(
+      (m) => m.id === "minimax/h3-max-turbo/text-to-video",
     );
-    expect(seedance).toBeDefined();
-    expect(seedance!.acceptedRoles).toEqual([]);
-    expect(blockReason(seedance!, attached("video"))).toBe(
+    expect(textOnly).toBeDefined();
+    expect(textOnly!.acceptedRoles).toEqual([]);
+    expect(blockReason(textOnly!, attached("video"))).toBe(
       "Does not accept the attached video",
     );
   });

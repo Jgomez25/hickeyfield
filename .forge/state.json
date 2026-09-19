@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S20-workhorse-billing-accuracy",
+  "currentSlice": "S20b-never-used-routes",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -147,6 +147,14 @@
       "status": "released",
       "started": "2026-09-19",
       "branch": "forge/s20-workhorse-billing-accuracy"
+    },
+    {
+      "id": "S20b-never-used-routes",
+      "title": "never-used-routes",
+      "status": "released",
+      "started": "2026-09-19",
+      "branch": "forge/s20b-never-used-routes",
+      "note": "id renamed from the scaffolded S21 so backlog S21 (image-tier-pricing) keeps its reserved id; the NEXT new-slice.sh scaffold will come out as S22 and must be renamed to S21"
     }
   ]
 }

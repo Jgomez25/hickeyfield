@@ -152,6 +152,23 @@ The rule: **no process spends unless it opted in, and tests and examples never
 opt in.** `scripts/lint-spend.py` enforces the mechanics — no raw credential
 read outside the vault, no env-stripping, and no test enabling spending.
 
+### Never-used routes
+
+Some registered routes are ones this build is set never to buy — every Seedance
+and every Grok video and image route — because they bill the provider for output
+that is not worth their cost here. They are **hidden from every model picker by
+default**, not deleted: the registry, prices and capability data all remain, so a
+job you already ran on one still shows its real name and cost in history.
+
+A single Settings control, **"Show never-used routes (Seedance, Grok)"** (off by
+default), re-lists them when you want them. The guard is not just the hidden
+button: the refusal is **server-side, in the core** — with the setting off, a
+hidden route is turned away before any provider is contacted, and the message
+names the toggle. This is **separate from and additional to** the spend gate
+above: the spend gate governs *whether this process may spend at all*, while this
+governs *which routes are offered and permitted*, so a hidden route is refused
+even in a process that has opted into spending.
+
 **Always build through `tauri build`** (or `scripts/build-macos.sh`), never a
 bare `cargo build`. A plain cargo build does not bundle the frontend, and the
 resulting app opens to a blank white window.

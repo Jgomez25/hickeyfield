@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
+/// The `app_pref` key for the "show never-used routes" toggle (Seedance/Grok).
+/// Default OFF: the never-used routes are hidden until the owner opts in.
+pub const SHOW_NEVER_USED: &str = "show_never_used";
+
 /// One join's recorded continuity in a chained set (S16 D7), serialised into
 /// [`Storyboard::joins_json`]. `index` is the join *into* shot `index` (there is
 /// no join 0). A scoring failure records the numbers as `None`, never `0.0` — a
@@ -407,6 +411,47 @@ impl SqliteStore {
             )
             .map_err(map_err)?;
         }
+
+        if version < 12 {
+            // S20b: an app-level key/value pref table. The existing `settings`
+            // column is per-job; there was no home for a global toggle the
+            // spend boundary (`submit_one`, which holds `store` but no
+            // `AppHandle`) could read. Holds "show_never_used" (Seedance/Grok
+            // hidden by default). Additive; a pre-S20b DB simply reads the
+            // default until the owner flips it.
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS app_pref (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                ) STRICT;
+                PRAGMA user_version = 12;
+                "#,
+            )
+            .map_err(map_err)?;
+        }
+        Ok(())
+    }
+
+    /// Read a boolean app-level preference, or `default` if the row is absent.
+    pub fn get_bool_pref(&self, key: &str, default: bool) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT value FROM app_pref WHERE key = ?1", [key], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .map(|v| v == "1")
+        .unwrap_or(default)
+    }
+
+    /// Set a boolean app-level preference (upsert).
+    pub fn set_bool_pref(&self, key: &str, on: bool) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO app_pref (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, if on { "1" } else { "0" }],
+        )?;
         Ok(())
     }
 
@@ -875,7 +920,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 11, "in_memory must migrate to the latest schema");
+        assert_eq!(v, 12, "in_memory must migrate to the latest schema");
 
         let mut j = job("p", JobStatus::Completed);
         j.priced_from = Some(PriceProvenance::Feed);
@@ -1046,7 +1091,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 11, "migrations up to 11 must have run");
+        assert_eq!(version, 12, "migrations up to 12 must have run");
     }
 
     #[test]
@@ -1133,7 +1178,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 11, "migrations up to 11 must have run");
+        assert_eq!(version, 12, "migrations up to 12 must have run");
 
         let mut kfs = Vec::new();
         upsert_keyframe(
@@ -1208,6 +1253,144 @@ mod tests {
         };
         s.upsert_storyboard(&plain).unwrap();
         assert_eq!(s.storyboard("plain").unwrap().unwrap().keyframes_json, None);
+    }
+
+    #[test]
+    fn migration_12_adds_app_pref_and_roundtrips() {
+        // S20b: `user_version` is 12; an absent pref reads its default; a
+        // set→get round-trips; re-opening (idempotent migration) preserves it.
+        let s = SqliteStore::in_memory().unwrap();
+        let version: i64 = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 12, "migrations up to 12 must have run");
+
+        // Absent row ⇒ default (both polarities).
+        assert!(!s.get_bool_pref(SHOW_NEVER_USED, false));
+        assert!(s.get_bool_pref(SHOW_NEVER_USED, true));
+
+        // Set → get round-trips; upsert overwrites.
+        s.set_bool_pref(SHOW_NEVER_USED, true).unwrap();
+        assert!(s.get_bool_pref(SHOW_NEVER_USED, false));
+        s.set_bool_pref(SHOW_NEVER_USED, false).unwrap();
+        assert!(!s.get_bool_pref(SHOW_NEVER_USED, true));
+
+        // Re-running migrate() (idempotent) does not disturb the stored value.
+        s.set_bool_pref(SHOW_NEVER_USED, true).unwrap();
+        s.migrate().unwrap();
+        assert!(s.get_bool_pref(SHOW_NEVER_USED, false));
+    }
+
+    #[test]
+    fn an_existing_v11_database_with_data_upgrades_to_v12_intact() {
+        // The owner's real on-disk DB is at v11; this proves the v11→v12
+        // upgrade preserves every pre-existing row and column value while
+        // adding `app_pref`.
+        //
+        // How the v11 DB is built: `app_pref` is the ONLY thing migration 12
+        // adds, so a genuine v11 file is a fully-migrated file with `app_pref`
+        // dropped and `user_version` rolled back to 11. We open a fresh
+        // file-backed store (runs 0→12), write real rows, then
+        // `DROP TABLE app_pref` + `PRAGMA user_version = 11`. Re-opening runs
+        // the real constructor (`SqliteStore::open`), so migration 12 fires on
+        // a real v11 file exactly as it will on the owner's disk. Temp dir
+        // only — never `~/Library/Application Support/`.
+        let dir = std::env::temp_dir().join(format!("hf-v11-upgrade-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("jobs.sqlite");
+
+        // A job row with non-default values (incl. estimated_usd/actual_usd)
+        // and a storyboard row.
+        let mut j = job("legacy-job", JobStatus::Completed);
+        j.estimated_usd = Some(1.23);
+        j.actual_usd = Some(1.19);
+        j.prompt = "a v11 cold-brew ad".into();
+        j.settings = serde_json::json!({"duration": 6, "resolution": "768P"});
+        let sb = Storyboard {
+            id: "legacy-sb".into(),
+            brief: "a 30s ad for a cold-brew can".into(),
+            target_seconds: 30.0,
+            plan_json: r#"{"brief":"x","targetSeconds":30.0,"useCase":"text-to-video","shots":[]}"#
+                .into(),
+            created_at: 77,
+            chained: true,
+            shots_json: None,
+            overlap_seconds: Some(0.5),
+            joins_json: None,
+            auto_retry: true,
+            keyframes_json: None,
+        };
+
+        // Build the v11 file.
+        {
+            let s = SqliteStore::open(&db).unwrap();
+            s.upsert(&j).unwrap();
+            s.upsert_storyboard(&sb).unwrap();
+            let conn = s.conn.lock().unwrap();
+            conn.execute_batch("DROP TABLE app_pref; PRAGMA user_version = 11;")
+                .unwrap();
+            let v: i64 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, 11, "we must be starting the upgrade from a real v11 DB");
+        }
+
+        // Re-open through the normal constructor: migration 12 runs.
+        let s = SqliteStore::open(&db).unwrap();
+        let v: i64 = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 12, "v11 DB must upgrade to 12");
+
+        // `app_pref` now exists and reads its safe default.
+        let has_pref: i64 = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_pref'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_pref, 1, "migration 12 must create app_pref");
+        assert!(
+            !s.get_bool_pref(SHOW_NEVER_USED, false),
+            "hidden-by-default survives the upgrade"
+        );
+
+        // Every pre-existing row and column value is unchanged.
+        assert_eq!(s.get("legacy-job").unwrap().unwrap(), j);
+        assert_eq!(s.storyboard("legacy-sb").unwrap().unwrap(), sb);
+
+        // A set→get round-trip works on the upgraded DB.
+        s.set_bool_pref(SHOW_NEVER_USED, true).unwrap();
+        assert!(s.get_bool_pref(SHOW_NEVER_USED, false));
+        s.set_bool_pref(SHOW_NEVER_USED, false).unwrap();
+        assert!(!s.get_bool_pref(SHOW_NEVER_USED, true));
+
+        // Opening a THIRD time is idempotent: still 12, data still intact.
+        drop(s);
+        let s3 = SqliteStore::open(&db).unwrap();
+        let v3: i64 = s3
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v3, 12, "re-opening a v12 DB stays at 12");
+        assert_eq!(s3.get("legacy-job").unwrap().unwrap(), j);
+        assert_eq!(s3.storyboard("legacy-sb").unwrap().unwrap(), sb);
+        assert!(!s3.get_bool_pref(SHOW_NEVER_USED, false));
+
+        drop(s3);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

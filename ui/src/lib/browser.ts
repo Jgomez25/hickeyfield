@@ -544,15 +544,15 @@ export const MOCK_BROWSE_MODELS: BrowseModel[] = [
     unavailableReason: null,
   },
   {
-    id: "bytedance/seedance-2.0/text-to-video",
-    title: "Seedance 2.0 Text to Video",
+    id: "minimax/h3-max-turbo/text-to-video",
+    title: "H3 Max Turbo Text to Video",
     category: "text-to-video",
     description:
       "Cinematic output with native audio, multi-shot editing and real-world physics.",
     price: {
-      usd: 0.3034,
-      unit: "per second of 720p video",
-      note: "$0.3034 per second at 720p, $0.682 per second at 1080p.",
+      usd: 0.02,
+      unit: "per second of 768p video",
+      note: "$0.0125 per second at 480p, $0.02 at 768p, $0.04 at 1080p.",
     },
     takesPrompt: true,
     // Declares prompt, duration, resolution, generate_audio, aspect_ratio and

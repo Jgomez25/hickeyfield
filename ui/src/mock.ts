@@ -8,16 +8,17 @@
  * by the desktop path once the commands answer.
  */
 
-import type {
-  ModelCapabilities,
-  CostEstimate,
-  JobSet,
-  Model,
-  PresetFamily,
-  PromptPreview,
-  StoryboardPlan,
-  StoryboardResult,
-  SubmitInput,
+import {
+  WORKHORSE_MODEL_ID,
+  type ModelCapabilities,
+  type CostEstimate,
+  type JobSet,
+  type Model,
+  type PresetFamily,
+  type PromptPreview,
+  type StoryboardPlan,
+  type StoryboardResult,
+  type SubmitInput,
 } from "./types";
 import { gradientDataUri } from "./lib/placeholder";
 
@@ -54,7 +55,7 @@ export const MOCK_MODELS: Model[] = [
     // (`minimax/h3-max-turbo`, tiers $0.0125/s 480p, $0.02/s 768p, $0.04/s
     // 1080p). The promotional-rate badge is real here, so the demo `promoAsOf`
     // rides its fal route rather than a model that has no promo.
-    id: "minimax_h3_max_turbo",
+    id: WORKHORSE_MODEL_ID,
     displayName: "H3 Max Turbo",
     modality: "video",
     isLaunch: true,
@@ -85,14 +86,14 @@ export const MOCK_MODELS: Model[] = [
     }),
   },
   {
-    id: "seedance_2_0",
-    displayName: "Seedance 2.0",
+    id: "wan_2_6",
+    displayName: "Wan 2.6",
     modality: "video",
     isLaunch: true,
-    subtitle: "Fast multi-shot generation, token priced by resolution",
+    subtitle: "Hosted Wan, strong motion at a mid price",
     routes: [
-      route("fal", "bytedance/seedance/v2/pro"),
-      route("vaig", "seedance-2"),
+      route("fal", "wan/v2.6/t2v"),
+      route("vaig", "wan-2-6"),
     ],
     capabilities: caps({
       durations: [4, 6, 8],
@@ -213,7 +214,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Camera Control",
     tags: ["orbit", "camera", "rotation"],
     description: "A full circular orbit around the subject at a fixed radius.",
-    models: ["kling_3_0", "seedance_2_0", "wan_2_7"],
+    models: [WORKHORSE_MODEL_ID, "kling_3_0", "veo_3_1_fast", "wan_2_7"],
   },
   {
     id: "earth-zoom",
@@ -221,7 +222,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Camera Control",
     tags: ["zoom", "camera", "scale"],
     description: "A continuous pull from ground level out to orbital altitude.",
-    models: ["kling_3_0", "veo_3_1_fast"],
+    models: [WORKHORSE_MODEL_ID, "kling_3_0", "veo_3_1_fast"],
   },
   {
     id: "crash-dolly",
@@ -229,7 +230,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Camera Control",
     tags: ["dolly", "camera", "push"],
     description: "A hard accelerating push straight into the subject.",
-    models: ["kling_3_0", "seedance_2_0"],
+    models: [WORKHORSE_MODEL_ID, "kling_3_0", "veo_3_1_fast"],
   },
   {
     id: "handheld-follow",
@@ -237,7 +238,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Camera Control",
     tags: ["handheld", "camera", "tracking"],
     description: "Loose operator-held tracking shot with natural sway.",
-    models: ["wan_2_7", "seedance_2_0"],
+    models: [WORKHORSE_MODEL_ID, "wan_2_7", "veo_3_1_fast"],
   },
   {
     id: "crane-reveal",
@@ -252,7 +253,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Effects",
     tags: ["glitch", "vfx", "transition"],
     description: "Pixels bleed and smear between frames into distorted transitions.",
-    models: ["seedance_2_0", "wan_2_7"],
+    models: [WORKHORSE_MODEL_ID, "veo_3_1_fast", "wan_2_7"],
   },
   {
     id: "ice-statue",
@@ -260,7 +261,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Effects",
     tags: ["freeze", "vfx", "transform"],
     description: "The subject crystallises into carved ice from the feet up.",
-    models: ["kling_3_0"],
+    models: [WORKHORSE_MODEL_ID, "kling_3_0"],
   },
   {
     id: "cardboard-cutout",
@@ -275,7 +276,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Effects",
     tags: ["peel", "vfx", "transition"],
     description: "The frame lifts and peels away like a vinyl sticker.",
-    models: ["seedance_2_0"],
+    models: [WORKHORSE_MODEL_ID, "veo_3_1_fast"],
   },
   {
     id: "clay-figurine",
@@ -290,7 +291,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Viral",
     tags: ["action", "drop", "gravity"],
     description: "The subject plummets while the camera falls alongside.",
-    models: ["kling_3_0", "veo_3_1_fast"],
+    models: [WORKHORSE_MODEL_ID, "kling_3_0", "veo_3_1_fast"],
   },
   {
     id: "red-carpet",
@@ -298,7 +299,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Viral",
     tags: ["paparazzi", "flash", "celebrity"],
     description: "Step-and-repeat arrival under a wall of camera flashes.",
-    models: ["kling_3_0"],
+    models: [WORKHORSE_MODEL_ID, "kling_3_0"],
   },
   {
     id: "action-figure",
@@ -316,7 +317,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Viral",
     tags: ["ir", "surveillance", "green"],
     description: "Infrared surveillance look with bloom and sensor grain.",
-    models: ["wan_2_7", "seedance_2_0"],
+    models: [WORKHORSE_MODEL_ID, "wan_2_7", "veo_3_1_fast"],
   },
   {
     id: "office-cctv",
@@ -331,7 +332,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Mood",
     tags: ["neon", "night", "urban"],
     description: "Wet asphalt, saturated signage and long reflections.",
-    models: ["kling_3_0", "seedance_2_0", "veo_3_1_fast"],
+    models: [WORKHORSE_MODEL_ID, "kling_3_0", "veo_3_1_fast"],
   },
   {
     id: "summer-haze",
@@ -346,7 +347,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Mood",
     tags: ["low-key", "contrast", "noir"],
     description: "Single hard source against deep shadow, most of the frame unlit.",
-    models: ["kling_3_0"],
+    models: [WORKHORSE_MODEL_ID, "kling_3_0"],
   },
   {
     id: "foggy-morning",
@@ -361,7 +362,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Anime",
     tags: ["anime", "flat", "linework"],
     description: "Hard cel shading with visible ink lines and limited palette.",
-    models: ["wan_2_7", "seedance_2_0"],
+    models: [WORKHORSE_MODEL_ID, "wan_2_7", "veo_3_1_fast"],
   },
   {
     id: "sakura-drift",
@@ -376,7 +377,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Anime",
     tags: ["anime", "mecha", "action"],
     description: "Low-angle takeoff with speed lines and impact dust.",
-    models: ["kling_3_0", "wan_2_7"],
+    models: [WORKHORSE_MODEL_ID, "kling_3_0", "wan_2_7"],
   },
   {
     id: "kinetic-titles",
@@ -391,7 +392,7 @@ const PRESET_SEEDS: PresetSeed[] = [
     category: "Trending",
     tags: ["product", "commercial", "turntable"],
     description: "Seamless turntable loop on a lit sweep background.",
-    models: ["seedance_2_0", "veo_3_1_fast"],
+    models: [WORKHORSE_MODEL_ID, "veo_3_1_fast"],
   },
   {
     id: "soft-portrait",
@@ -425,9 +426,9 @@ export const presetPreview = (presetId: string, w = 360, h = 640): string =>
  * only ever gets exercised in production.
  */
 const RATE_PER_SECOND: Record<string, number | null> = {
-  minimax_h3_max_turbo: 0.02,
+  [WORKHORSE_MODEL_ID]: 0.02,
   kling_3_0: 0.28,
-  seedance_2_0: 0.19,
+  wan_2_6: 0.19,
   wan_2_7: null,
   veo_3_1_fast: 0.15,
   gemini_omni: 0.32,
@@ -487,14 +488,14 @@ const iso = (minutesAgo: number) =>
 export const MOCK_JOBS: JobSet[] = [
   {
     id: "job-3",
-    modelId: "seedance_2_0",
+    modelId: WORKHORSE_MODEL_ID,
     status: "in_progress",
     prompt:
       "A lone cyclist crossing a rain-slicked intersection at night, headlights raking across the frame, steam rising from a grate.",
     createdAt: iso(1),
     results: [],
-    route: route("fal", "bytedance/seedance/v2/pro"),
-    estimatedUsd: 1.71,
+    route: route("fal", "minimax/h3-max-turbo"),
+    estimatedUsd: 0.13,
     presetId: "neon-city",
     presetName: "Neon City",
     settings: {

@@ -18,7 +18,7 @@ import type { JobSet, Storyboard, StoryboardRender } from "../types";
 function job(overrides: Partial<JobSet>): JobSet {
   return {
     id: "j",
-    modelId: "seedance_2_5",
+    modelId: "minimax_h3_max_turbo",
     status: "completed",
     prompt: "A lighthouse at dusk",
     createdAt: new Date().toISOString(),

@@ -10,6 +10,9 @@ import {
   listPresets,
   listUseCases,
   modelsForUseCase,
+  modelNames,
+  getShowNeverUsed,
+  setShowNeverUsed,
   localEndpoints,
   ollamaModels,
   previewPrompt,
@@ -48,6 +51,7 @@ import type {
   UseCase,
   WorkspaceTab,
 } from "./types";
+import { WORKHORSE_MODEL_ID } from "./types";
 import { capabilitiesFor, resolveSettings, selectRoute } from "./lib/variants";
 import { measureAspect, nearestAspect } from "./lib/media";
 import { previewOf } from "./lib/media-input";
@@ -115,6 +119,10 @@ const readSkipped = (): boolean => {
 
 export default function App() {
   const [models, setModels] = useState<Model[]>([]);
+  // Unfiltered id → display name, so history renders a hidden (never-used)
+  // model's name even though the picker feed omits it.
+  const [modelNameMap, setModelNameMap] = useState<Record<string, string>>({});
+  const [showNeverUsed, setShowNeverUsedState] = useState(false);
   const [presets, setPresets] = useState<PresetFamily[]>([]);
   const [jobs, setJobs] = useState<JobSet[]>([]);
 
@@ -180,18 +188,25 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
-      const [u, m, p, j] = await Promise.all([
+      const [u, m, p, j, names, showNU] = await Promise.all([
         listUseCases(),
         listModels(),
         listPresets(),
         listJobs(),
+        modelNames(),
+        getShowNeverUsed(),
       ]);
       setUseCases(u);
       if (u.length > 0 && !u.some((x) => x.slug === tab)) setTab(u[0].slug);
       setModels(m);
+      setModelNameMap(names);
+      setShowNeverUsedState(showNU);
       setPresets(p);
       setJobs(j);
-      const first = m.find((x) => x.isLaunch && x.modality === "video") ?? m[0];
+      const first =
+        m.find((x) => x.id === WORKHORSE_MODEL_ID) ??
+        m.find((x) => x.isLaunch && x.modality === "video") ??
+        m[0];
       if (first) {
         setModelId(first.id);
         setRouteId(first.routes[0]?.id ?? null);
@@ -333,7 +348,10 @@ export default function App() {
       // leaving it in an unrunnable state the user has to notice and fix.
       setModelId((current) => {
         if (current && m.some((x) => x.id === current)) return current;
-        const next = m.find((x) => x.isLaunch) ?? m[0];
+        const next =
+          m.find((x) => x.id === WORKHORSE_MODEL_ID) ??
+          m.find((x) => x.isLaunch) ??
+          m[0];
         setRouteId(next?.routes[0]?.id ?? null);
         return next?.id ?? null;
       });
@@ -681,6 +699,18 @@ export default function App() {
     [],
   );
 
+  // Flip the "show never-used routes" toggle: persist it server-side, then
+  // re-fetch the picker feed so the Seedance/Grok rows appear or vanish at once.
+  const onToggleNeverUsed = useCallback(
+    async (on: boolean) => {
+      await setShowNeverUsed(on);
+      setShowNeverUsedState(on);
+      const m = view === "studio" ? await modelsForUseCase(tab) : await listModels();
+      setModels(m);
+    },
+    [view, tab],
+  );
+
   // The Studio stage shows the selection when there is one, else the latest
   // (jobs are newest-first). Recents are the first six.
   const featured = useMemo(
@@ -690,11 +720,14 @@ export default function App() {
   const recents = useMemo(() => jobs.slice(0, 6), [jobs]);
   const featuredModelName = useMemo(() => {
     if (!featured) return "";
+    // The unfiltered name map first, so a job on a hidden (never-used) model
+    // still shows its real name instead of falling through to the raw id.
     return (
+      modelNameMap[featured.modelId] ??
       models.find((m) => m.id === featured.modelId)?.displayName ??
       featured.modelId
     );
-  }, [featured, models]);
+  }, [featured, models, modelNameMap]);
 
   // Camera-move presets drive the composer strip (S11's "25 camera presets").
   const cameraPresets = useMemo(
@@ -857,6 +890,7 @@ export default function App() {
           <Storyboard
             tab={tab}
             models={models}
+            modelNames={modelNameMap}
             cameraPresets={cameraPresets}
             settings={settings}
             enhancer={enhancer}
@@ -891,6 +925,8 @@ export default function App() {
               )}
               enhancer={enhancer}
               onEnhancerChange={setEnhancer}
+              showNeverUsed={showNeverUsed}
+              onToggleNeverUsed={(on) => void onToggleNeverUsed(on)}
               estimate={estimate}
               pending={pending}
               needsSetup={needsSetup}

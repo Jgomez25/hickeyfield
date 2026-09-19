@@ -116,6 +116,8 @@ export function SettingsRail({
   openaiAvailable,
   enhancer,
   onEnhancerChange,
+  showNeverUsed,
+  onToggleNeverUsed,
   estimate,
   pending,
   needsSetup,
@@ -157,6 +159,9 @@ export function SettingsRail({
   /** The explicit enhancer choice (null = auto). */
   enhancer: RewriterChoice | null;
   onEnhancerChange: (next: RewriterChoice | null) => void;
+  /** Whether never-used routes (Seedance, Grok) are revealed in the pickers. */
+  showNeverUsed: boolean;
+  onToggleNeverUsed: (on: boolean) => void;
   estimate: CostEstimate | null;
   pending: boolean;
   /** No usable provider — the submit control becomes the way to fix that. */
@@ -318,6 +323,18 @@ export function SettingsRail({
               }
             />
           ) : null}
+
+          <label className="never-used-toggle">
+            <input
+              type="checkbox"
+              checked={showNeverUsed}
+              onChange={(e) => onToggleNeverUsed(e.target.checked)}
+            />
+            Show never-used routes (Seedance, Grok)
+            <span className="never-used-warn">
+              These bill the provider — hidden by default.
+            </span>
+          </label>
 
           <p className="rail-disclaimer">
             Independent open-source project. Not affiliated with, endorsed by,

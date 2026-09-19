@@ -33,7 +33,7 @@ const catalog: PresetFamily[] = [
     category: "Effects",
     tags: ["glitch"],
     description: "Pixels bleed between frames.",
-    variants: [{ modelId: "seedance_2_0" }],
+    variants: [{ modelId: "veo_3_1_fast" }],
   }),
   preset({
     id: "neon",
@@ -80,7 +80,7 @@ describe("matchesQuery", () => {
 describe("supportsModel", () => {
   it("respects an explicit variant list", () => {
     expect(supportsModel(catalog[0], "kling_3_0")).toBe(true);
-    expect(supportsModel(catalog[0], "seedance_2_0")).toBe(false);
+    expect(supportsModel(catalog[0], "veo_3_1_fast")).toBe(false);
   });
 
   it("treats a family with no variants as model-agnostic", () => {

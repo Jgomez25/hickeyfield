@@ -115,6 +115,17 @@ pub fn registry() -> BTreeMap<String, Model> {
     out
 }
 
+/// The everyday paid video route (objective R0.3). The one id every default,
+/// mock and sample leads with; also the anchor of the launch set.
+pub const WORKHORSE_MODEL_ID: &str = "minimax_h3_max_turbo";
+
+/// True for a route the owner has marked never-used (Seedance and Grok, video
+/// AND image). Prefix-based so a future `seedance_*`/`grok_*` id cannot slip in
+/// unhidden. Hidden ≠ deleted: the id stays priced, capable and testable.
+pub fn is_never_used(model_id: &str) -> bool {
+    model_id.starts_with("seedance") || model_id.starts_with("grok")
+}
+
 /// The M1 launch set, expanded from [`LAUNCH_FAMILIES`].
 pub fn launch_models() -> Vec<Model> {
     let reg = registry();
@@ -214,10 +225,7 @@ pub const EXCLUSIONS: [(&str, &str); 2] = [
 pub const LAUNCH_FAMILIES: [(&str, &[&str]); 12] = [
     ("Kling 3.0", &["kling3_0"]),
     ("Kling 2.6", &["kling2_6"]),
-    (
-        "Seedance 2.0",
-        &["seedance_2_0", "seedance_2_0_fast", "seedance_2_0_mini"],
-    ),
+    ("MiniMax H3 Max Turbo", &[WORKHORSE_MODEL_ID]),
     ("Wan 2.7", &["wan2_7"]),
     ("Wan 2.6", &["wan2_6"]),
     ("Veo 3.1", &["veo3_1", "veo3_1_fast", "veo3_1_lite"]),
@@ -2782,6 +2790,79 @@ mod tests {
                 assert!(reg[*id].launch, "{family}: {id} not marked launch");
             }
         }
+    }
+
+    #[test]
+    fn the_workhorse_constant_is_a_launch_video_route() {
+        // A1: the workhorse id names a real, launch-flagged video model that
+        // resolves to at least one route — so the per-name defaults have a target.
+        let reg = registry();
+        let m = reg
+            .get(WORKHORSE_MODEL_ID)
+            .expect("workhorse is in the registry");
+        assert_eq!(m.modality, Modality::Video, "workhorse is a video model");
+        assert!(m.launch, "workhorse carries the launch marker");
+        assert!(!m.routes.is_empty(), "workhorse has at least one route");
+    }
+
+    #[test]
+    fn launch_families_lead_with_the_workhorse_and_ban_seedance_and_grok() {
+        // A2: the launch set contains the workhorse and NO never-used id. The ban
+        // is prefix-based so a future `seedance_*`/`grok_*` id cannot slip in.
+        assert_eq!(LAUNCH_FAMILIES.len(), 12);
+        let flat: Vec<&str> = LAUNCH_FAMILIES
+            .iter()
+            .flat_map(|(_, ids)| ids.iter().copied())
+            .collect();
+        assert!(
+            flat.contains(&WORKHORSE_MODEL_ID),
+            "launch set must contain the workhorse"
+        );
+        for id in &flat {
+            assert!(
+                !is_never_used(id),
+                "{id} is a never-used route and must not be in the launch set"
+            );
+        }
+    }
+
+    #[test]
+    fn is_never_used_covers_exactly_the_registry_seedance_and_grok_ids() {
+        // A3: the prefix predicate hides EXACTLY the 11 enumerated Seedance/Grok
+        // ids in the registry — none missed, and Seedream (an image line) is NOT
+        // over-matched. Set equality, not mere non-emptiness.
+        use std::collections::BTreeSet;
+        let expected: BTreeSet<&str> = [
+            "seedance1_5",
+            "seedance_2_0",
+            "seedance_2_0_fast",
+            "seedance_2_0_mini",
+            "seedance_2_5",
+            "seedance_pro",
+            "grok_video",
+            "grok_video_v15",
+            "grok_image",
+            "grok_edit_video",
+            "grok_extend_video",
+        ]
+        .into_iter()
+        .collect();
+
+        let matched: BTreeSet<String> = registry()
+            .into_keys()
+            .filter(|id| is_never_used(id))
+            .collect();
+        let matched_refs: BTreeSet<&str> = matched.iter().map(String::as_str).collect();
+        assert_eq!(
+            matched_refs, expected,
+            "predicate matches exactly the 11 ids"
+        );
+
+        // Boundary: Seedream (image) and the workhorse are on the KEPT side.
+        assert!(!is_never_used("seedream_v5_pro"));
+        assert!(!is_never_used(WORKHORSE_MODEL_ID));
+        assert!(is_never_used("grok_video"));
+        assert!(is_never_used("seedance_2_5"));
     }
 
     #[test]

@@ -508,6 +508,46 @@ export async function listModels(): Promise<Model[]> {
   }
 }
 
+/**
+ * Every model's id → display name, UNFILTERED (hidden routes included).
+ *
+ * History must render a job on a never-used (hidden) model by name even while
+ * that model is absent from the picker feeds. Off the desktop, folds the mock
+ * roster so the browser build resolves names too.
+ */
+export async function modelNames(): Promise<Record<string, string>> {
+  try {
+    const raw = await invoke<{ id: string; display_name: string }[]>(
+      "model_names",
+    );
+    const map: Record<string, string> = {};
+    for (const m of raw) map[m.id] = m.display_name;
+    return map;
+  } catch {
+    const map: Record<string, string> = {};
+    for (const m of MOCK_MODELS) map[m.id] = m.displayName;
+    return map;
+  }
+}
+
+/** The persisted "show never-used routes" toggle (default OFF). */
+export async function getShowNeverUsed(): Promise<boolean> {
+  try {
+    return await invoke<boolean>("get_show_never_used");
+  } catch {
+    return localStorage.getItem("hickeyfield.showNeverUsed") === "1";
+  }
+}
+
+/** Persist the "show never-used routes" toggle. */
+export async function setShowNeverUsed(on: boolean): Promise<void> {
+  try {
+    await invoke("set_show_never_used", { on });
+  } catch {
+    localStorage.setItem("hickeyfield.showNeverUsed", on ? "1" : "0");
+  }
+}
+
 export async function listPresets(): Promise<PresetFamily[]> {
   try {
     const raw = await invoke<RawPreset[]>("list_presets");

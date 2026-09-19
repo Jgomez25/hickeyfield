@@ -17,7 +17,7 @@ import type { JobSet } from "../types";
 function job(overrides: Partial<JobSet>): JobSet {
   return {
     id: "j1",
-    modelId: "seedance_2_5",
+    modelId: "minimax_h3_max_turbo",
     status: "completed",
     prompt: "A lighthouse keeper climbs the stairs at dusk",
     createdAt: new Date(Date.now() - 41_000).toISOString(),
@@ -66,7 +66,7 @@ describe("Stage", () => {
       <Stage
         job={j}
         recents={[j]}
-        modelName="Seedance 2.5"
+        modelName="H3 Max Turbo"
         onSelect={noop}
         onRetry={noop}
         onExtend={noop}
@@ -76,7 +76,7 @@ describe("Stage", () => {
     expect(container.querySelector(".stage-hero")).not.toBeNull();
     expect(container.textContent).toContain("A lighthouse keeper");
     // Caption carries model · duration · resolution · est→actual.
-    expect(container.textContent).toContain("Seedance 2.5");
+    expect(container.textContent).toContain("H3 Max Turbo");
     expect(container.textContent).toContain("est. $0.43 → actual $0.41");
     // Recents tiles keep the data-job-anchor the pairing effect scrolls to.
     const tiles = container.querySelectorAll(".stage-recent-tile[data-job-anchor]");
@@ -88,7 +88,7 @@ describe("Stage", () => {
       <Stage
         job={job({ status: "in_progress" })}
         recents={[]}
-        modelName="Seedance 2.5"
+        modelName="H3 Max Turbo"
         onSelect={noop}
         onRetry={noop}
         onExtend={noop}
@@ -106,7 +106,7 @@ describe("Stage", () => {
       <Stage
         job={job({ results: [{ url: "https://x/y.png", kind: "image" }] })}
         recents={[]}
-        modelName="Seedance 2.5"
+        modelName="H3 Max Turbo"
         onSelect={noop}
         onRetry={noop}
         onExtend={onExtend}
@@ -126,7 +126,7 @@ describe("Stage", () => {
       <Stage
         job={job({})}
         recents={[]}
-        modelName="Seedance 2.5"
+        modelName="H3 Max Turbo"
         onSelect={noop}
         onRetry={noop}
         onExtend={null}

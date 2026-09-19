@@ -40,7 +40,7 @@ pub fn provider_info(p: ProviderId) -> ProviderInfo {
             needs_secret: false,
             key_url: "https://fal.ai/dashboard/keys",
             env_names: &["FAL_KEY", "FAL_API_KEY"],
-            blurb: "Most of the roster on one key — Kling, Seedance, Wan, Veo, FLUX, upscaling.",
+            blurb: "Most of the roster on one key — Kling, Wan, Veo, FLUX, upscaling.",
             recommended: true,
         },
         ProviderId::Vaig => ProviderInfo {
@@ -50,7 +50,7 @@ pub fn provider_info(p: ProviderId) -> ProviderInfo {
             needs_secret: false,
             key_url: "https://vercel.com/dashboard/ai-gateway",
             env_names: &["AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_KEY"],
-            blurb: "Cheaper than fal on MiniMax, Seedance 1.5 Pro and Seedream.",
+            blurb: "Cheaper than fal on MiniMax and Seedream.",
             recommended: false,
         },
         ProviderId::Google => ProviderInfo {
@@ -80,7 +80,7 @@ pub fn provider_info(p: ProviderId) -> ProviderInfo {
             needs_secret: false,
             key_url: "https://console.x.ai",
             env_names: &["XAI_API_KEY", "GROK_API_KEY"],
-            blurb: "Grok Imagine — about 3x cheaper direct than through a gateway.",
+            blurb: "xAI's image API — direct.",
             recommended: false,
         },
         ProviderId::Bfl => ProviderInfo {

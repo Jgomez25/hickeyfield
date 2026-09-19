@@ -216,6 +216,14 @@ No signing key, no release feed, no update flow. M4 item.
 
 ## 4. Model roster
 
+> **Update — slice S20b (never-used-routes), 2026-09-19.** The owner marked Seedance and
+> Grok as never used (they bill the provider for video not bought here). All 11 Seedance and
+> Grok routes are now **hidden from every picker by default** — registered, priced and
+> capable as before (the counts below are unchanged), but off unless the Settings control
+> "Show never-used routes (Seedance, Grok)" is turned on, and refused server-side while
+> hidden. The launch set now leads with the workhorse (MiniMax H3 Max Turbo) in place of the
+> Seedance family. The pricing comparison in §6 is left as measured on 2026-08-04.
+
 **68 models / 103 routes / 16 launch** against Higgsfield's live picker. Their video registry
 (§3.2 of the inventory) and image registry (§4.1) are both fully transcribed into the
 corpus, and `DISPLAY_OVERRIDES` fixes the four labels where their internal ID and their

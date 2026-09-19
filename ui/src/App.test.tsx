@@ -4,6 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import App from "./App";
 
 /**
+ * The A1 cross-tab workhorse-preference test lives in its own file,
+ * `App.workhorse.test.tsx`, with its own scoped `vi.mock("./api")` whose
+ * per-tab fixtures are hand-ordered so the preference logic is falsifiable
+ * (workhorse never at index 0). Keeping it out of this file leaves these S12
+ * tests running against the plain browse-mode api.
+ *
  * AC1 + AC3 (S12) at the App level.
  *
  * AC1 (non-vacuous button-in-button): the delete confirmation is now a sibling
