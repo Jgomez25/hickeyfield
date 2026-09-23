@@ -11,7 +11,7 @@
     "DOCUMENT",
     "RELEASE"
   ],
-  "currentSlice": "S20b-never-used-routes",
+  "currentSlice": "S26-brand-pack-boundary",
   "slices": [
     {
       "id": "S1-job-engine-reliability",
@@ -155,6 +155,22 @@
       "started": "2026-09-19",
       "branch": "forge/s20b-never-used-routes",
       "note": "id renamed from the scaffolded S21 so backlog S21 (image-tier-pricing) keeps its reserved id; the NEXT new-slice.sh scaffold will come out as S22 and must be renamed to S21"
+    },
+    {
+      "id": "S26-brand-pack-boundary",
+      "title": "brand-pack-boundary",
+      "status": "in-progress",
+      "started": "2026-09-22",
+      "branch": "forge/s26-brand-pack-boundary",
+      "note": "id assigned by hand to match the Extension R backlog (new-slice.sh numbers by count); parallel lane"
+    },
+    {
+      "id": "S27-creative-machine-mockup",
+      "title": "creative-machine-mockup",
+      "status": "in-progress",
+      "started": "2026-09-22",
+      "branch": "forge/s27-creative-machine-mockup",
+      "note": "id assigned by hand to match the Extension R backlog (new-slice.sh numbers by count); parallel lane"
     }
   ]
 }

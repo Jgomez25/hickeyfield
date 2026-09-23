@@ -1,3 +1,36 @@
+# HANDOFF — hickeyfield FORGE — S20 + S20b landed; TWO LANES open: S26 brand-pack + S27 mockup (2026-09-22)
+
+## State
+- `main` = S1–S18, S20, S20b released + installed (S20b = 076559b; owner verified in-app 2026-09-19:
+  Seedance + Grok gone from the picker). Tests 979 Rust (+20 pre-existing gated ignores) / 321 UI. Nothing
+  pushed. $0 spent. App DB upgraded v11 → v12 on first launch of the S20b build (adds `app_pref` only).
+- S20b: workhorse = startup / tab-fallback / storyboard default + launch model; the 11 `seedance*`/`grok*`
+  models hidden server-side behind Settings "Show never-used routes (Seedance, Grok)" (default OFF);
+  `submit_one` refuses them before any provider, fails closed. Two repair rounds used (tab test was
+  tautological; caught by mutation).
+
+## Lanes (owner go 2026-09-22: "continue" on the two-lane recommendation)
+- **Lane 1 — S26-brand-pack-boundary** on `forge/s26-brand-pack-boundary`, worktree
+  `.claude/worktrees/adoring-hugle-17df18`. R-BRAND.1–4 + Q-R4. Source slice (Rust + UI + new
+  `scripts/lint-brand.py`).
+- **Lane 2 — S27-creative-machine-mockup** on `forge/s27-creative-machine-mockup`, worktree
+  `.claude/worktrees/s27-mockup`. R-UX.1 stage 1, boards only, NO source change; the orchestrator
+  publishes the Design canvas (Artifact tool). Owner-run approval gate.
+- Both branched from the scaffold commit (state.json + both stubs + this handoff). Landing stays SERIAL:
+  whichever finishes second rebases on main, re-runs the gate, and re-verifies before ff. Expect trivial
+  conflicts in `state.json` / `CHANGELOG.md` / `backlog.md`.
+- Slice ids are assigned BY HAND to match the Extension R backlog (`new-slice.sh` numbers by count and
+  would now emit S24). Money lane resumes with S21 image tiers when the owner's measured rows arrive.
+
+## Rules learned this session
+- Verifiers must never use `git checkout <file>` / `restore` / `reset` / `stash` / `clean` in a tree
+  holding uncommitted slice work (one did; recovered byte-identical). Mutations via file copies only.
+- Tauri build from the REPO ROOT: `./ui/node_modules/.bin/tauri build --bundles app` (UI built first);
+  never pipe a build through `tail` without `pipefail`. Installed app: `/Applications/Hickeyfield.app`.
+- The live app DB is WAL-mode: never read/copy it while the app runs (stale main file), never write it.
+
+---
+# (previous handoffs kept below)
 # HANDOFF — hickeyfield FORGE — S20 RELEASED + installed; next slice is the owner's pick (2026-09-19)
 
 ## State
