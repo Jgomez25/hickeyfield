@@ -78,6 +78,10 @@ describe("App view switch + delete confirmation (S12)", () => {
     });
     await flush();
 
+    // Explore is the landing page; Studio opens the working composer.
+    expect(container.querySelector('.workspace[data-view="explore"]')).not.toBeNull();
+    click(viewTab("Studio"));
+    await flush();
     // Studio: composer + stage, no meta rail.
     expect(container.querySelector('.workspace[data-view="studio"]')).not.toBeNull();
     expect(container.querySelector(".stage")).not.toBeNull();
@@ -120,5 +124,53 @@ describe("App view switch + delete confirmation (S12)", () => {
     // …and yet no interactive element nests another. This is the fix: the
     // dialog is a sibling of the overlays, not inside a titlebar <button>.
     expect(document.querySelectorAll("button button").length).toBe(0);
+  });
+});
+
+describe("Explore workflow navigation", () => {
+  it("filters tools and opens the selected image workflow", async () => {
+    await act(async () => { root.render(<App />); });
+    await flush();
+    const filters = Array.from(container.querySelectorAll<HTMLButtonElement>(".tool-filters button"));
+    click(filters.find(b => b.textContent === "Image") ?? null);
+    expect(container.querySelectorAll(".tool-card")).toHaveLength(2);
+    const edit = Array.from(container.querySelectorAll<HTMLButtonElement>(".tool-card")).find(b => b.textContent?.includes("Edit image"));
+    click(edit ?? null);
+    await flush();
+    expect(container.querySelector('[data-tab="edit-image"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector("#frame-start")).not.toBeNull();
+    expect(container.querySelector(".stage")).not.toBeNull();
+  });
+
+  it("opens storyboard from the feature card and returns home", async () => {
+    await act(async () => { root.render(<App />); });
+    await flush();
+    click(container.querySelector(".feature-cinema"));
+    await flush();
+    expect(container.querySelector('.workspace[data-view="storyboard"]')).not.toBeNull();
+    click(container.querySelector('[aria-label="Hickeyfield home"]'));
+    expect(container.querySelector('.workspace[data-view="explore"]')).not.toBeNull();
+  });
+});
+
+describe("Platform workspace navigation", () => {
+  it("keeps Image, Video and Studio mutually exclusive and filters the selected creation", async () => {
+    await act(async () => { root.render(<App />); });
+    await flush();
+    click(viewTab("Image"));
+    await flush();
+    expect(container.querySelector('.workspace')?.getAttribute('data-mode')).toBe('image');
+    expect(container.querySelector('.canvas-heading h2')?.textContent).toBe('Image workspace');
+    expect(container.querySelectorAll('.view-switch-tab[aria-pressed="true"]')).toHaveLength(1);
+    expect(container.querySelector('.stage-hero-name')?.textContent).toContain('Editorial portrait');
+    click(viewTab("Video"));
+    await flush();
+    expect(container.querySelector('.canvas-heading h2')?.textContent).toBe('Video workspace');
+    expect(container.querySelector('.stage-hero-name')?.textContent).not.toContain('Editorial portrait');
+    expect(container.querySelectorAll('.view-switch-tab[aria-pressed="true"]')).toHaveLength(1);
+    click(viewTab("Studio"));
+    await flush();
+    expect(container.querySelector('.workspace')?.getAttribute('data-mode')).toBe('all');
+    expect(container.querySelectorAll('.view-switch-tab[aria-pressed="true"]')).toHaveLength(1);
   });
 });

@@ -147,6 +147,9 @@ describe("A1: Studio opens on and falls back to the workhorse", () => {
     });
     await flush();
 
+    click(Array.from(container.querySelectorAll(".view-switch-tab")).find(b => b.textContent === "Studio") ?? null);
+    await flush();
+
     // The composer's model summary row always renders the currently selected
     // model, so its name is the selection under test.
     const selectedName = () =>

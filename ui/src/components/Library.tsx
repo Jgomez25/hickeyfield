@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   JobSet,
   JoinRecord,
@@ -8,7 +8,7 @@ import type {
 } from "../types";
 import { gradientDataUri } from "../lib/placeholder";
 import { posterFor, displayUrl } from "../lib/media";
-import { isFailure } from "../lib/status";
+import { isFailure, isRunning, statusLabel } from "../lib/status";
 import { formatUsd, stageCostCaption } from "../lib/cost";
 import { EmptyState } from "./EmptyState";
 
@@ -237,11 +237,16 @@ export function Library({
    * button is hidden. */
   onRegenerateStill?: (storyboardId: string, index: number) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState("newest");
   const [filter, setFilter] = useState<Filter>("all");
   const shown = useMemo(
-    () => jobs.filter((j) => matches(j, filter)),
-    [jobs, filter],
+    () => jobs.filter((j) => matches(j, filter) && `${j.prompt} ${j.modelId} ${j.presetName ?? ""}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => (sort === "newest" ? 1 : -1) * (Date.parse(b.createdAt) - Date.parse(a.createdAt))),
+    [jobs, filter, query, sort],
   );
+  useEffect(() => {
+    if (shown.length > 0 && !shown.some(j => j.id === selectedId)) onSelect(shown[0].id);
+  }, [shown, selectedId, onSelect]);
   const unpriced = useMemo(
     () => jobs.filter((j) => stageCostCaption(j).tone === "unpriced").length,
     [jobs],
@@ -285,11 +290,10 @@ export function Library({
   return (
     <section className="library" aria-label="Library">
       <header className="library-head">
-        <h1 className="library-title">LIBRARY</h1>
-        <span className="stage-sub">
-          {jobs.length} item{jobs.length === 1 ? "" : "s"}
-          {unpriced > 0 ? ` · ${unpriced} unpriced` : ""}
-        </span>
+        <div><p className="eyebrow">YOUR CREATIVE COLLECTION</p><h1 className="library-title">Library</h1><p className="library-description">Every idea, iteration, and finished frame. All in one place.</p></div>
+        <span className="library-count">{jobs.length} item{jobs.length === 1 ? "" : "s"}{unpriced > 0 ? ` · ${unpriced} unpriced` : ""}</span>
+      </header>
+      <div className="library-toolbar">
         <div className="library-filters" role="group" aria-label="Filter">
           {FILTERS.map((f) => (
             <button
@@ -303,12 +307,15 @@ export function Library({
             </button>
           ))}
         </div>
-      </header>
+        <label className="tool-search"><span aria-hidden="true">⌕</span><input type="search" aria-label="Search library" placeholder="Search your creations…" value={query} onChange={e => setQuery(e.target.value)} /></label>
+        <select className="library-sort" aria-label="Sort library" value={sort} onChange={e => setSort(e.target.value)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
+      </div>
+      <div className="library-section-label"><span>{filter === "all" ? "All creations" : FILTERS.find(f => f.id === filter)?.label}</span><span>{shown.length} shown</span></div>
 
       {shown.length === 0 ? (
         <EmptyState
-          heading="Nothing here yet"
-          explanation="Generations you make land in the Library, newest first. Change the filter to see other kinds."
+          heading={query ? "No matching creations" : "Your collection starts here"}
+          explanation={query ? "Try a different prompt, model name, or filter." : "Create an image, generate a video, or build a storyboard. Your results will be saved here."}
         />
       ) : (
         <>
@@ -471,10 +478,16 @@ function tile(
         onOpenLightbox(job.id);
       }}
       onMouseEnter={() => onSelect(job.id)}
-      style={failed ? undefined : { backgroundImage: `url("${thumbFor(job)}")` }}
+      onFocus={() => onSelect(job.id)}
       aria-label={titleOf(job)}
     >
-      {failed ? null : <span className="media-bevel" aria-hidden="true" />}
+      <span className="library-tile-art" style={failed || isRunning(job.status) ? undefined : { backgroundImage: `url("${thumbFor(job)}")` }}>
+        <span className="library-tile-kind">{job.results?.[0]?.kind === "video" ? "▷ Video" : job.results?.[0]?.kind === "image" ? "▧ Image" : "Generation"}</span>
+        <span className="library-tile-status" data-running={isRunning(job.status) || undefined}>{statusLabel(job.status)}</span>
+        {isRunning(job.status) && <span className="library-processing">◌<small>Creating your next frame</small></span>}
+        {failed && <span className="library-processing">!<small>Generation needs attention</small></span>}
+        <span className="library-open" aria-hidden="true">↗</span>
+      </span>
       <span className="library-tile-caption">
         <span className="library-tile-name">{titleOf(job)}</span>
         <span

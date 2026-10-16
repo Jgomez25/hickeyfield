@@ -1,6 +1,5 @@
 import { useState } from "react";
 import type { Model, Modality } from "../types";
-import { gradientDataUri } from "../lib/placeholder";
 import { Overlay } from "./Overlay";
 import { RouteIcon } from "./Icons";
 
@@ -36,11 +35,13 @@ export function ModelPicker({
 }) {
   // Client-side filters, additive to the pinned skeleton. All off by default so
   // the roster shows every model until the user narrows it.
+  const [query, setQuery] = useState("");
   const [runnableOnly, setRunnableOnly] = useState(false);
   const [audioOnly, setAudioOnly] = useState(false);
   const [longOnly, setLongOnly] = useState(false);
 
   const passes = (m: Model): boolean => {
+    if (!`${m.displayName} ${m.subtitle ?? ""} ${m.routes.map(r => r.provider).join(" ")}`.toLowerCase().includes(query.toLowerCase())) return false;
     if (runnableOnly && !m.routes.some((r) => r.available !== false)) return false;
     if (audioOnly && !m.capabilities?.audio) return false;
     if (longOnly && !(m.capabilities?.durations ?? []).some((d) => d >= 30))
@@ -49,7 +50,7 @@ export function ModelPicker({
   };
 
   return (
-    <Overlay open={open} onClose={onClose} title="Select model" variant="full">
+    <Overlay open={open} onClose={onClose} title="Select model" variant="full" header={<label className="overlay-search"><input type="search" aria-label="Search models" placeholder="Search models or providers…" value={query} onChange={e => setQuery(e.target.value)} /></label>}>
       <div className="model-filters" role="group" aria-label="Filter models">
         <button
           type="button"
@@ -76,6 +77,7 @@ export function ModelPicker({
           30s capable
         </button>
       </div>
+      {models.filter(passes).length === 0 && <p className="model-no-results" role="status">No models match these filters. Try another search or clear a filter.</p>}
       {GROUPS.map((group) => {
         const items = models.filter(
           (m) => m.modality === group.modality && passes(m),
@@ -103,11 +105,9 @@ export function ModelPicker({
                     <span
                       className="model-item-thumb"
                       aria-hidden="true"
-                      style={{
-                        backgroundImage: `url("${gradientDataUri(model.id)}")`,
-                      }}
+
                     >
-                      <span className="media-bevel" />
+                      <span className="model-monogram">{model.displayName.slice(0, 2)}</span>
                       {model.isLaunch ? (
                         <span className="badge model-item-badge">LAUNCH</span>
                       ) : null}

@@ -1,17 +1,6 @@
 @import "./fonts/fonts.css";
 
-/*
- * Hickeyfield design tokens.
- *
- * Structure and neutral values follow Higgsfield's shipped token sheet, which
- * is functional UI convention. The brand accent is deliberately ours: their
- * lime #d1fe17 is the single most identifying element of their interface and
- * reusing it — alongside a similar layout — is where reimplementation would
- * turn into passing off.
- *
- * Dark only. Their light and dark themes emit byte-identical values; there is
- * no light mode to build.
- */
+/* Dark creative workspace. Original branding with a lime action palette. */
 
 :root {
   color-scheme: dark only;
@@ -56,9 +45,9 @@
   --cool-150: #383e46;
   --cool-200: #2a2d32;
   --cool-250: #23262a;
-  --cool-300: #1c1e21;
+  --cool-300: #191a1c;
   --cool-350: #18191c;
-  --cool-400: #131416;
+  --cool-400: #101112;
 
   /* ── Transparency ladders ───────────────────────────────────────────── */
   --light-05: #ffffff0d;
@@ -99,16 +88,16 @@
   /* Accent as TEXT uses 400, not 500. #ff4a1c on --bg-primary is ~4.3:1,
    * which is marginal for small text; #ff8a63 clears AA comfortably.
    * Accent as a FILL uses 500. Two tokens, one hue — do not collapse them. */
-  --text-brand: var(--vermilion-400);
-  --text-link: var(--vermilion-400);
+  --text-brand: #d4fa36;
+  --text-link: #d4fa36;
 
   /* ── Semantic: accent fills ─────────────────────────────────────────── */
-  --accent: var(--vermilion-500);
+  --accent: #d4fa36;
   --accent-fg: #14151a;
-  --accent-hover: var(--vermilion-400);
-  --accent-active: var(--vermilion-600);
-  --accent-soft: var(--vermilion-alpha-10);
-  --border-focus: var(--vermilion-500);
+  --accent-hover: #e1ff70;
+  --accent-active: #bbdf28;
+  --accent-soft: #d4fa3614;
+  --border-focus: #d4fa36;
 
   /* ── Semantic: danger ───────────────────────────────────────────────────
    * A red brand next to red error states is a real collision, and hue alone
@@ -178,7 +167,7 @@
   /* The signature: the product is named after a glow, so accent surfaces
    * actually bloom. This is our one deliberate divergence from Higgsfield's
    * flat treatment. */
-  --hickeyfield-bloom: 0 0 24px rgba(255, 74, 28, 0.32);
+  --hickeyfield-bloom: none;
   /* The stronger bloom on the primary action's hover. Named here so the one
    * component that draws it (the Generate button) references a token, not a
    * raw brand rgb literal the provenance/token grep would flag. */

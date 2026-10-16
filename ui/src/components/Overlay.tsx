@@ -63,7 +63,7 @@ export function Overlay({
         tabIndex={-1}
       >
         <header className="overlay-header">
-          <h2 className="overlay-title">{title.toUpperCase()}</h2>
+          <h2 className="overlay-title">{title}</h2>
           {header}
           <button
             type="button"

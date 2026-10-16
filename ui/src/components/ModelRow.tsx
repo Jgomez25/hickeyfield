@@ -1,5 +1,4 @@
 import type { Model, ModelCapabilities, Route } from "../types";
-import { gradientDataUri } from "../lib/placeholder";
 
 /**
  * The composer's model tile.
@@ -40,11 +39,7 @@ export function ModelRow({
       <span
         className="model-item-thumb"
         aria-hidden="true"
-        style={
-          model
-            ? { backgroundImage: `url("${gradientDataUri(model.id)}")` }
-            : undefined
-        }
+
       >
         <span className="media-bevel" />
       </span>

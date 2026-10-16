@@ -654,7 +654,14 @@ export async function listUseCases(): Promise<UseCase[]> {
       requiresMedia: u.requires_media ?? u.requiresMedia ?? false,
     }));
   } catch {
-    return [];
+    if (isDesktop()) return [];
+    return [
+      { slug: "text-to-video", label: "New Video", blurb: "Describe a shot and generate it.", slots: [], requiresMedia: false },
+      { slug: "image-to-video", label: "Animate Image", blurb: "Bring a still to life.", slots: [["start", true], ["end", false], ["reference", false]], requiresMedia: true },
+      { slug: "edit-video", label: "Edit Video", blurb: "Change a clip you already have.", slots: [["video", true], ["reference", false]], requiresMedia: true },
+      { slug: "text-to-image", label: "New Image", blurb: "Describe an image and generate it.", slots: [["reference", false]], requiresMedia: false },
+      { slug: "edit-image", label: "Edit Image", blurb: "Change an image you already have.", slots: [["start", true], ["reference", false]], requiresMedia: true },
+    ];
   }
 }
 
@@ -669,7 +676,7 @@ export async function modelsForUseCase(useCase: string): Promise<Model[]> {
     const raw = await invoke<RawModel[]>("models_for_use_case", { useCase });
     return raw.map(toModel);
   } catch {
-    return MOCK_MODELS;
+    return MOCK_MODELS.filter(m => m.modality === (useCase === "text-to-image" || useCase === "edit-image" ? "image" : "video"));
   }
 }
 

@@ -1,4 +1,4 @@
-import { AtIcon, SpeakerIcon, WandIcon } from "./Icons";
+import { SpeakerIcon, WandIcon } from "./Icons";
 import { Toggle } from "./Toggle";
 
 const MAX_PROMPT = 4000;
@@ -47,6 +47,7 @@ export function PromptCard({
       </div>
 
       <textarea
+        aria-label="Prompt"
         id="prompt-input"
         className="prompt-card-input"
         rows={4}
@@ -65,11 +66,6 @@ export function PromptCard({
       ) : null}
 
       <div className="prompt-card-controls">
-        <button type="button" className="chip chip-button" disabled={disabled}>
-          <AtIcon size={14} />
-          Elements
-        </button>
-
         <Toggle
           id="toggle-audio"
           checked={audio && audioSupported}

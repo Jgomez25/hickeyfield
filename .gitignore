@@ -9,6 +9,7 @@
 node_modules
 /ui/dist
 /ui/.vite
+/ui/*.tsbuildinfo
 
 # Bundled sidecars — fetched by scripts/fetch-ffmpeg.sh, never committed.
 # These are large, per-platform, and their provenance must be reproducible

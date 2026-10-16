@@ -153,7 +153,7 @@ describe("Stage", () => {
         onReveal={noop}
       />,
     );
-    expect(container.querySelector(".empty-state")).not.toBeNull();
-    expect(container.textContent).toContain("NOTHING GENERATED YET");
+    expect(container.querySelector(".canvas-welcome")).not.toBeNull();
+    expect(container.textContent).toContain("Every great scene starts with an idea.");
   });
 });

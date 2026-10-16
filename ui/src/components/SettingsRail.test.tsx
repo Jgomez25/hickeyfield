@@ -155,7 +155,7 @@ describe("SettingsRail composer (S12)", () => {
     expect(more!.textContent).toContain("more");
   });
 
-  it("keeps the legal notice visible at the composer foot", () => {
+  it("keeps the independent-project notice in advanced settings", () => {
     render(<SettingsRail {...props()} />);
     const note = container.querySelector(".rail-disclaimer");
     expect(note).not.toBeNull();

@@ -13,3 +13,7 @@
 @import "./components/picker.css";
 @import "./components/setup.css";
 @import "./components/camera-preview.css";
+
+@import "./creative.css";
+
+@import "./platform.css";

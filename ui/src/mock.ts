@@ -211,7 +211,7 @@ const PRESET_SEEDS: PresetSeed[] = [
   {
     id: "orbit-360",
     name: "Orbit 360",
-    category: "Camera Control",
+    category: "camera-control",
     tags: ["orbit", "camera", "rotation"],
     description: "A full circular orbit around the subject at a fixed radius.",
     models: [WORKHORSE_MODEL_ID, "kling_3_0", "veo_3_1_fast", "wan_2_7"],
@@ -219,7 +219,7 @@ const PRESET_SEEDS: PresetSeed[] = [
   {
     id: "earth-zoom",
     name: "Earth Zoom",
-    category: "Camera Control",
+    category: "camera-control",
     tags: ["zoom", "camera", "scale"],
     description: "A continuous pull from ground level out to orbital altitude.",
     models: [WORKHORSE_MODEL_ID, "kling_3_0", "veo_3_1_fast"],
@@ -227,7 +227,7 @@ const PRESET_SEEDS: PresetSeed[] = [
   {
     id: "crash-dolly",
     name: "Crash Dolly",
-    category: "Camera Control",
+    category: "camera-control",
     tags: ["dolly", "camera", "push"],
     description: "A hard accelerating push straight into the subject.",
     models: [WORKHORSE_MODEL_ID, "kling_3_0", "veo_3_1_fast"],
@@ -235,7 +235,7 @@ const PRESET_SEEDS: PresetSeed[] = [
   {
     id: "handheld-follow",
     name: "Handheld Follow",
-    category: "Camera Control",
+    category: "camera-control",
     tags: ["handheld", "camera", "tracking"],
     description: "Loose operator-held tracking shot with natural sway.",
     models: [WORKHORSE_MODEL_ID, "wan_2_7", "veo_3_1_fast"],
@@ -243,7 +243,7 @@ const PRESET_SEEDS: PresetSeed[] = [
   {
     id: "crane-reveal",
     name: "Crane Reveal",
-    category: "Camera Control",
+    category: "camera-control",
     tags: ["crane", "camera", "reveal"],
     description: "Rising crane move that opens onto the wider scene.",
   },
@@ -485,6 +485,8 @@ export function mockEstimate(
 const iso = (minutesAgo: number) =>
   new Date(Date.now() - minutesAgo * 60_000).toISOString();
 
+// Browse-only samples use original bundled artwork. Video samples supply a
+// preview still, never a fabricated playable video or a real provider result.
 export const MOCK_JOBS: JobSet[] = [
   {
     id: "job-3",
@@ -521,14 +523,15 @@ export const MOCK_JOBS: JobSet[] = [
     modelId: "kling_3_0",
     status: "completed",
     prompt:
-      "Slow orbit around a weathered bronze statue in an empty museum hall, dust suspended in a shaft of window light.",
+      "A lone astronaut beneath an immense glowing planet, volcanic dunes and warm rim light.",
     enhancedPrompt:
-      "Slow 180-degree orbit around a weathered bronze statue in an empty museum hall. Volumetric shaft of window light, suspended dust motes, marble floor reflections, shallow depth of field, 35mm.",
+      "A cinematic orbit around a lone astronaut on volcanic dunes. An immense glowing planet, warm rim light, drifting dust, 35mm film.",
     createdAt: iso(14),
     results: [
       {
-        url: gradientDataUri("job-2-result", 1280, 720),
-        kind: "image",
+        url: "",
+        poster: "/art/cinema.jpg",
+        kind: "video",
         width: 1280,
         height: 720,
       },
@@ -552,27 +555,27 @@ export const MOCK_JOBS: JobSet[] = [
   },
   {
     id: "job-1",
-    modelId: "wan_2_7",
+    modelId: "nano_banana_pro",
     status: "completed",
     prompt:
-      "Portrait of a street vendor lit by a single sodium lamp, shot from below, steam from the cart drifting through frame.",
+      "Editorial portrait in a sculptural silver jacket and amber sunglasses against a vivid blue sky.",
     createdAt: iso(41),
     results: [
       {
-        url: gradientDataUri("job-1-result", 720, 1280),
+        url: "/art/portrait.jpg",
         kind: "image",
         width: 720,
         height: 1280,
       },
     ],
-    route: route("local", "comfyui/wan-2.7"),
+    route: route("google", "nano-banana-pro"),
     // Unknown estimate on a route with no published price. It still ran.
     estimatedUsd: null,
     actualUsd: 0,
     presetId: null,
     settings: {
       duration: 5,
-      resolution: "720p",
+      resolution: "2K",
       aspect: "9:16",
       audio: false,
       enhance: false,
@@ -582,8 +585,8 @@ export const MOCK_JOBS: JobSet[] = [
     media: [
       {
         role: "reference",
-        source: { kind: "url", url: gradientDataUri("job-1-ref", 240, 240) },
-        name: "vendor-ref.jpg",
+        source: { kind: "url", url: "/art/portrait.jpg" },
+        name: "editorial-reference.jpg",
       },
     ],
     enhancerVersion: null,

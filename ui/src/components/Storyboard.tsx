@@ -402,12 +402,10 @@ export function Storyboard({
 
   return (
     <section className="storyboard" aria-label="Storyboard">
+      <div className="storyboard-page-heading"><div><p className="eyebrow">FROM CONCEPT TO FINAL CUT</p><h1>Storyboard</h1><p>Build a sequence with intention. Shape every shot before you generate.</p></div><span className="storyboard-step">01 Brief <span>→</span> 02 Direct <span>→</span> 03 Generate</span></div>
       <header className="storyboard-head">
-        <h1 className="storyboard-title">STORYBOARD</h1>
-        <p className="storyboard-note">
-          Drafting uses your enhancer — free on local Ollama; a hosted key bills
-          one short completion. No clip is generated until you see the total.
-        </p>
+        <span className="composer-label">CREATIVE BRIEF <span>01</span></span><h2 className="storyboard-title">Tell your story.</h2>
+<p className="storyboard-intro">Describe the subject, mood, and what happens. We’ll help you break it into shots.</p>
         <label className="storyboard-field">
           <span className="storyboard-label">Brief</span>
           <textarea
@@ -415,7 +413,7 @@ export function Storyboard({
             value={brief}
             onChange={(e) => setBrief(e.currentTarget.value)}
             rows={3}
-            placeholder="a 30-second ad for a cold-brew can…"
+            placeholder="A cinematic launch film for a cold-brew coffee. Open on morning light, reveal the can, finish with a slow hero shot…"
           />
         </label>
         <div className="storyboard-controls">
@@ -440,6 +438,12 @@ export function Storyboard({
             {drafting ? "Drafting…" : "Draft shot list"}
           </button>
         </div>
+        <div className="storyboard-starters"><span className="composer-label">Need a starting point?</span>{[
+          ["Product film", "A 15-second product film for a cold-brew coffee can. Morning light, condensation, a close-up pouring shot and a final hero reveal."],
+          ["Short narrative", "A lone astronaut discovers a glowing object in volcanic dunes. Establish the landscape, follow the discovery, end on a close-up reaction."],
+          ["Fashion editorial", "A fashion editorial with a silver jacket and amber glasses. Bold blue sky, a wide establishing shot, fabric detail, then an expressive portrait."],
+        ].map(([label, text]) => <button type="button" key={label} onClick={() => setBrief(text)}>{label}<span aria-hidden="true">↗</span></button>)}</div>
+        <p className="storyboard-note">Drafting is free with local Ollama. Hosted enhancement bills one completion. Review generation costs before starting your shots.</p>
         {targetInvalid ? (
           <p className="storyboard-target-invalid" role="alert">
             Enter a target length of at least 1 second.
@@ -447,15 +451,18 @@ export function Storyboard({
         ) : null}
       </header>
 
-      {error ? <p className="storyboard-error">{error}</p> : null}
+      <div className="storyboard-canvas">
+      {error ? <p className="storyboard-error" role="alert">{error}</p> : null}
 
       {shots.length > 0 ? (
         <>
+          <div className="storyboard-sequence-head"><div><span className="eyebrow">YOUR SEQUENCE</span><h2>Make every shot count.</h2></div><span>{shots.length} shots · {shots.reduce((sum, s) => sum + s.seconds, 0)}s planned</span></div>
           <ol className="storyboard-shots">
             {shots.map((shot, i) => {
               const est = estimates[i] ?? null;
               return (
                 <li className="storyboard-shot" key={i} data-shot-index={i}>
+                  <div className="shot-visual" aria-hidden="true"><span>{String(i + 1).padStart(2, "0")}</span><div><strong>{shot.camera ? cameraPresets.find(p => p.id === shot.camera)?.displayName ?? shot.camera : "Compose your frame"}</strong><small>{shot.seconds}s · {shot.role}</small></div><span className="shot-frame-corner" /></div>
                   <div className="storyboard-shot-head">
                     <span className="storyboard-shot-n">Shot {i + 1}</span>
                     <span className="storyboard-shot-role">{shot.role}</span>
@@ -652,7 +659,7 @@ export function Storyboard({
 
           <footer className="storyboard-foot">
             {canChain ? (
-              <div className="storyboard-chain">
+              <details className="storyboard-chain"><summary>Continuity & keyframes</summary>
                 <label className="storyboard-chain-toggle">
                   <input
                     type="checkbox"
@@ -718,7 +725,7 @@ export function Storyboard({
                     ))}
                   </div>
                 ) : null}
-              </div>
+              </details>
             ) : null}
             <div className="storyboard-total-line">
               <span className="storyboard-total-label">Total</span>
@@ -741,7 +748,8 @@ export function Storyboard({
             </button>
           </footer>
         </>
-      ) : null}
+      ) : <div className="storyboard-empty"><div className="empty-filmstrip" aria-hidden="true"><span>01</span><span>02</span><span>03</span></div><span className="eyebrow">THE BIG PICTURE STARTS HERE</span><h2>Your story, frame by frame.</h2><p>Write a brief and draft your shot list. Refine the prompts, camera moves, and timing before generating a single frame.</p><div className="storyboard-empty-steps"><span><b>01</b> Set the scene</span><span><b>02</b> Direct the shots</span><span><b>03</b> Bring it to life</span></div></div>}
+      </div>
 
       <ModelPicker
         open={pickerShot !== null}

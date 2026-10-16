@@ -547,3 +547,27 @@ describe("Library", () => {
     expect(card.querySelector(".storyboard-regenerate-still")).not.toBeNull();
   });
 });
+
+describe("Library discovery", () => {
+  it("combines search with media filters and reverses date order", () => {
+    const jobs = [
+      job({id:'old', prompt:'Ocean at dusk', createdAt:'2026-01-01T00:00:00Z'}),
+      job({id:'new', prompt:'Ocean at dawn', createdAt:'2026-02-01T00:00:00Z'}),
+      job({id:'image', prompt:'Mountain portrait', results:[{url:'/art/portrait.jpg',kind:'image'}]}),
+    ];
+    render(<Library jobs={jobs} selectedId={null} onSelect={noop} onOpenLightbox={noop} />);
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Search library"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'ocean');
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+    });
+    expect(container.querySelectorAll('.library-tile')).toHaveLength(2);
+    expect(container.querySelector('.library-tile')?.getAttribute('data-job-anchor')).toBe('new');
+    const sort = container.querySelector<HTMLSelectElement>('[aria-label="Sort library"]')!;
+    act(() => { sort.value = 'oldest'; sort.dispatchEvent(new Event('change', {bubbles:true})); });
+    expect(container.querySelector('.library-tile')?.getAttribute('data-job-anchor')).toBe('old');
+    act(() => chip('Image').click());
+    expect(container.querySelectorAll('.library-tile')).toHaveLength(0);
+    expect(container.textContent).toContain('NO MATCHING CREATIONS');
+  });
+});

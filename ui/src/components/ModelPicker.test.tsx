@@ -132,7 +132,7 @@ describe("ModelPicker hides unroutable Local-only models", () => {
   // S12 AC7 — additive only: the DOM pins above are unchanged; the tile grid
   // adds a thumbnail and a data-tier derived from isLaunch. No new assertion
   // depends on the filters row, and none of the pinned assertions changed.
-  it("gives each tile a thumbnail and a data-tier from isLaunch (S12)", () => {
+  it("gives each tile a model monogram and a data-tier from isLaunch", () => {
     render(
       <ModelPicker
         open
@@ -152,7 +152,7 @@ describe("ModelPicker hides unroutable Local-only models", () => {
     )) {
       const thumb = li.querySelector<HTMLElement>(".model-item-thumb");
       expect(thumb).not.toBeNull();
-      expect(thumb!.style.backgroundImage).toContain("data:image/svg+xml");
+      expect(thumb!.querySelector(".model-monogram")?.textContent?.length).toBeGreaterThan(0);
     }
   });
 

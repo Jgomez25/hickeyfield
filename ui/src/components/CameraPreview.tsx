@@ -25,6 +25,11 @@ import { presetPreview } from "../mock";
  * right, so the image travels left.
  */
 const MOVE_CLASS: Record<string, string> = {
+  "orbit-360": "cam-orbit-full",
+  "earth-zoom": "cam-push-out",
+  "crash-dolly": "cam-push-in",
+  "handheld-follow": "cam-handheld",
+  "crane-reveal": "cam-crane-up",
   "push-in": "cam-push-in",
   "dolly-in": "cam-push-in",
   "zoom-in": "cam-zoom-in",

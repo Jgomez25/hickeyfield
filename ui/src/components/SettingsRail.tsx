@@ -14,7 +14,6 @@ import type {
   WorkspaceTab,
 } from "../types";
 import { useState } from "react";
-import { PresetTile } from "./PresetTile";
 import { Dropzone, FrameSlots, type FrameSlot } from "./MediaInputs";
 import { PromptCard } from "./PromptCard";
 import { EnhancerPicker } from "./EnhancerPicker";
@@ -57,7 +56,7 @@ function CameraStripTile({
       aria-pressed={active}
       aria-label={`Camera move ${preset.displayName}`}
     >
-      <CameraPreview slug={preset.id} active={hot} />
+      <CameraPreview slug={preset.id} src="/art/cinema.jpg" active={hot} />
       <span className="media-bevel" aria-hidden="true" />
       <span className="camera-strip-name">{preset.displayName}</span>
     </button>
@@ -196,152 +195,62 @@ export function SettingsRail({
       ? "Add a prompt before starting generation"
       : null;
 
+  const imageMode = tab === "text-to-image" || tab === "edit-image";
+  const activeUseCase = useCases.find((u) => u.slug === tab);
+  const frameSlots = slotsFor(activeUseCase, capabilities?.unsupportedRoles).filter(s => s.role !== "reference");
+
   return (
     <aside className="rail rail-settings" aria-label="Generation settings">
+      <header className="composer-heading">
+        <span className="eyebrow">{imageMode ? "IMAGE WORKSPACE" : "VIDEO WORKSPACE"}</span>
+        <h1>{activeUseCase?.label ?? (imageMode ? "Create image" : "Create video")}</h1>
+        <p>{activeUseCase?.blurb ?? "Bring your next idea into focus."}</p>
+      </header>
       <div className="rail-card">
         <div className="rail-stack" id={PANEL_ID} role="tabpanel">
-          <PresetTile
-            preset={preset}
-            modelId={model?.id ?? null}
-            modelName={model?.displayName ?? "No model"}
-            onChange={onOpenPresets}
-          />
-
-          <FrameSlots
-            slots={slotsFor(
-              useCases.find((u) => u.slug === tab),
-              capabilities?.unsupportedRoles,
-            )}
-            media={media}
-            onAdd={onMediaAdd}
-            onRemove={onMediaRemoveRole}
-          />
-
-          <Dropzone
-            media={media}
-            onAdd={onMediaAdd}
-            onRemove={onMediaRemoveKey}
-          />
-
-          <PromptCard
-            value={prompt}
-            onChange={onPromptChange}
-            audio={settings.audio}
-            audioSupported={capabilities.audio}
-            onAudioChange={(audio) => onSettingsChange({ audio })}
-            enhance={settings.enhance}
-            onEnhanceChange={(enhance) => onSettingsChange({ enhance })}
-            disabled={chained}
-            disabledReason="This preset writes its own prompt. Supply one image instead."
-          />
-
-          <EnhancerPicker
-            enhance={settings.enhance}
-            ollamaUp={ollamaUp}
-            ollamaModels={ollamaModels}
-            openaiAvailable={openaiAvailable}
-            value={enhancer}
-            onChange={onEnhancerChange}
-          />
-
-          <ModelRow
-            model={model}
-            route={route}
-            capabilities={capabilities}
-            onOpen={onOpenModels}
-          />
-
-          {cameraPresets.length > 0 ? (
-            <div className="camera-strip">
-              <span className="camera-strip-label">Camera move</span>
-              <div className="camera-strip-grid">
-                {cameraPresets.slice(0, CAMERA_STRIP_LIMIT).map((p) => (
-                  <CameraStripTile
-                    key={p.id}
-                    preset={p}
-                    active={preset?.id === p.id}
-                    onPick={() => onPickPreset(p)}
-                  />
-                ))}
-                <button
-                  type="button"
-                  className="camera-strip-more"
-                  onClick={onOpenPresets}
-                >
-                  {cameraPresets.length > CAMERA_STRIP_LIMIT
-                    ? `+${cameraPresets.length - CAMERA_STRIP_LIMIT} more`
-                    : "More"}
-                </button>
-              </div>
-            </div>
-          ) : null}
-
-          <ChipRow
-            capabilities={capabilities}
-            settings={settings}
-            onChange={onSettingsChange}
-          />
-
-          <div className="rail-generate-sticky">
-            <GenerateButton
-              estimate={estimate}
-              pending={pending}
-              blockedReason={blockedReason}
-              needsSetup={needsSetup}
-              onSubmit={onSubmit}
-              onSetup={onOpenSetup}
-            />
+          <div className="composer-section">
+            <span className="composer-label">Model <span>01</span></span>
+            <ModelRow model={model} route={route} capabilities={capabilities} onOpen={onOpenModels} />
           </div>
-
-          {!needsSetup ? (
-            <button
-              type="button"
-              className="preview-trigger"
-              onClick={onPreview}
-              disabled={Boolean(blockedReason) || pending || previewing}
-            >
-              {previewing && !preview
-                ? "Preparing preview…"
-                : "Preview prompt"}
-            </button>
-          ) : null}
-
-          {preview ? (
-            <PromptPreview
-              preview={preview}
-              value={previewText}
-              onChange={onPreviewTextChange}
-              onRetry={onRetryPreview}
-              onGenerate={onGenerateFromPreview}
-              previewing={previewing}
-              pending={pending}
-              estimate={estimate}
-              blockedReason={
-                previewText.trim().length < 2
-                  ? "Add a prompt before generating"
-                  : null
-              }
-            />
-          ) : null}
-
-          <label className="never-used-toggle">
-            <input
-              type="checkbox"
-              checked={showNeverUsed}
-              onChange={(e) => onToggleNeverUsed(e.target.checked)}
-            />
-            Show never-used routes (Seedance, Grok)
-            <span className="never-used-warn">
-              These bill the provider — hidden by default.
-            </span>
-          </label>
-
-          <p className="rail-disclaimer">
-            Independent open-source project. Not affiliated with, endorsed by,
-            or sponsored by Higgsfield, Inc.
-          </p>
+          <div className="composer-section">
+            <span className="composer-label">Your direction <span>02</span></span>
+            <PromptCard value={prompt} onChange={onPromptChange} audio={settings.audio}
+              audioSupported={capabilities.audio} onAudioChange={(audio) => onSettingsChange({ audio })}
+              enhance={settings.enhance} onEnhanceChange={(enhance) => onSettingsChange({ enhance })}
+              disabled={chained} disabledReason="This preset writes its own prompt. Supply one image instead." />
+          </div>
+          <div className="composer-section">
+            <span className="composer-label">{frameSlots.length ? "Source media" : "References"}<span>{frameSlots.some(s => s.required) ? "Required" : "Optional"}</span></span>
+            {frameSlots.length > 0 && <FrameSlots slots={frameSlots} media={media} onAdd={onMediaAdd} onRemove={onMediaRemoveRole} />}
+            <Dropzone media={media} onAdd={onMediaAdd} onRemove={onMediaRemoveKey} />
+          </div>
+          <div className="composer-section">
+            <span className="composer-label">{imageMode ? "Creative preset" : "Camera & style"}<span>03</span></span>
+            <button className="composer-preset" onClick={onOpenPresets}><span aria-hidden="true">✧</span><span><strong>{preset?.displayName ?? "No preset"}</strong><small>{preset ? "Change creative direction" : "Explore styles and camera moves"}</small></span><span aria-hidden="true">↗</span></button>
+            {cameraPresets.length > 0 && model?.modality === "video" ? (
+              <div className="camera-strip">
+                <span className="camera-strip-label">Camera move</span>
+                <div className="camera-strip-grid">
+                  {cameraPresets.slice(0, CAMERA_STRIP_LIMIT).map((p) => <CameraStripTile key={p.id} preset={p} active={preset?.id === p.id} onPick={() => onPickPreset(p)} />)}
+                  <button type="button" className="camera-strip-more" onClick={onOpenPresets}>{cameraPresets.length > CAMERA_STRIP_LIMIT ? `+${cameraPresets.length - CAMERA_STRIP_LIMIT} more` : "More"}</button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <div className="composer-section"><span className="composer-label">Output settings <span>04</span></span><ChipRow capabilities={capabilities} settings={settings} onChange={onSettingsChange} /></div>
+          <details className="composer-advanced"><summary>Advanced settings</summary>
+            <EnhancerPicker enhance={settings.enhance} ollamaUp={ollamaUp} ollamaModels={ollamaModels} openaiAvailable={openaiAvailable} value={enhancer} onChange={onEnhancerChange} />
+            <label className="never-used-toggle"><input type="checkbox" checked={showNeverUsed} onChange={(e) => onToggleNeverUsed(e.target.checked)} />Show never-used routes (Seedance, Grok)<span className="never-used-warn">These bill the provider — hidden by default.</span></label>
+            <p className="rail-disclaimer">Independent open-source project. Not affiliated with, endorsed by, or sponsored by Higgsfield, Inc.</p>
+          </details>
+          {preview ? <PromptPreview preview={preview} value={previewText} onChange={onPreviewTextChange} onRetry={onRetryPreview} onGenerate={onGenerateFromPreview} previewing={previewing} pending={pending} estimate={estimate} blockedReason={previewText.trim().length < 2 ? "Add a prompt before generating" : null} /> : null}
         </div>
       </div>
+      <footer className="rail-generate-sticky">
+        {!needsSetup ? <button type="button" className="preview-trigger" onClick={onPreview} disabled={Boolean(blockedReason) || pending || previewing}>{previewing && !preview ? "Preparing preview…" : "Preview prompt"}</button> : null}
+        <GenerateButton estimate={estimate} pending={pending} blockedReason={blockedReason} needsSetup={needsSetup} onSubmit={onSubmit} onSetup={onOpenSetup} />
+        <span className="composer-footer-note">Your keys · Direct provider pricing</span>
+      </footer>
     </aside>
   );
 }

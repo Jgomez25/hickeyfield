@@ -84,6 +84,7 @@ import { VideoPreview } from "./components/VideoPreview";
 import { KeyIcon } from "./components/Icons";
 import { isPlayableVideo, posterFor } from "./lib/media";
 import { revealResult } from "./api";
+import { Explore } from "./components/Explore";
 import "./app.css";
 
 const DEFAULT_SETTINGS: GenSettings = {
@@ -118,6 +119,8 @@ const readSkipped = (): boolean => {
 };
 
 export default function App() {
+  const [studioMode, setStudioMode] = useState<"image" | "video" | "all">("all");
+  const [allModels, setAllModels] = useState<Model[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   // Unfiltered id → display name, so history renders a hidden (never-used)
   // model's name even though the picker feed omits it.
@@ -155,8 +158,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Studio (compose + stage) vs Library (gallery + meta). A separate axis from
   // the use-case `tab`; a two-value state, not a router (there is no URL).
-  const [view, setView] = useState<"studio" | "library" | "storyboard">(
-    "studio",
+  const [view, setView] = useState<"explore" | "studio" | "library" | "storyboard">(
+    "explore",
   );
   // Stored storyboards, for the Library group headers. Refreshed after a
   // generate-all so the new set has its brief to head the group with.
@@ -199,6 +202,7 @@ export default function App() {
       setUseCases(u);
       if (u.length > 0 && !u.some((x) => x.slug === tab)) setTab(u[0].slug);
       setModels(m);
+      setAllModels(m);
       setModelNameMap(names);
       setShowNeverUsedState(showNU);
       setPresets(p);
@@ -253,7 +257,7 @@ export default function App() {
       setOllamaModelList(models);
       // First run: nothing can generate, so say so up front rather than letting
       // the user build a prompt that has nowhere to go.
-      if (!isAppConfigured(c, l) && !readSkipped()) setOverlay("onboarding");
+      if (isDesktop() && !isAppConfigured(c, l) && !readSkipped()) setOverlay("onboarding");
     })();
   }, []);
 
@@ -694,9 +698,14 @@ export default function App() {
       // image-to-video job silently resubmitted it as text-to-video — the same
       // price for a generation the user did not ask to repeat.
       setMedia(job.media ?? []);
+      const roles = job.media?.map(m => m.role) ?? [];
+      const image = job.results?.[0]?.kind === "image" || models.find(m => m.id === job.modelId)?.modality === "image";
+      setTab(image ? (roles.includes("start") ? "edit-image" : "text-to-image") : roles.includes("video") ? "edit-video" : roles.includes("start") ? "image-to-video" : "text-to-video");
+      setStudioMode("all");
+      setView("studio");
       document.getElementById("prompt-input")?.focus();
     },
-    [],
+    [models],
   );
 
   // Flip the "show never-used routes" toggle: persist it server-side, then
@@ -713,11 +722,15 @@ export default function App() {
 
   // The Studio stage shows the selection when there is one, else the latest
   // (jobs are newest-first). Recents are the first six.
+  const studioJobs = useMemo(() => studioMode === "all" ? jobs : jobs.filter(j => {
+    const kind = allModels.find(m => m.id === j.modelId)?.modality ?? j.results?.[0]?.kind;
+    return kind === studioMode;
+  }), [jobs, studioMode, allModels]);
   const featured = useMemo(
-    () => jobs.find((j) => j.id === selectedId) ?? jobs[0] ?? null,
-    [jobs, selectedId],
+    () => studioJobs.find((j) => j.id === selectedId) ?? studioJobs[0] ?? null,
+    [studioJobs, selectedId],
   );
-  const recents = useMemo(() => jobs.slice(0, 6), [jobs]);
+  const recents = useMemo(() => studioJobs.slice(0, 8), [studioJobs]);
   const featuredModelName = useMemo(() => {
     if (!featured) return "";
     // The unfiltered name map first, so a job on a hidden (never-used) model
@@ -759,6 +772,7 @@ export default function App() {
         },
       ]);
       setPrompt(job.prompt);
+      setStudioMode("all");
       setView("studio");
       document.getElementById("prompt-input")?.focus();
     },
@@ -799,18 +813,6 @@ export default function App() {
     [pendingDelete, selectedId],
   );
 
-  // Selection is the pairing mechanism between the two independently
-  // scrolling columns. `nearest` means an already-visible counterpart does not
-  // jump, which matters because hovering a meta card selects it.
-  useEffect(() => {
-    if (!selectedId) return;
-    for (const attr of ["data-job-anchor", "data-meta-anchor"]) {
-      document
-        .querySelector(`[${attr}="${selectedId}"]`)
-        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
-  }, [selectedId]);
-
   const runningCount = jobs.filter((j) => isRunning(j.status)).length;
   const needsSetup = configured !== null && !isAppConfigured(configured, local);
 
@@ -827,13 +829,16 @@ export default function App() {
     <div className="shell">
       <header className="titlebar" data-tauri-drag-region>
         <div className="titlebar-left">
-          <span className="wordmark">HICKEYFIELD</span>
+          <button className="wordmark" onClick={() => setView("explore")} aria-label="Hickeyfield home"><span className="brand-symbol" aria-hidden="true">h</span>Hickeyfield</button>
           <nav className="view-switch" aria-label="View">
+            <button className="view-switch-tab" aria-pressed={view === "explore"} onClick={() => setView("explore")}>Explore</button>
+            <button className="view-switch-tab" aria-pressed={view === "studio" && studioMode === "image"} onClick={() => { setTab("text-to-image"); setStudioMode("image"); setView("studio"); }}>Image</button>
+            <button className="view-switch-tab" aria-pressed={view === "studio" && studioMode === "video"} onClick={() => { setTab("text-to-video"); setStudioMode("video"); setView("studio"); }}>Video</button>
             <button
               type="button"
               className="view-switch-tab"
-              aria-pressed={view === "studio"}
-              onClick={() => setView("studio")}
+              aria-pressed={view === "studio" && studioMode === "all"}
+              onClick={() => { setStudioMode("all"); setView("studio"); }}
             >
               Studio
             </button>
@@ -841,7 +846,7 @@ export default function App() {
               type="button"
               className="view-switch-tab"
               aria-pressed={view === "storyboard"}
-              onClick={() => setView("storyboard")}
+              onClick={() => { setTab("text-to-video"); setView("storyboard"); }}
             >
               Storyboard
             </button>
@@ -859,19 +864,21 @@ export default function App() {
           {runningCount > 0 ? (
             <span className="titlebar-running">{runningCount} running</span>
           ) : null}
+          <button className="header-settings" onClick={() => setOverlay("settings")}>Keys & settings</button>
           <span className="titlebar-mode">
             {isDesktop() ? "Desktop" : "Browse mode · sample data"}
           </span>
         </span>
       </header>
 
-      <div className="workspace" data-view={view}>
-        <nav className="use-nav" aria-label="Use case">
+      <div className="workspace" data-view={view} data-mode={studioMode}>
+        {view !== "explore" && <nav className="use-nav" aria-label="Use case">
+          <span className="nav-section-label">CREATE</span>
           <WorkspaceTabs
             variant="nav"
             useCases={useCases}
             value={tab}
-            onChange={setTab}
+            onChange={(next) => { setTab(next); if (studioMode !== "all") setStudioMode(next === "text-to-image" || next === "edit-image" ? "image" : "video"); setView("studio"); }}
             panelId="generator-panel"
           />
           <button
@@ -884,9 +891,11 @@ export default function App() {
             <KeyIcon size={20} />
             <span className="tabs-nav-label">Keys</span>
           </button>
-        </nav>
+        </nav>}
 
-        {view === "storyboard" ? (
+        {view === "explore" ? (
+          <Explore useCases={useCases} presets={presets} onWorkflow={(slug) => { setTab(slug); setStudioMode(slug === "text-to-image" || slug === "edit-image" ? "image" : "video"); setView("studio"); }} onStoryboard={() => { setTab("text-to-video"); setView("storyboard"); }} onPreset={(p) => { setTab("text-to-video"); setPresetId(p.id); setView("studio"); }} onAllPresets={() => { setView("studio"); setOverlay("presets"); }} />
+        ) : view === "storyboard" ? (
           <Storyboard
             tab={tab}
             models={models}
@@ -946,12 +955,25 @@ export default function App() {
             />
 
             <Stage
+              workspaceTitle={studioMode === "image" ? "Image workspace" : studioMode === "video" ? "Video workspace" : "Creative studio"}
+              imageMode={studioMode === "image"}
+              onPromptExample={(text) => { setPrompt(text); document.getElementById("prompt-input")?.focus(); }}
               job={featured}
               recents={recents}
               modelName={featuredModelName}
               error={submitError}
               onDismissError={() => setSubmitError(null)}
               onSelect={setSelectedId}
+              onAnimate={useCases.some(u => u.slug === "image-to-video") ? (job) => {
+                const result = job.results?.find(r => r.kind === "image" && (r.localPath || r.url));
+                if (!result) return;
+                setTab("image-to-video");
+                setStudioMode("video");
+                setPresetId(null);
+                setMedia([{ role: "start", source: result.localPath ? { kind: "local", path: result.localPath } : { kind: "url", url: result.url }, name: "Generated image" }]);
+                setPrompt(job.prompt);
+                setView("studio");
+              } : undefined}
               onRetry={onRerun}
               onExtend={extendUseCase ? onExtend : null}
               onReveal={(path) => void revealResult(path)}
@@ -974,7 +996,7 @@ export default function App() {
 
             <MetaRail
               jobs={jobs}
-              models={models}
+              models={allModels}
               selectedId={selectedId}
               onSelect={setSelectedId}
               onRerun={onRerun}

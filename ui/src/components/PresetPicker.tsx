@@ -34,7 +34,7 @@ function PresetCard({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [hot, setHot] = useState(false);
   const variant = selectVariant(preset, modelId);
-  const src = variant?.previewUrl ?? presetPreview(preset.id);
+  const src = variant?.previewUrl ?? (preset.category === "camera-control" ? "/art/cinema.jpg" : presetPreview(preset.id));
   const playable = isPlayableUrl(src);
   const asMove = !playable && preset.category === "camera-control";
 
@@ -73,7 +73,7 @@ function PresetCard({
       <span className="media-bevel" aria-hidden="true" />
       <span className="preset-card-caption">
         <span className="preset-card-name">
-          {preset.displayName.toUpperCase()}
+          {preset.displayName}
         </span>
         <span className="preset-card-category">{preset.category}</span>
       </span>

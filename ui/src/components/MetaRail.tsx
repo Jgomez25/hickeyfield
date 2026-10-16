@@ -50,6 +50,7 @@ export const MetaRail = forwardRef<
 
   return (
     <aside className="rail rail-meta" aria-label="Generation details" ref={ref}>
+      <header className="inspector-heading"><span className="eyebrow">INSPECTOR</span><h2>Creation details</h2><p>Select a creation to explore its settings.</p></header>
       <div className="spend-meter">
         <span className="spend-meter-label">Session spend</span>
         <span className="spend-meter-value">
@@ -72,7 +73,7 @@ export const MetaRail = forwardRef<
         />
       ) : (
         <div className="meta-list">
-          {jobs.map((job) => (
+          {(jobs.length ? [jobs.find(j => j.id === selectedId) ?? jobs[0]] : []).map((job) => (
             <div key={job.id} data-meta-anchor={job.id}>
               <MetaCard
                 job={job}

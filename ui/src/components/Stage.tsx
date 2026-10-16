@@ -6,7 +6,6 @@ import { isRunning, isFailure, statusLabel } from "../lib/status";
 import { stageCostCaption, formatUsd } from "../lib/cost";
 import { VideoPreview } from "./VideoPreview";
 import { RainbowPlaceholder, StatusLine } from "./Loader";
-import { EmptyState } from "./EmptyState";
 
 /** mm:ss from a millisecond elapsed count. */
 function clock(ms: number): string {
@@ -66,6 +65,9 @@ function thumbFor(job: JobSet): string {
  * optional-chaining no-ops.
  */
 export function Stage({
+  workspaceTitle = "Creative studio",
+  imageMode = false,
+  onPromptExample,
   job,
   recents,
   modelName,
@@ -74,8 +76,12 @@ export function Stage({
   onSelect,
   onRetry,
   onExtend,
+  onAnimate,
   onReveal,
 }: {
+  workspaceTitle?: string;
+  imageMode?: boolean;
+  onPromptExample?: (text: string) => void;
   /** The featured job — the selection, or the latest. Null when none exist. */
   job: JobSet | null;
   recents: JobSet[];
@@ -86,6 +92,7 @@ export function Stage({
   onRetry: (job: JobSet) => void;
   /** null hides the Extend pill: no extend use case is available (§D4). */
   onExtend: ((job: JobSet) => void) | null;
+  onAnimate?: (job: JobSet) => void;
   onReveal: (path: string) => void;
 }) {
   const running = job ? isRunning(job.status) : false;
@@ -95,6 +102,7 @@ export function Stage({
 
   return (
     <section className="stage" aria-label="Studio">
+      <header className="canvas-heading"><div><p className="eyebrow">CREATE WITHOUT LIMITS</p><h2>{workspaceTitle}</h2><p>{imageMode ? "Find your visual language. Make every detail your own." : "Your next scene starts here. Direct it, refine it, make it yours."}</p></div><span className="canvas-count">{recents.length} recent {recents.length === 1 ? "creation" : "creations"}</span></header>
       {error ? (
         <div className="feed-error" role="alert">
           <p className="feed-error-text">{error}</p>
@@ -111,15 +119,17 @@ export function Stage({
       ) : null}
 
       {job === null ? (
-        <EmptyState
-          heading="Nothing generated yet"
-          explanation="Your latest result lands here, large, with its estimated and actual cost. It stays on this machine — nothing is uploaded to us."
-        />
+        <div className="canvas-welcome">
+          <img src={imageMode ? "/art/portrait.jpg" : "/art/cinema.jpg"} alt="" />
+          <div><span className="feature-tag">{imageMode ? "A NEW PERSPECTIVE" : "YOUR NEXT FRAME"}</span><h3>{imageMode ? "An idea. A thousand possibilities." : "Every great scene starts with an idea."}</h3><p>Choose a model, describe your vision, and create your first {imageMode ? "image" : "video"}.</p>
+          {onPromptExample && <button className="btn btn-primary" onClick={() => onPromptExample(imageMode ? "Editorial portrait in a sculptural silver jacket, amber sunglasses, vivid blue sky, hard sunlight, analog film texture." : "A lone astronaut crosses volcanic dunes beneath a glowing planet. Slow cinematic dolly in, warm rim light, drifting dust, 35mm film.")}>Try a prompt <span aria-hidden="true">↗</span></button>}
+          <small>Creative inspiration · Original studio artwork</small></div>
+        </div>
       ) : (
         <>
           <header className="stage-head">
-            <h1 className="stage-title">STAGE</h1>
-            <span className="stage-sub">Latest result · click a recent to open it</span>
+            <h3 className="stage-title">Preview</h3>
+            <span className="stage-sub">Your selected creation</span>
             {running ? (
               <span className="stage-timer">
                 <span className="stage-timer-dot" aria-hidden="true" />
@@ -136,13 +146,14 @@ export function Stage({
             saved={saved}
             onRetry={onRetry}
             onExtend={onExtend}
+            onAnimate={onAnimate}
             onReveal={onReveal}
           />
 
           {recents.length > 0 ? (
             <div className="stage-recents">
               <div className="stage-recents-head">
-                <span className="stage-recents-title">RECENT</span>
+                <span className="stage-recents-title">Recent creations</span>
                 <span className="stage-sub">{recents.length} shown</span>
               </div>
               <div className="stage-recents-grid">
@@ -161,6 +172,7 @@ export function Stage({
                       aria-label={titleOf(r)}
                     >
                       <span className="media-bevel" aria-hidden="true" />
+                      <span className="stage-recent-name">{titleOf(r)}</span>
                       <span
                         className="stage-recent-cost"
                         data-running={rr || undefined}
@@ -188,6 +200,7 @@ function StageHero({
   saved,
   onRetry,
   onExtend,
+  onAnimate,
   onReveal,
 }: {
   job: JobSet;
@@ -197,6 +210,7 @@ function StageHero({
   saved: string | null;
   onRetry: (job: JobSet) => void;
   onExtend: ((job: JobSet) => void) | null;
+  onAnimate?: (job: JobSet) => void;
   onReveal: (path: string) => void;
 }) {
   const first = job.results?.[0];
@@ -204,7 +218,7 @@ function StageHero({
   const settings = job.settings;
   const detail = [
     modelName,
-    settings ? formatDuration(settings.duration) : null,
+    settings && first?.kind !== "image" ? formatDuration(settings.duration) : null,
     settings?.resolution,
   ]
     .filter(Boolean)
@@ -244,7 +258,8 @@ function StageHero({
       </div>
 
       <div className="stage-hero-pills">
-        {onExtend && saved ? (
+        {onAnimate && first?.kind === "image" && (first.localPath || first.url) ? <button type="button" className="stage-pill" onClick={() => onAnimate(job)}>Animate image</button> : null}
+        {onExtend && saved && first?.kind === "video" ? (
           <button
             type="button"
             className="stage-pill"
